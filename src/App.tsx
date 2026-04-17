@@ -8,14 +8,11 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useState, useEffect, useRef, FormEvent } from 'react';
+import React, { useState, useEffect, useRef, FormEvent } from 'react';
 import axios from 'axios';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
-
-function cn(...inputs: ClassValue[]) {
-  return twMerge(clsx(inputs));
-}
+import { cn } from './lib/utils';
 import { BrowserRouter as Router, Routes, Route, Link, useNavigate, useParams } from 'react-router-dom';
 import { 
   MessageCircle, 
@@ -73,6 +70,7 @@ import Editor from 'react-simple-code-editor';
 import { highlight, languages } from 'prismjs';
 import 'prismjs/components/prism-markdown';
 import 'prismjs/themes/prism.css';
+
 import { 
   LineChart, 
   Line, 
@@ -143,27 +141,32 @@ export default function App() {
 
   useEffect(() => {
     return onAuthStateChanged(auth, async (u) => {
-      setUser(u);
-      if (u) {
-        const docRef = doc(db, 'users', u.uid);
-        const docSnap = await getDoc(docRef);
-        if (docSnap.exists()) {
-          setProfile(docSnap.data() as UserProfile);
+      try {
+        setUser(u);
+        if (u) {
+          const docRef = doc(db, 'users', u.uid);
+          const docSnap = await getDoc(docRef);
+          if (docSnap.exists()) {
+            setProfile(docSnap.data() as UserProfile);
+          } else {
+            const newProfile: UserProfile = {
+              uid: u.uid,
+              email: u.email || '',
+              displayName: u.displayName || '',
+              role: u.email === 'maraju924@gmail.com' ? 'admin' : 'merchant',
+              createdAt: serverTimestamp()
+            };
+            await setDoc(docRef, newProfile);
+            setProfile(newProfile);
+          }
         } else {
-          const newProfile: UserProfile = {
-            uid: u.uid,
-            email: u.email || '',
-            displayName: u.displayName || '',
-            role: u.email === 'maraju924@gmail.com' ? 'admin' : 'merchant',
-            createdAt: serverTimestamp()
-          };
-          await setDoc(docRef, newProfile);
-          setProfile(newProfile);
+          setProfile(null);
         }
-      } else {
-        setProfile(null);
+      } catch (err) {
+        console.error("Auth initialization error:", err);
+      } finally {
+        setLoading(false);
       }
-      setLoading(false);
     });
   }, []);
 

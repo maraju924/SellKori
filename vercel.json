@@ -2,7 +2,7 @@
   "version": 2,
   "builds": [
     {
-      "src": "server.ts",
+      "src": "api/index.ts",
       "use": "@vercel/node"
     },
     {
@@ -12,19 +12,8 @@
     }
   ],
   "routes": [
-    {
-      "src": "/api/(.*)",
-      "dest": "server.ts"
-    },
-    {
-      "src": "/(.*)",
-      "dest": "/$1",
-      "continue": true
-    },
-    {
-      "src": "/(.*)",
-      "status": 200,
-      "dest": "/index.html"
-    }
+    { "src": "/api/(.*)", "dest": "api/index.ts" },
+    { "src": "/webhook(.*)", "dest": "api/index.ts" },
+    { "src": "/(.*)", "dest": "/index.html" }
   ]
 }
