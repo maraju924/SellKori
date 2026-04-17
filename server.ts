@@ -31,6 +31,7 @@ const PORT = 3000;
 app.use(cors());
 app.use(express.json());
 
+async function startServer() {
 // Universal Webhook - Handles BOTH /webhook and /api/webhook
   app.get(['/webhook', '/api/webhook', '/api/webhook/debug'], (req, res) => {
     const mode = req.query['hub.mode'];
