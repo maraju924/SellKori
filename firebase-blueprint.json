@@ -1,0 +1,44 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "User profile with roles",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "email": { "type": "string" },
+        "displayName": { "type": "string" },
+        "role": { "type": "string", "enum": ["merchant", "admin"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "BusinessConfig": {
+      "title": "BusinessConfig",
+      "description": "Merchant business settings",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "ownerId": { "type": "string" },
+        "name": { "type": "string" },
+        "products": { "type": "array" },
+        "faqs": { "type": "array" },
+        "facebookConfig": { "type": "object" },
+        "customSystemPrompt": { "type": "string" }
+      }
+    }
+  },
+  "firestore": {
+    "/users/{uid}": {
+      "schema": "UserProfile",
+      "description": "Global user profiles"
+    },
+    "/businesses/{businessId}": {
+      "schema": "BusinessConfig",
+      "description": "Merchant business data"
+    },
+    "/orders/{orderId}": {
+      "schema": "Order",
+      "description": "Customer orders"
+    }
+  }
+}
