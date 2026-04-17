@@ -12,15 +12,19 @@ import firebaseConfig from '../../firebase-applet-config.json';
 const getEnvVar = (key: string) => {
   // Try Vite's import.meta.env first (for browser)
   try {
-    if (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env[key]) {
-      return import.meta.env[key];
+    const meta = import.meta as any;
+    if (meta && meta.env && meta.env[key]) {
+      return meta.env[key];
     }
   } catch (e) {}
   
   // Try Node's process.env (for server)
-  if (typeof process !== 'undefined' && process.env && process.env[key]) {
-    return process.env[key];
-  }
+  try {
+    const proc = (typeof process !== 'undefined') ? process as any : null;
+    if (proc && proc.env && proc.env[key]) {
+      return proc.env[key];
+    }
+  } catch (e) {}
   
   return undefined;
 };
