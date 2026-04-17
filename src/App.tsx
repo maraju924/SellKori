@@ -414,8 +414,9 @@ function LoginPage() {
       const provider = new GoogleAuthProvider();
       await signInWithPopup(auth, provider);
       navigate('/dashboard');
-    } catch (err) {
-      toast.error('লগইন ব্যর্থ হয়েছে');
+    } catch (err: any) {
+      toast.error(err.message || 'লগইন ব্যর্থ হয়েছে');
+      console.error('Login error:', err);
     }
   };
 
