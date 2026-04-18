@@ -4,13 +4,22 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import axios from 'axios';
 import cors from 'cors';
-import { db } from '../src/lib/firebase';
-import { getAIResponse, generateIssueFollowUp } from '../src/lib/gemini';
-import { doc, getDoc, collection, addDoc, serverTimestamp, setDoc, updateDoc, increment, query, where, getDocs } from 'firebase/firestore';
+import { initializeApp } from 'firebase/app';
+import { getFirestore, doc, getDoc, collection, addDoc, serverTimestamp, setDoc, updateDoc, increment, query, where, getDocs } from 'firebase/firestore';
 import { BusinessConfig } from '../src/types';
+import fs from 'fs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+// Load firebase config for server-side use
+const firebaseConfigPath = path.join(process.cwd(), 'firebase-applet-config.json');
+const firebaseConfig = JSON.parse(fs.readFileSync(firebaseConfigPath, 'utf8'));
+
+const firebaseApp = initializeApp(firebaseConfig);
+const db = firebaseConfig.firestoreDatabaseId 
+  ? getFirestore(firebaseApp, firebaseConfig.firestoreDatabaseId) 
+  : getFirestore(firebaseApp);
 
 // Helper to get system config
 async function getSystemConfig() {

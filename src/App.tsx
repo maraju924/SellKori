@@ -16,6 +16,8 @@ import { cn } from './lib/utils';
 import { BrowserRouter as Router, Routes, Route, Link, useNavigate, useParams } from 'react-router-dom';
 import { 
   MessageCircle, 
+  MessageSquare,
+  ShoppingCart,
   Settings, 
   Package, 
   HelpCircle, 
@@ -39,6 +41,8 @@ import {
   FileDigit,
   CreditCard,
   Truck,
+  Copy,
+  Info,
   Mic,
   Megaphone,
   History,
@@ -117,11 +121,19 @@ function GlobalBanner() {
   const [announcement, setAnnouncement] = useState<string | null>(null);
 
   useEffect(() => {
-    return onSnapshot(doc(db, 'system_config', 'public'), (snap) => {
-      if (snap.exists()) setAnnouncement(snap.data().globalAnnouncement || null);
-    }, (error) => {
-      console.error("GlobalBanner Error:", error);
-    });
+    if (!db) {
+      console.error("Firestore 'db' is not initialized.");
+      return;
+    }
+    try {
+      return onSnapshot(doc(db, 'system_config', 'public'), (snap) => {
+        if (snap.exists()) setAnnouncement(snap.data().globalAnnouncement || null);
+      }, (error) => {
+        console.error("GlobalBanner Error:", error);
+      });
+    } catch (e) {
+      console.error("GlobalBanner Snapshot Error:", e);
+    }
   }, []);
 
   if (!announcement) return null;
@@ -140,6 +152,11 @@ export default function App() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    if (!auth || !db) {
+      console.error("Firebase auth or db not initialized");
+      setLoading(false);
+      return;
+    }
     return onAuthStateChanged(auth, async (u) => {
       try {
         setUser(u);
@@ -872,289 +889,6 @@ function BusinessInfoManager({ business }: { business: BusinessConfig }) {
         </Button>
       </CardContent>
     </Card>
-  );
-}
-
-function MessengerConnect({ business }: { business: BusinessConfig }) {
-  // Use -pre- URL for Webhooks, as -dev- URLs are usually session-restricted
-  const prodOrigin = window.location.origin.includes('-dev-') 
-    ? window.location.origin.replace('-dev-', '-pre-') 
-    : window.location.origin;
-
-  const webhookUrl = `${prodOrigin}/api/webhook/debug`; // Use debug URL for stability during setup
-  const verifyToken = business.messengerVerifyToken || 'Not Set';
-  const isConnected = !!business.facebookConfig?.accessToken;
-  const [isTesting, setIsTesting] = useState(false);
-  const [logs, setLogs] = useState<any[]>([]);
-  const [isPinging, setIsPinging] = useState(false);
-
-  const pingServerManually = async () => {
-    setIsPinging(true);
-    // Use current origin for local logic testing to avoid CORS issues
-    const localWebhookUrl = `${window.location.origin}/api/webhook/debug`;
-    try {
-      await axios.get(`${localWebhookUrl}?hub.mode=subscribe&hub.verify_token=chatbyraju&hub.challenge=TEST_PING`);
-      toast.success('Internal Logic OK! Ping recorded in monitor.');
-    } catch (err) {
-      toast.error('Local server unreachable. Please refresh the page.');
-    } finally {
-      setIsPinging(false);
-    }
-  };
-
-  useEffect(() => {
-    const q = query(collection(db, 'webhook_logs'), orderBy('timestamp', 'desc'), limit(5));
-    return onSnapshot(q, (snap) => {
-      setLogs(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-    });
-  }, []);
-
-  const testConnection = async () => {
-    if (!business.facebookConfig?.accessToken) {
-      toast.error('Please add an Access Token first in the Facebook Config tab');
-      return;
-    }
-    setIsTesting(true);
-    try {
-      const res = await axios.get(`https://graph.facebook.com/v18.0/me?access_token=${business.facebookConfig.accessToken}`);
-      toast.success(`Successfully connected to: ${res.data.name}`);
-    } catch (err: any) {
-      toast.error(`Connection Failed: ${err.response?.data?.error?.message || err.message}`);
-    } finally {
-      setIsTesting(false);
-    }
-  };
-
-  return (
-    <div className="space-y-6">
-      <Card className={cn("border-l-4", isConnected ? "border-l-emerald-500" : "border-l-amber-500")}>
-        <CardHeader className="pb-2">
-          <div className="flex justify-between items-center">
-            <CardTitle className="text-lg">Connection Status</CardTitle>
-            <Badge variant={isConnected ? "default" : "secondary"} className={isConnected ? "bg-emerald-100 text-emerald-700 hover:bg-emerald-100" : ""}>
-              {isConnected ? "Connected" : "Pending Setup"}
-            </Badge>
-          </div>
-        </CardHeader>
-        <CardContent>
-          <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
-            <p className="text-sm text-zinc-500">
-              {isConnected 
-                ? "Your AI agent is active and listening for messages on your Facebook Page." 
-                : "Complete the steps below to activate your AI agent on Messenger."}
-            </p>
-            {isConnected && (
-              <Button variant="outline" size="sm" onClick={testConnection} disabled={isTesting} className="gap-2">
-                <ShieldCheck className="w-4 h-4" />
-                {isTesting ? "Testing..." : "Test Connection"}
-              </Button>
-            )}
-          </div>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>Messenger Connection Process</CardTitle>
-          <CardDescription>Follow these steps to connect your Facebook Page to the AI system</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-6">
-          <div className="space-y-6">
-            <div className="p-4 bg-indigo-50 border border-indigo-200 rounded-xl">
-              <div className="flex justify-between items-center mb-2">
-                <h4 className="text-sm font-bold text-indigo-900 flex items-center gap-2">
-                  <Terminal className="w-4 h-4" />
-                  Live Connection Monitor
-                </h4>
-                <Button 
-                  variant="ghost" 
-                  size="xs" 
-                  className="h-7 text-[10px] bg-white border border-indigo-200 text-indigo-600 hover:bg-indigo-50"
-                  onClick={pingServerManually}
-                  disabled={isPinging}
-                >
-                  {isPinging ? "Pinging..." : "Test Connection Logic"}
-                </Button>
-              </div>
-              <div className="space-y-1">
-                {logs.length === 0 ? (
-                  <p className="text-xs text-indigo-400 italic">Waiting for Facebook to ping your server... (Click 'Verify and Save' on Facebook)</p>
-                ) : (
-                  logs.map((log) => (
-                    <div key={log.id} className="text-[10px] font-mono flex justify-between border-b border-indigo-100 last:border-0 py-1">
-                      <span className={log.success ? "text-emerald-600" : "text-amber-600"}>
-                        [{new Date(log.timestamp?.seconds * 1000).toLocaleTimeString()}] 
-                        {log.success ? " ✓ Success" : " ✗ Failed (Check Token)"}
-                      </span>
-                      <span className="text-indigo-400">Token: {log.token}</span>
-                    </div>
-                  ))
-                )}
-              </div>
-            </div>
-
-            <div className="p-4 bg-amber-50 border border-amber-200 rounded-xl flex gap-3">
-              <ShieldCheck className="w-5 h-5 text-amber-600 flex-shrink-0 mt-0.5" />
-              <div className="text-sm">
-                <p className="font-bold text-amber-800">Critical: Facebook Webhook Domain</p>
-                <p className="text-amber-700 mt-1">
-                  Facebook <b>CANNOT</b> access the preview URL (with <code className="bg-amber-100 px-1">-dev-</code>). 
-                  You must use the <b>Shared App URL</b> (with <code className="bg-amber-100 px-1">-pre-</code>).
-                </p>
-              </div>
-            </div>
-
-            <div className="flex gap-4">
-              <div className="flex-shrink-0 w-8 h-8 rounded-full bg-indigo-100 text-indigo-600 flex items-center justify-center font-bold">1</div>
-              <div className="space-y-1">
-                <h4 className="font-bold">Create a Facebook App</h4>
-                <p className="text-sm text-zinc-500">Go to <a href="https://developers.facebook.com" target="_blank" rel="noreferrer" className="text-indigo-600 underline">developers.facebook.com</a> and create a new app with the "Messenger" product added.</p>
-              </div>
-            </div>
-
-            <div className="flex gap-4">
-              <div className="flex-shrink-0 w-8 h-8 rounded-full bg-indigo-100 text-indigo-600 flex items-center justify-center font-bold">2</div>
-              <div className="space-y-2 w-full">
-                <h4 className="font-bold">Setup Webhook</h4>
-                <p className="text-sm text-zinc-500">In your App Dashboard, go to <b>Messenger → Settings → Webhooks</b> and click "Add Callback URL".</p>
-                
-                <div className="space-y-3 bg-zinc-50 p-3 rounded-lg border border-zinc-200">
-                  <div className="space-y-1">
-                    <Label className="text-xs uppercase text-zinc-400">Callback URL</Label>
-                    <div className="flex gap-2">
-                      <code className="flex-1 p-2 bg-white border rounded text-xs truncate">{webhookUrl}</code>
-                      <Button variant="outline" size="sm" onClick={() => {
-                        navigator.clipboard.writeText(webhookUrl);
-                        toast.success('URL copied');
-                      }}>Copy</Button>
-                    </div>
-                  </div>
-                  
-                  <div className="space-y-1">
-                    <Label className="text-xs uppercase text-zinc-400">Verify Token</Label>
-                    <div className="flex gap-2">
-                      <code className="flex-1 p-2 bg-white border rounded text-xs truncate">{verifyToken}</code>
-                      <Button variant="outline" size="sm" onClick={() => {
-                        navigator.clipboard.writeText(verifyToken);
-                        toast.success('Token copied');
-                      }}>Copy</Button>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <div className="flex gap-4">
-              <div className="flex-shrink-0 w-8 h-8 rounded-full bg-indigo-100 text-indigo-600 flex items-center justify-center font-bold">3</div>
-              <div className="space-y-1">
-                <h4 className="font-bold">Subscribe to Fields</h4>
-                <p className="text-sm text-zinc-500">After verifying the URL, click "Edit" in the Webhooks section and subscribe to at least:</p>
-                <div className="flex gap-2 mt-2">
-                  <Badge variant="secondary">messages</Badge>
-                  <Badge variant="secondary">messaging_postbacks</Badge>
-                </div>
-              </div>
-            </div>
-
-            <div className="flex gap-4">
-              <div className="flex-shrink-0 w-8 h-8 rounded-full bg-indigo-100 text-indigo-600 flex items-center justify-center font-bold">4</div>
-              <div className="space-y-1">
-                <h4 className="font-bold">Generate Access Token</h4>
-                <p className="text-sm text-zinc-500">In the "Token Generation" section, select your Page and generate a token. Paste it in the <b>Facebook Config</b> tab.</p>
-              </div>
-            </div>
-
-            <div className="flex gap-4">
-              <div className="flex-shrink-0 w-8 h-8 rounded-full bg-indigo-100 text-indigo-600 flex items-center justify-center font-bold">5</div>
-              <div className="space-y-1">
-                <h4 className="font-bold">Whitelist Domains</h4>
-                <p className="text-sm text-zinc-500">Go to <b>Messenger → Settings → Whitelisted Domains</b> and add your app URL to allow interactive features.</p>
-                <code className="block p-2 bg-zinc-100 rounded mt-2 text-xs">{window.location.origin}</code>
-              </div>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
-
-      {isConnected && (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <Megaphone className="w-5 h-5 text-indigo-600" />
-                Broadcast Messaging
-              </CardTitle>
-              <CardDescription>Send messages to all your Messenger subscribers</CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="space-y-2">
-                <Label>Message Content</Label>
-                <Textarea placeholder="Special offer for our loyal customers..." />
-              </div>
-              <div className="flex items-center justify-between p-3 bg-zinc-50 rounded-lg border border-dashed">
-                <div className="text-xs text-zinc-500">
-                  Estimated Reach: <span className="font-bold text-zinc-900">0 users</span>
-                </div>
-                <Button size="sm" disabled>Send Broadcast</Button>
-              </div>
-              <p className="text-[10px] text-zinc-400 italic">Note: Broadcasts must comply with Facebook's 24-hour messaging policy.</p>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <History className="w-5 h-5 text-amber-600" />
-                Abandoned Cart Recovery
-              </CardTitle>
-              <CardDescription>Automatically follow up with users who didn't finish checkout</CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="flex items-center justify-between">
-                <Label>Enable Auto-Recovery</Label>
-                <Badge variant="secondary">Disabled</Badge>
-              </div>
-              <div className="space-y-2">
-                <Label>Follow-up Delay</Label>
-                <div className="flex gap-2">
-                  <Badge variant="outline">1 Hour</Badge>
-                  <Badge variant="outline">24 Hours</Badge>
-                </div>
-              </div>
-              <Button variant="outline" className="w-full" disabled>Configure Recovery Flow</Button>
-            </CardContent>
-          </Card>
-
-          <Card className="md:col-span-2">
-            <CardHeader>
-              <CardTitle>Messenger Profile Settings</CardTitle>
-              <CardDescription>Configure how your bot interacts with new users</CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="p-4 border rounded-xl bg-zinc-50 space-y-4">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <h4 className="font-bold">Get Started Button</h4>
-                    <p className="text-xs text-zinc-500">Show a button to new users to start the conversation</p>
-                  </div>
-                  <Badge variant="outline">Active</Badge>
-                </div>
-                <div className="space-y-2">
-                  <Label>Greeting Text</Label>
-                  <Textarea 
-                    placeholder="Hello! How can I help you today?" 
-                    defaultValue={`Welcome to ${business.name}! Our AI agent is ready to assist you.`}
-                    className="bg-white"
-                  />
-                  <p className="text-[10px] text-zinc-400">This text is shown before a user starts a conversation.</p>
-                </div>
-                <Button size="sm" className="w-full md:w-auto">Update Profile Settings</Button>
-              </div>
-            </CardContent>
-          </Card>
-        </div>
-      )}
-    </div>
   );
 }
 
@@ -2241,6 +1975,325 @@ function CustomerCRM({ business }: { business: BusinessConfig }) {
   );
 }
 
+function AnalyticsDashboard({ business }: { business: BusinessConfig }) {
+  const [events, setEvents] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (!business.id) return;
+    const q = query(collection(db, 'analytics'), where('businessId', '==', business.id), orderBy('timestamp', 'desc'), limit(1000));
+    return onSnapshot(q, (snapshot) => {
+      const data = snapshot.docs.map(d => ({
+        ...d.data(),
+        timestamp: d.data().timestamp?.toDate() || new Error('No date')
+      })).filter(d => !(d.timestamp instanceof Error));
+      setEvents(data);
+      setLoading(false);
+    });
+  }, [business.id]);
+
+  if (loading) return <div className="p-10 text-center text-zinc-400">অ্যানালিটিক্স লোড হচ্ছে...</div>;
+
+  // Process data for charts
+  const messageData = events
+    .filter(e => e.eventName === 'chat_message_sent')
+    .reduce((acc: any[], curr) => {
+      const date = curr.timestamp.toLocaleDateString();
+      const existing = acc.find(a => a.date === date);
+      if (existing) existing.count++;
+      else acc.push({ date, count: 1 });
+      return acc;
+    }, [])
+    .slice(-7);
+
+  const intentData = events
+    .filter(e => e.eventName === 'chat_message_received')
+    .reduce((acc: any[], curr) => {
+      const intent = curr.properties.intent || 'unknown';
+      const existing = acc.find(a => a.name === intent);
+      if (existing) existing.value++;
+      else acc.push({ name: intent, value: 1 });
+      return acc;
+    }, []);
+
+  const stats = {
+    totalMessages: events.filter(e => e.eventName === 'chat_message_sent').length,
+    totalOrders: events.filter(e => e.eventName === 'order_completed').length,
+    activeSessions: new Set(events.map(e => e.sessionId)).size,
+    conversionRate: events.filter(e => e.eventName === 'chat_message_sent').length > 0 
+      ? ((events.filter(e => e.eventName === 'order_completed').length / new Set(events.map(e => e.sessionId)).size) * 100).toFixed(1)
+      : 0
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <Card className="bg-white border-none shadow-sm h-full group">
+          <CardContent className="pt-6 relative">
+            <div className="text-sm text-zinc-500 font-medium mb-1">Total Messages</div>
+            <div className="text-3xl font-extrabold text-zinc-900">{stats.totalMessages}</div>
+            <MessageSquare className="absolute right-4 top-8 w-8 h-8 text-indigo-50 opacity-10 group-hover:opacity-20 transition-opacity" />
+          </CardContent>
+        </Card>
+        <Card className="bg-white border-none shadow-sm h-full group">
+          <CardContent className="pt-6 relative">
+            <div className="text-sm text-zinc-500 font-medium mb-1">Total Orders</div>
+            <div className="text-3xl font-extrabold text-zinc-900">{stats.totalOrders}</div>
+            <ShoppingCart className="absolute right-4 top-8 w-8 h-8 text-indigo-50 opacity-10 group-hover:opacity-20 transition-opacity" />
+          </CardContent>
+        </Card>
+        <Card className="bg-white border-none shadow-sm h-full group">
+          <CardContent className="pt-6 relative">
+            <div className="text-sm text-zinc-500 font-medium mb-1">Active Sessions</div>
+            <div className="text-3xl font-extrabold text-zinc-900">{stats.activeSessions}</div>
+            <Users className="absolute right-4 top-8 w-8 h-8 text-indigo-50 opacity-10 group-hover:opacity-20 transition-opacity" />
+          </CardContent>
+        </Card>
+        <Card className="bg-white border-none shadow-sm h-full group">
+          <CardContent className="pt-6 relative">
+            <div className="text-sm text-zinc-500 font-medium mb-1">Conversion Rate</div>
+            <div className="text-3xl font-extrabold text-indigo-600">{stats.conversionRate}%</div>
+            <Zap className="absolute right-4 top-8 w-8 h-8 text-indigo-50 opacity-10 group-hover:opacity-20 transition-opacity" />
+          </CardContent>
+        </Card>
+      </div>
+
+      <div className="grid md:grid-cols-2 gap-6">
+        <Card className="bg-white border-none shadow-sm rounded-3xl overflow-hidden">
+          <CardHeader className="pb-2"><CardTitle className="text-lg font-bold">Messages (Last 7 Days)</CardTitle></CardHeader>
+          <CardContent className="h-[300px]">
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={messageData}>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f0f0f0" />
+                <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{fontSize: 12, fill: '#888'}} />
+                <YAxis axisLine={false} tickLine={false} tick={{fontSize: 12, fill: '#888'}} />
+                <Tooltip 
+                  contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
+                />
+                <Line type="monotone" dataKey="count" stroke="#6366f1" strokeWidth={4} dot={{ r: 4, fill: '#6366f1', strokeWidth: 2, stroke: '#fff' }} activeDot={{ r: 6 }} />
+              </LineChart>
+            </ResponsiveContainer>
+          </CardContent>
+        </Card>
+
+        <Card className="bg-white border-none shadow-sm rounded-3xl overflow-hidden">
+          <CardHeader className="pb-2"><CardTitle className="text-lg font-bold">Customer Intent Distribution</CardTitle></CardHeader>
+          <CardContent className="h-[300px]">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={intentData} layout="vertical" margin={{ left: 20 }}>
+                <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#f0f0f0" />
+                <XAxis type="number" hide />
+                <YAxis dataKey="name" type="category" axisLine={false} tickLine={false} tick={{fontSize: 11, fill: '#666', fontWeight: 500}} width={80} />
+                <Tooltip 
+                   contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
+                />
+                <Bar dataKey="value" fill="#6366f1" radius={[0, 8, 8, 0]} barSize={24} />
+              </BarChart>
+            </ResponsiveContainer>
+          </CardContent>
+        </Card>
+      </div>
+    </div>
+  );
+}
+
+function MessengerConnect({ business }: { business: BusinessConfig }) {
+  const [isConnecting, setIsConnecting] = useState(false);
+
+  const connectFacebook = () => {
+    setIsConnecting(true);
+    if (typeof (window as any).FB === 'undefined') {
+      toast.error("Facebook SDK loading... please wait or refresh.", {
+        description: "Make sure you have added the FB SDK to your index.html"
+      });
+      setIsConnecting(false);
+      return;
+    }
+
+    (window as any).FB.login((response: any) => {
+      if (response.authResponse) {
+        (window as any).FB.api('/me/accounts', (accounts: any) => {
+          if (accounts.data && accounts.data.length > 0) {
+            toast.success(`${accounts.data.length}টি পেজ পাওয়া গিয়েছে!`, {
+              description: "আপনার পছন্দের পেজটির টোকেন নিচে সেভ করুন।"
+            });
+            console.log("Available Pages:", accounts.data);
+          } else {
+            toast.error("কোনো পেজ পাওয়া যায়নি। আপনার কি পেজ ক্রিয়েট করা আছে?");
+          }
+          setIsConnecting(false);
+        });
+      } else {
+        toast.error("ফেসবুক কানেকশন বাতিল করা হয়েছে।");
+        setIsConnecting(false);
+      }
+    }, { scope: 'pages_show_list,pages_messaging,pages_read_engagement,pages_manage_metadata,public_profile' });
+  };
+
+  const updateField = async (field: string, val: string) => {
+    await updateDoc(doc(db, 'businesses', business.id), { [field]: val });
+    toast.success('মেসেঞ্জার সেটিংস সফলভাবে সেভ হয়েছে');
+  };
+
+  const copyUrl = () => {
+    const url = `${window.location.origin}/api/webhook`;
+    navigator.clipboard.writeText(url);
+    toast.success('Webhook URL কপি করা হয়েছে!', { description: url });
+  };
+
+  return (
+    <div className="space-y-8 animate-in fade-in duration-700">
+      {/* Hero Banner */}
+      <div className="relative overflow-hidden bg-gradient-to-r from-indigo-600 to-purple-700 rounded-[2.5rem] p-10 text-white shadow-xl">
+        <div className="relative z-10 max-w-2xl">
+          <Badge className="bg-white/20 text-white border-none mb-6 backdrop-blur-md px-4 py-1 text-xs uppercase tracking-widest font-bold">
+            Live Messenger AI
+          </Badge>
+          <h2 className="text-4xl font-extrabold mb-4 tracking-tight leading-tight">
+            আপনার ফেসবুক স্টোরকে <br/><span className="text-indigo-200">AI এর শক্তিতে</span> বড় করুন।
+          </h2>
+          <p className="text-indigo-100 text-lg mb-8 leading-relaxed opacity-90">
+            এই সেটিংসটি সম্পন্ন করলে আপনার AI বটটি স্বয়ংক্রিয়ভাবে মেসেঞ্জারের সব রিপ্লাই দিবে এবং কাস্টমারের অর্ডার কনফার্ম করবে।
+          </p>
+          <div className="flex flex-wrap gap-4">
+            <Button 
+              onClick={connectFacebook} 
+              disabled={isConnecting}
+              className="bg-white text-indigo-600 hover:bg-zinc-100 h-14 px-8 rounded-2xl font-bold shadow-lg transition-all active:scale-95"
+            >
+              {isConnecting ? (
+                <span className="flex items-center gap-2">কানেক্ট হচ্ছে...</span>
+              ) : (
+                <span className="flex items-center gap-2">
+                  <Facebook className="w-5 h-5" /> 
+                  মেসেঞ্জার কানেক্ট করুন
+                </span>
+              )}
+            </Button>
+            <Button variant="outline" className="border-white/30 text-white hover:bg-white/10 h-14 px-8 rounded-2xl font-medium backdrop-blur-sm">
+              সেটআপ গাইড
+            </Button>
+          </div>
+        </div>
+        
+        {/* Abstract Background Elements */}
+        <div className="absolute top-0 right-0 -translate-y-1/2 translate-x-1/4 w-[500px] h-[500px] bg-white opacity-5 rounded-full blur-3xl pointer-events-none" />
+        <MessageCircle className="absolute -right-16 -bottom-16 w-80 h-80 text-white/10 -rotate-12 pointer-events-none" />
+      </div>
+
+      <div className="grid lg:grid-cols-5 gap-8">
+        {/* Left Column: Configuration */}
+        <div className="lg:col-span-3 space-y-6">
+          <Card className="border-none shadow-sm bg-white overflow-hidden group">
+            <div className="h-1.5 bg-indigo-500 w-0 group-hover:w-full transition-all duration-500" />
+            <CardHeader className="pb-4">
+              <CardTitle className="flex items-center gap-2 text-xl font-bold">
+                <ShieldCheck className="w-6 h-6 text-indigo-500" />
+                মেসেঞ্জার কনফিগারেশন
+              </CardTitle>
+              <CardDescription>ফেসবুক ডেভেলপার ড্যাশবোর্ড থেকে আপনার টোকেনগুলো এখানে দিন।</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-6 pt-2">
+              <div className="space-y-3">
+                <Label className="text-sm font-bold text-zinc-700">Page Access Token</Label>
+                <div className="relative group">
+                  <Input 
+                    type="password"
+                    value={business.pageAccessToken || ''} 
+                    onChange={e => updateField('pageAccessToken', e.target.value)}
+                    placeholder="EAA..." 
+                    className="h-12 pl-4 pr-12 rounded-xl bg-zinc-50 border-zinc-200 focus:bg-white transition-all shadow-inner"
+                  />
+                  <div className="absolute right-4 top-3.5 text-zinc-400">
+                    <Zap className="w-5 h-5" />
+                  </div>
+                </div>
+                <p className="text-xs text-zinc-400 italic">Page Settings → Messenger → Access Tokens এ এটি পাবেন।</p>
+              </div>
+
+              <div className="grid md:grid-cols-2 gap-6">
+                <div className="space-y-3">
+                  <Label className="text-sm font-bold text-zinc-700">Verify Token</Label>
+                  <Input 
+                    value={business.verifyToken || ''} 
+                    onChange={e => updateField('verifyToken', e.target.value)}
+                    placeholder="my_secret_key_123" 
+                    className="h-12 rounded-xl bg-zinc-50 border-zinc-200 focus:bg-white shadow-inner"
+                  />
+                  <p className="text-[10px] text-zinc-400">ওয়েবহুক ভেরিফাই করার জন্য এটি আপনার ইচ্ছামতো দিন।</p>
+                </div>
+                <div className="space-y-3">
+                  <Label className="text-sm font-bold text-zinc-700">Connected Page Name</Label>
+                  <Input 
+                    disabled
+                    value={business.pageName || 'Not Connected'} 
+                    className="h-12 rounded-xl bg-zinc-100 border-none font-medium text-zinc-900 shadow-inner"
+                  />
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+
+        {/* Right Column: Webhook Instructions */}
+        <div className="lg:col-span-2 space-y-6">
+          <Card className="border-none shadow-sm bg-white h-full">
+            <CardHeader>
+              <CardTitle className="text-lg font-bold flex items-center gap-2">
+                <Globe className="w-5 h-5 text-indigo-500" />
+                Webhook সেটআপ
+              </CardTitle>
+              <CardDescription>বট চালু করতে নিচের ইউআরএলটি ফেসবুক ওয়েবহুকে ব্যবহার করুন।</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-6">
+              <div className="p-5 bg-zinc-50 rounded-[1.5rem] border border-zinc-100 space-y-3 relative overflow-hidden group">
+                <div className="absolute top-0 right-0 w-24 h-24 bg-indigo-500/5 rounded-full -translate-y-12 translate-x-12" />
+                <Label className="text-[10px] uppercase font-bold tracking-widest text-zinc-400 flex items-center gap-2">
+                  Callback URL <div className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse" />
+                </Label>
+                <div className="flex items-center gap-2">
+                  <code className="flex-1 text-xs font-mono text-indigo-600 truncate bg-white p-3 rounded-lg border border-indigo-50 shadow-sm">
+                    {window.location.origin}/api/webhook
+                  </code>
+                  <Button 
+                    variant="outline" 
+                    size="icon" 
+                    onClick={copyUrl}
+                    className="shrink-0 bg-white hover:bg-zinc-50 border shadow-sm rounded-lg"
+                  >
+                    <Copy className="w-4 h-4 text-zinc-600" />
+                  </Button>
+                </div>
+              </div>
+
+              <div className="space-y-4">
+                <h4 className="text-sm font-bold flex items-center gap-2">
+                  <Info className="w-4 h-4 text-indigo-500" />
+                  মাথায় রাখবেন:
+                </h4>
+                <div className="space-y-3">
+                  {[
+                    "Webhook সাবস্ক্রিপশনে messages এবং messaging_postbacks অন রাখুন।",
+                    "আপনার অ্যাপটি Live মোডে থাকলে পারমিশনগুলো অ্যাপ রিভিউ করাতে হবে।",
+                    "আপনার ডোমেইনটি Facebook Apps সেটিংসে হোয়াইটলিস্ট করে নিন।"
+                  ].map((text, i) => (
+                    <div key={i} className="flex gap-3 items-start">
+                      <div className="w-5 h-5 rounded-full bg-indigo-50 text-indigo-600 flex items-center justify-center shrink-0 text-[10px] font-bold">
+                        {i + 1}
+                      </div>
+                      <p className="text-xs text-zinc-500 leading-relaxed font-medium">{text}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function FeatureManager({ business }: { business: BusinessConfig }) {
   const [features, setFeatures] = useState<BusinessFeatures>(business.features || {
     aiEnabled: true,
@@ -2298,56 +2351,31 @@ function FeatureManager({ business }: { business: BusinessConfig }) {
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <FeatureItem 
-          id="aiEnabled" 
-          enabled={features.aiEnabled} 
-          icon={Bot} 
-          title="AI চ্যাটবট (AI Chatbot)" 
-          description="আপনার কাস্টমারদের সাথে কথা বলার জন্য AI সক্রিয় রাখুন।" 
-        />
-        <FeatureItem 
-          id="orderTrackingEnabled" 
-          enabled={features.orderTrackingEnabled} 
-          icon={Truck} 
-          title="অর্ডার ট্র্যাকিং (Order Tracking)" 
-          description="AI কাস্টমারকে তাদের অর্ডারের খবর বা ট্র্যাকিং আপডেট জানাতে পারবে।" 
-        />
-        <FeatureItem 
-          id="proactiveNotificationsEnabled" 
-          enabled={features.proactiveNotificationsEnabled} 
-          icon={Megaphone} 
-          title="অটোমেটিক নোটিফিকেশন (Proactive Follow-up)" 
-          description="ডেলিভারিতে সমস্যা হলে (যেমন: ফোন বন্ধ) AI নিজে থেকে কাস্টমারকে নক দিবে।" 
-        />
-        <FeatureItem 
-          id="chatSummaryEnabled" 
-          enabled={features.chatSummaryEnabled} 
-          icon={History} 
-          title="চ্যাট সামারি (Chat Summary)" 
-          description="বিগত কথোপকথন মনে রেখে আরও নিখুঁত উত্তর দিবে।" 
-        />
-        <FeatureItem 
-          id="negotiationEnabled" 
-          enabled={features.negotiationEnabled} 
-          icon={CreditCard} 
-          title="দামাদামি সুবিধা (Price Negotiation)" 
-          description="কাস্টমার দামাদামি করলে নির্দিষ্ট সীমা পর্যন্ত AI ছাড় দিতে পারবে।" 
-        />
-        <FeatureItem 
-          id="imageDisplayEnabled" 
-          enabled={features.imageDisplayEnabled} 
-          icon={Globe} 
-          title="প্রোডাক্ট ছবি প্রদর্শন (Product Images)" 
-          description="কথার ফাঁকে ফাঁকে প্রাসঙ্গিক প্রোডাক্টের ছবি স্বয়ংক্রিয়ভাবে দেখাবে।" 
-        />
+        {[
+          { id: 'aiEnabled', icon: Bot, title: 'AI চ্যাটবট (AI Chatbot)', description: 'আপনার কাস্টমারদের সাথে কথা বলার জন্য AI সক্রিয় রাখুন।' },
+          { id: 'orderTrackingEnabled', icon: Truck, title: 'অর্ডার ট্র্যাকিং (Order Tracking)', description: 'AI কাস্টমারকে তাদের অর্ডারের খবর বা ট্র্যাকিং আপডেট জানাতে পারবে।' },
+          { id: 'proactiveNotificationsEnabled', icon: Megaphone, title: 'অটোমেটিক নোটিফিকেশন (Follow-up)', description: 'ডেলিভারিতে সমস্যা হলে AI নিজে থেকে কাস্টমারকে নক দিবে।' },
+          { id: 'chatSummaryEnabled', icon: History, title: 'চ্যাট সামারি (Chat Summary)', description: 'বিগত কথোপকথন মনে রেখে আরও নিখুঁত উত্তর দিবে।' },
+          { id: 'negotiationEnabled', icon: CreditCard, title: 'দামাদামি সুবিধা (Price Negotiation)', description: 'কাস্টমার দামাদামি করলে নির্দিষ্ট সীমা পর্যন্ত AI ছাড় দিতে পারবে।' },
+          { id: 'imageDisplayEnabled', icon: Globe, title: 'প্রোডাক্ট ছবি প্রদর্শন (Product Images)', description: 'কথার ফাঁকে ফাঁকে প্রাসঙ্গিক প্রোডাক্টের ছবি স্বয়ংক্রিয়ভাবে দেখাবে।' }
+        ].map(item => (
+          <FeatureItem 
+            key={item.id}
+            id={item.id} 
+            enabled={(features as any)[item.id]} 
+            icon={item.icon} 
+            title={item.title} 
+            description={item.description} 
+          />
+        ))}
       </div>
       
-      <Card className="border-indigo-100 bg-indigo-50/20">
+      <Card className="border-indigo-100 bg-indigo-50/20 rounded-3xl">
         <CardContent className="py-4 flex flex-col md:flex-row items-center justify-between gap-4">
           <div className="text-sm text-indigo-900 font-medium">
             পরিবর্তনগুলো কার্যকর করতে অবশ্যই নিচে বাটনে ক্লিক করুন।
           </div>
-          <Button onClick={save} disabled={loading} className="bg-indigo-600 hover:bg-indigo-700 px-8">
+          <Button onClick={save} disabled={loading} className="bg-indigo-600 hover:bg-indigo-700 px-8 rounded-xl h-12">
             {loading ? 'সেভ হচ্ছে...' : 'সেটিংস সেভ করুন'}
           </Button>
         </CardContent>
@@ -2369,7 +2397,7 @@ function CourierConfig({ business }: { business: BusinessConfig }) {
   };
 
   return (
-    <Card>
+    <Card className="border-none shadow-sm rounded-3xl bg-white">
       <CardHeader>
         <CardTitle className="flex items-center gap-2">
           <Truck className="w-5 h-5 text-indigo-600" /> SteadFast Courier
@@ -2379,222 +2407,77 @@ function CourierConfig({ business }: { business: BusinessConfig }) {
       <CardContent className="space-y-4">
         <div className="space-y-2">
           <Label>API Key</Label>
-          <Input value={apiKey} onChange={e => setApiKey(e.target.value)} placeholder="Enter SteadFast API Key" />
+          <Input value={apiKey} onChange={e => setApiKey(e.target.value)} placeholder="Enter SteadFast API Key" className="rounded-xl" />
         </div>
         <div className="space-y-2">
           <Label>Secret Key</Label>
-          <Input value={secretKey} onChange={e => setSecretKey(e.target.value)} placeholder="Enter SteadFast Secret Key" />
+          <Input value={secretKey} onChange={e => setSecretKey(e.target.value)} placeholder="Enter SteadFast Secret Key" className="rounded-xl" />
         </div>
-        <Button onClick={save} className="w-full bg-indigo-600">Save Credentials</Button>
+        <Button onClick={save} className="w-full bg-indigo-600 rounded-xl py-6">Save Credentials</Button>
       </CardContent>
     </Card>
   );
 }
 
-function AnalyticsDashboard({ business }: { business: BusinessConfig }) {
-  const [events, setEvents] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
+function FAQManager({ business }: { business: BusinessConfig }) {
+  const [faqs, setFaqs] = useState<FAQ[]>(business.faqs || []);
+  const [newQuestion, setNewQuestion] = useState('');
+  const [newAnswer, setNewAnswer] = useState('');
 
-  useEffect(() => {
-    const q = query(
-      collection(db, 'analytics'),
-      where('businessId', '==', business.id),
-      where('businessOwnerId', '==', business.ownerId)
-    );
-    return onSnapshot(q, (snapshot) => {
-      const data = snapshot.docs.map(d => ({
-        ...d.data(),
-        timestamp: d.data().timestamp?.toDate() || new Error('No date')
-      })).filter(d => !(d.timestamp instanceof Error));
-      setEvents(data);
-      setLoading(false);
-    });
-  }, [business.id]);
-
-  if (loading) return <div>Loading Analytics...</div>;
-
-  // Process data for charts
-  const messageData = events
-    .filter(e => e.eventName === 'chat_message_sent')
-    .reduce((acc: any[], curr) => {
-      const date = curr.timestamp.toLocaleDateString();
-      const existing = acc.find(a => a.date === date);
-      if (existing) existing.count++;
-      else acc.push({ date, count: 1 });
-      return acc;
-    }, [])
-    .slice(-7);
-
-  const intentData = events
-    .filter(e => e.eventName === 'chat_message_received')
-    .reduce((acc: any[], curr) => {
-      const intent = curr.properties.intent || 'unknown';
-      const existing = acc.find(a => a.name === intent);
-      if (existing) existing.value++;
-      else acc.push({ name: intent, value: 1 });
-      return acc;
-    }, []);
-
-  const stats = {
-    totalMessages: events.filter(e => e.eventName === 'chat_message_sent').length,
-    totalOrders: events.filter(e => e.eventName === 'order_completed').length,
-    activeSessions: new Set(events.map(e => e.sessionId)).size,
-    conversionRate: events.filter(e => e.eventName === 'chat_message_sent').length > 0 
-      ? ((events.filter(e => e.eventName === 'order_completed').length / new Set(events.map(e => e.sessionId)).size) * 100).toFixed(1)
-      : 0
+  const addFAQ = async () => {
+    if (!newQuestion || !newAnswer) return;
+    const updated = [...faqs, { id: Date.now().toString(), question: newQuestion, answer: newAnswer }];
+    await updateDoc(doc(db, 'businesses', business.id), { faqs: updated });
+    setFaqs(updated);
+    setNewQuestion('');
+    setNewAnswer('');
+    toast.success('FAQ যোগ করা হয়েছে');
   };
 
-  const COLORS = ['#6366f1', '#8b5cf6', '#ec4899', '#f43f5e', '#f59e0b'];
+  const removeFAQ = async (id: string) => {
+    const updated = faqs.filter(f => f.id !== id);
+    await updateDoc(doc(db, 'businesses', business.id), { faqs: updated });
+    setFaqs(updated);
+    toast.success('FAQ মুছে ফেলা হয়েছে');
+  };
 
   return (
     <div className="space-y-6">
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <Card className="bg-white border-none shadow-sm">
-          <CardContent className="pt-6">
-            <div className="text-sm text-zinc-500">Total Messages</div>
-            <div className="text-2xl font-bold">{stats.totalMessages}</div>
-          </CardContent>
-        </Card>
-        <Card className="bg-white border-none shadow-sm">
-          <CardContent className="pt-6">
-            <div className="text-sm text-zinc-500">Total Orders</div>
-            <div className="text-2xl font-bold">{stats.totalOrders}</div>
-          </CardContent>
-        </Card>
-        <Card className="bg-white border-none shadow-sm">
-          <CardContent className="pt-6">
-            <div className="text-sm text-zinc-500">Active Sessions</div>
-            <div className="text-2xl font-bold">{stats.activeSessions}</div>
-          </CardContent>
-        </Card>
-        <Card className="bg-white border-none shadow-sm">
-          <CardContent className="pt-6">
-            <div className="text-sm text-zinc-500">Conversion Rate</div>
-            <div className="text-2xl font-bold">{stats.conversionRate}%</div>
-          </CardContent>
-        </Card>
-      </div>
-
-      <div className="grid md:grid-cols-2 gap-6">
-        <Card className="bg-white border-none shadow-sm">
-          <CardHeader><CardTitle className="text-lg">Messages (Last 7 Days)</CardTitle></CardHeader>
-          <CardContent className="h-[300px]">
-            <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={messageData}>
-                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f0f0f0" />
-                <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{fontSize: 12, fill: '#888'}} />
-                <YAxis axisLine={false} tickLine={false} tick={{fontSize: 12, fill: '#888'}} />
-                <Tooltip 
-                  contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
-                />
-                <Line type="monotone" dataKey="count" stroke="#6366f1" strokeWidth={3} dot={{ r: 4, fill: '#6366f1' }} activeDot={{ r: 6 }} />
-              </LineChart>
-            </ResponsiveContainer>
-          </CardContent>
-        </Card>
-
-        <Card className="bg-white border-none shadow-sm">
-          <CardHeader><CardTitle className="text-lg">Customer Intent Distribution</CardTitle></CardHeader>
-          <CardContent className="h-[300px]">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={intentData} layout="vertical">
-                <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#f0f0f0" />
-                <XAxis type="number" hide />
-                <YAxis dataKey="name" type="category" axisLine={false} tickLine={false} tick={{fontSize: 12, fill: '#888'}} width={100} />
-                <Tooltip 
-                  cursor={{fill: 'transparent'}}
-                  contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
-                />
-                <Bar dataKey="value" radius={[0, 4, 4, 0]}>
-                  {intentData.map((entry, index) => (
-                    <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                  ))}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
-          </CardContent>
-        </Card>
-      </div>
-    </div>
-  );
-}
-function FAQManager({ business }: { business: BusinessConfig }) {
-  const [newFAQ, setNewFAQ] = useState<Partial<FAQ>>({});
-  const save = async (faqs: FAQ[]) => {
-    await setDoc(doc(db, 'businesses', business.id), { ...business, faqs });
-  };
-
-  const add = () => {
-    if (!newFAQ.question || !newFAQ.answer) return;
-    const f: FAQ = { 
-      id: Date.now().toString(), 
-      question: newFAQ.question, 
-      answer: newFAQ.answer,
-      productId: newFAQ.productId 
-    };
-    save([...business.faqs, f]);
-    setNewFAQ({});
-    toast.success('FAQ added');
-  };
-
-  return (
-    <div className="grid md:grid-cols-3 gap-8">
-      <Card className="md:col-span-1 border-none shadow-sm bg-white">
-        <CardHeader><CardTitle>Add FAQ</CardTitle></CardHeader>
+      <Card className="border-none shadow-sm rounded-3xl bg-white">
+        <CardHeader>
+          <CardTitle className="text-lg font-bold">নতুন FAQ যোগ করুন</CardTitle>
+          <CardDescription>বট এই প্রশ্নগুলোর উত্তর দিতে পারবে।</CardDescription>
+        </CardHeader>
         <CardContent className="space-y-4">
-          <div className="space-y-2">
-            <Label>Related Product (Optional)</Label>
-            <select 
-              className="w-full h-10 px-3 rounded-xl border bg-white text-sm outline-none focus:ring-2 focus:ring-indigo-500 transition-all"
-              value={newFAQ.productId || ''} 
-              onChange={e => setNewFAQ({...newFAQ, productId: e.target.value})}
-            >
-              <option value="">General (No Product)</option>
-              {business.products.map(p => (
-                <option key={p.id} value={p.id}>{p.name}</option>
-              ))}
-            </select>
+          <div className="grid gap-4">
+            <div className="space-y-2">
+              <Label>সাধারণ প্রশ্ন (Question)</Label>
+              <Input value={newQuestion} onChange={e => setNewQuestion(e.target.value)} placeholder="উদা: আপনার অফিস কোথায়?" className="rounded-xl" />
+            </div>
+            <div className="space-y-2">
+              <Label>উত্তর (Answer)</Label>
+              <Textarea value={newAnswer} onChange={e => setNewAnswer(e.target.value)} placeholder="উদা: আমাদের অফিস ঢাকা মিরপুর ১০..." className="rounded-xl" />
+            </div>
           </div>
-          <div className="space-y-2">
-            <Label>Question</Label>
-            <Input placeholder="e.g. Is this product in stock?" value={newFAQ.question || ''} onChange={e => setNewFAQ({...newFAQ, question: e.target.value})} />
-          </div>
-          <div className="space-y-2">
-            <Label>Answer</Label>
-            <Textarea placeholder="Describe the answer..." value={newFAQ.answer || ''} onChange={e => setNewFAQ({...newFAQ, answer: e.target.value})} />
-          </div>
-          <Button onClick={add} className="w-full bg-indigo-600 hover:bg-indigo-700 h-10">Add FAQ</Button>
+          <Button onClick={addFAQ} className="w-full bg-indigo-600 rounded-xl py-6">FAQ সেভ করুন</Button>
         </CardContent>
       </Card>
-      <Card className="md:col-span-2 border-none shadow-sm bg-white">
-        <CardContent className="pt-6 space-y-4">
-          {business.faqs.length === 0 ? (
-            <div className="text-center py-10 text-zinc-400 italic">No FAQs added yet.</div>
-          ) : (
-            business.faqs.map(f => {
-              const relatedProduct = business.products.find(p => p.id === f.productId);
-              return (
-                <div key={f.id} className="p-4 border border-zinc-100 rounded-2xl flex justify-between items-start hover:bg-zinc-50 transition-colors">
-                  <div className="space-y-1">
-                    <div className="flex items-center gap-2">
-                      <h4 className="font-bold text-zinc-900">{f.question}</h4>
-                      {relatedProduct && (
-                        <Badge variant="outline" className="text-[10px] py-0 h-4 border-indigo-200 text-indigo-600 bg-indigo-50">
-                          {relatedProduct.name}
-                        </Badge>
-                      )}
-                    </div>
-                    <p className="text-sm text-zinc-500 leading-relaxed">{f.answer}</p>
-                  </div>
-                  <Button variant="ghost" size="icon" onClick={() => save(business.faqs.filter(x => x.id !== f.id))} className="text-zinc-400 hover:text-red-500 transition-colors">
-                    <Trash2 className="w-4 h-4" />
-                  </Button>
-                </div>
-              );
-            })
-          )}
-        </CardContent>
-      </Card>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        {faqs.map((faq) => (
+          <Card key={faq.id} className="border-none shadow-sm rounded-2xl bg-white overflow-hidden group">
+            <CardContent className="p-5 flex justify-between items-start gap-3">
+              <div className="space-y-2">
+                <div className="font-bold text-sm text-indigo-600">Q: {faq.question}</div>
+                <div className="text-xs text-zinc-500 line-clamp-3">A: {faq.answer}</div>
+              </div>
+              <Button variant="ghost" size="icon" onClick={() => removeFAQ(faq.id)} className="shrink-0 text-zinc-300 hover:text-red-500 hover:bg-red-50">
+                <Trash2 className="w-4 h-4" />
+              </Button>
+            </CardContent>
+          </Card>
+        ))}
+      </div>
     </div>
   );
 }

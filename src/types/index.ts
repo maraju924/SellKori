@@ -46,6 +46,9 @@ export interface BusinessConfig {
   customSystemPrompt: string;
   messengerWebhookUrl?: string;
   messengerVerifyToken?: string;
+  pageAccessToken?: string;
+  verifyToken?: string;
+  pageName?: string;
   steadfastApiKey?: string;
   steadfastSecretKey?: string;
   zinipayApiKey?: string;
