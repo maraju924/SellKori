@@ -2131,12 +2131,19 @@ function MessengerConnect({ business }: { business: BusinessConfig }) {
   };
 
   const updateField = async (field: string, val: string) => {
-    await updateDoc(doc(db, 'businesses', business.id), { [field]: val });
+    // If we're updating verifyToken, also update messengerVerifyToken for compatibility
+    const updateData: any = { [field]: val };
+    if (field === 'messengerVerifyToken' || field === 'verifyToken') {
+      updateData.messengerVerifyToken = val;
+      updateData.verifyToken = val;
+    }
+    
+    await updateDoc(doc(db, 'businesses', business.id), updateData);
     toast.success('মেসেঞ্জার সেটিংস সফলভাবে সেভ হয়েছে');
   };
 
   const copyUrl = () => {
-    const url = `${window.location.origin}/api/webhook`;
+    const url = `${window.location.origin}/api/webhook/${business.id}`;
     navigator.clipboard.writeText(url);
     toast.success('Webhook URL কপি করা হয়েছে!', { description: url });
   };
@@ -2215,8 +2222,8 @@ function MessengerConnect({ business }: { business: BusinessConfig }) {
                 <div className="space-y-3">
                   <Label className="text-sm font-bold text-zinc-700">Verify Token</Label>
                   <Input 
-                    value={business.verifyToken || ''} 
-                    onChange={e => updateField('verifyToken', e.target.value)}
+                    value={business.messengerVerifyToken || business.verifyToken || ''} 
+                    onChange={e => updateField('messengerVerifyToken', e.target.value)}
                     placeholder="my_secret_key_123" 
                     className="h-12 rounded-xl bg-zinc-50 border-zinc-200 focus:bg-white shadow-inner"
                   />
@@ -2253,7 +2260,7 @@ function MessengerConnect({ business }: { business: BusinessConfig }) {
                 </Label>
                 <div className="flex items-center gap-2">
                   <code className="flex-1 text-xs font-mono text-indigo-600 truncate bg-white p-3 rounded-lg border border-indigo-50 shadow-sm">
-                    {window.location.origin}/api/webhook
+                    {window.location.origin}/api/webhook/{business.id}
                   </code>
                   <Button 
                     variant="outline" 

@@ -41,12 +41,12 @@ app.use(cors());
 app.use(express.json());
 
 // Universal Webhook - Handles BOTH /webhook and /api/webhook
-app.get(['/webhook', '/api/webhook', '/api/webhook/debug'], (req, res) => {
+app.get(['/webhook', '/api/webhook'], (req, res) => {
   const mode = req.query['hub.mode'];
   const token = req.query['hub.verify_token'];
   const challenge = req.query['hub.challenge'];
   
-  console.log(`Webhook HIT: path=${req.path}, token=${token}, mode=${mode}`);
+  console.log(`[Universal Webhook] GET path=${req.path}, token=${token}, mode=${mode}`);
 
   addDoc(collection(db, 'webhook_logs'), {
     timestamp: serverTimestamp(),
@@ -54,13 +54,16 @@ app.get(['/webhook', '/api/webhook', '/api/webhook/debug'], (req, res) => {
     mode: mode || 'none',
     success: token === 'chatbyraju',
     source: `GET_${req.path}`,
-    userAgent: req.headers['user-agent'] || 'unknown'
+    userAgent: req.headers['user-agent'] || 'unknown',
+    info: 'Universal endpoint used. If you want custom token, use /api/webhook/:businessId'
   }).catch(() => {});
   
   if (mode === 'subscribe' && token === 'chatbyraju') {
     res.setHeader('Content-Type', 'text/plain');
     return res.status(200).send(challenge);
   }
+  
+  console.error(`[Universal Webhook] Validation Failed. Expected chatbyraju, got ${token}`);
   res.sendStatus(403);
 });
 
@@ -100,19 +103,73 @@ app.post('/api/fb-event', async (req, res) => {
   }
 });
 
-// Messenger Webhook
+// Messenger Webhook Validation
 app.get('/api/webhook/:businessId', async (req, res) => {
   const { businessId } = req.params;
   const mode = req.query['hub.mode'];
   const token = req.query['hub.verify_token'];
   const challenge = req.query['hub.challenge'];
+
+  console.log(`[Business Webhook] Validation attempt for businessId=${businessId}, token=${token}`);
+
   if (mode === 'subscribe') {
-    const bizDoc = await getDoc(doc(db, 'businesses', businessId));
-    if (bizDoc.exists() && token === bizDoc.data().messengerVerifyToken) {
-      return res.status(200).send(challenge);
+    try {
+      const bizDoc = await getDoc(doc(db, 'businesses', businessId));
+      if (!bizDoc.exists()) {
+        console.error(`[Business Webhook] Business not found: ${businessId}`);
+        return res.sendStatus(404);
+      }
+
+      const config = bizDoc.data();
+      const expectedToken = config.messengerVerifyToken || config.verifyToken;
+
+      addDoc(collection(db, 'webhook_logs'), {
+        timestamp: serverTimestamp(),
+        businessId,
+        token: token || 'none',
+        expected: expectedToken || 'none',
+        success: token === expectedToken,
+        mode: 'subscribe',
+        source: 'GET_BUSINESS_WEBHOOK'
+      }).catch(() => {});
+
+      if (token && token === expectedToken) {
+        console.log(`[Business Webhook] Validation Success for ${businessId}`);
+        res.setHeader('Content-Type', 'text/plain');
+        return res.status(200).send(challenge);
+      } else {
+        console.error(`[Business Webhook] Token mismatch. Expected: ${expectedToken}, Got: ${token}`);
+      }
+    } catch (err) {
+      console.error('[Business Webhook] Firestore Error:', err);
     }
   }
   res.sendStatus(403);
+});
+
+// Messenger Message Handler
+app.post(['/api/webhook', '/api/webhook/:businessId'], async (req, res) => {
+  const { businessId } = req.params;
+  const body = req.body;
+
+  if (body.object === 'page') {
+    body.entry.forEach(async (entry: any) => {
+      const webhookEvent = entry.messaging[0];
+      const senderId = webhookEvent.sender.id;
+      
+      if (webhookEvent.message && webhookEvent.message.text) {
+        const messageText = webhookEvent.message.text;
+        console.log(`[Messenger] New message from ${senderId}: ${messageText}`);
+        
+        // Find business by ID or Page ID
+        // Note: businessId might be empty if hitting /api/webhook directly
+        // In that case we'd need to lookup by entry.id (Page ID)
+      }
+    });
+
+    return res.status(200).send('EVENT_RECEIVED');
+  }
+  res.sendStatus(404);
 });
 
 // Vite middleware for development

@@ -4,6 +4,17 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>My Google AI Studio App</title>
+    <script async defer crossorigin="anonymous" src="https://connect.facebook.net/en_US/sdk.js"></script>
+    <script>
+      window.fbAsyncInit = function() {
+        FB.init({
+          appId      : '1058370033', // Placeholder, user will provide their own if needed or use universal
+          cookie     : true,
+          xfbml      : true,
+          version    : 'v18.0'
+        });
+      };
+    </script>
   </head>
   <body>
     <div id="root"></div>
