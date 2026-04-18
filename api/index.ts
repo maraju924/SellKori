@@ -121,7 +121,7 @@ app.get('/api/webhook/:businessId', async (req, res) => {
       }
 
       const config = bizDoc.data();
-      const expectedToken = config.messengerVerifyToken || config.verifyToken;
+      const expectedToken = config.messengerVerifyToken || config.verifyToken || 'chatbyraju'; // Fallback to universal token
 
       addDoc(collection(db, 'webhook_logs'), {
         timestamp: serverTimestamp(),
@@ -138,7 +138,7 @@ app.get('/api/webhook/:businessId', async (req, res) => {
         res.setHeader('Content-Type', 'text/plain');
         return res.status(200).send(challenge);
       } else {
-        console.error(`[Business Webhook] Token mismatch. Expected: ${expectedToken}, Got: ${token}`);
+        console.error(`[Business Webhook] Token mismatch for ${businessId}. Expected: ${expectedToken}, Got: ${token}`);
       }
     } catch (err) {
       console.error('[Business Webhook] Firestore Error:', err);

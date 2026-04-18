@@ -2253,9 +2253,12 @@ function MessengerConnect({ business }: { business: BusinessConfig }) {
                   </div>
                   <div className="flex justify-between items-center text-xs">
                     <span className="font-bold text-zinc-500 uppercase">Verify Token</span>
-                    <code className="bg-white px-2 py-1 rounded border shadow-sm text-indigo-600">{business.messengerVerifyToken || 'আপনার সেট করা টোকেন'}</code>
+                    <code className="bg-white px-2 py-1 rounded border shadow-sm text-indigo-600 font-bold">{business.messengerVerifyToken || business.verifyToken || 'chatbyraju'}</code>
                   </div>
                 </div>
+                <p className="text-[11px] text-zinc-500 italic bg-white/50 p-2 rounded border border-dashed border-zinc-200">
+                  * আপনি নিজের টোকেন না দিলে ডিফল্ট হিসেবে <strong>chatbyraju</strong> ব্যবহার করুন।
+                </p>
                 <p className="text-xs text-amber-600 bg-amber-50 p-2 rounded border border-amber-100">
                   * Webhook Subscription এর সময় অবশ্যই <strong>messages</strong> এবং <strong>messaging_postbacks</strong> চেক করুন।
                 </p>
@@ -2330,10 +2333,10 @@ function MessengerConnect({ business }: { business: BusinessConfig }) {
                   <Input 
                     value={business.messengerVerifyToken || business.verifyToken || ''} 
                     onChange={e => updateField('messengerVerifyToken', e.target.value)}
-                    placeholder="my_secret_key_123" 
-                    className="h-12 rounded-xl bg-zinc-50 border-zinc-200 focus:bg-white shadow-inner"
+                    placeholder="chatbyraju" 
+                    className="h-12 rounded-xl bg-zinc-50 border-zinc-200 focus:bg-white shadow-inner font-mono text-indigo-600"
                   />
-                  <p className="text-[10px] text-zinc-400">ওয়েবহুক ভেরিফাই করার জন্য এটি আপনার ইচ্ছামতো দিন।</p>
+                  <p className="text-[10px] text-zinc-400">ওয়েবহুক ভেরিফাই করার জন্য এটি আপনার ইচ্ছামতো দিন। (যেমন: <strong>chatbyraju</strong>)</p>
                 </div>
                 <div className="space-y-3">
                   <Label className="text-sm font-bold text-zinc-700">Connected Page Name</Label>
