@@ -2099,6 +2099,23 @@ function AnalyticsDashboard({ business }: { business: BusinessConfig }) {
 
 function MessengerConnect({ business }: { business: BusinessConfig }) {
   const [isConnecting, setIsConnecting] = useState(false);
+  const [showSetupGuide, setShowSetupGuide] = useState(false);
+
+  // Initialize FB SDK App ID
+  useEffect(() => {
+    if (business.facebookAppId) {
+      (window as any).FB_APP_ID = business.facebookAppId;
+      // Re-init if SDK already loaded
+      if (typeof (window as any).FB !== 'undefined') {
+        (window as any).FB.init({
+          appId      : business.facebookAppId,
+          cookie     : true,
+          xfbml      : true,
+          version    : 'v18.0'
+        });
+      }
+    }
+  }, [business.facebookAppId]);
 
   const connectFacebook = () => {
     setIsConnecting(true);
@@ -2177,11 +2194,89 @@ function MessengerConnect({ business }: { business: BusinessConfig }) {
                 </span>
               )}
             </Button>
-            <Button variant="outline" className="border-white/30 text-white hover:bg-white/10 h-14 px-8 rounded-2xl font-medium backdrop-blur-sm">
+            <Button 
+              onClick={() => setShowSetupGuide(true)}
+              variant="outline" 
+              className="border-white/30 text-white hover:bg-white/10 h-14 px-8 rounded-2xl font-medium backdrop-blur-sm"
+            >
               সেটআপ গাইড
             </Button>
           </div>
         </div>
+
+        {/* Setup Guide Dialog */}
+        <Dialog open={showSetupGuide} onOpenChange={setShowSetupGuide}>
+          <DialogContent className="max-w-2xl sm:max-w-3xl overflow-y-auto max-h-[90vh]">
+            <DialogHeader>
+              <DialogTitle className="text-2xl font-bold flex items-center gap-2">
+                <Info className="w-6 h-6 text-indigo-500" />
+                মেসেঞ্জার বট সেটআপ গাইড
+              </DialogTitle>
+              <DialogDescription>
+                আপনার ফেসবুক পেজে AI বট চালু করতে নিচের ধাপগুলো অনুসরণ করুন।
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-6 py-4">
+              <div className="space-y-4">
+                <h3 className="font-bold text-zinc-900 border-b pb-2 flex items-center gap-2">
+                  <span className="bg-indigo-600 text-white w-6 h-6 rounded-full flex items-center justify-center text-xs">১</span>
+                  ফেসবুক অ্যাপ ক্রিয়েট করুন
+                </h3>
+                <ul className="list-disc pl-5 space-y-1 text-sm text-zinc-600">
+                  <li><a href="https://developers.facebook.com/" target="_blank" className="text-indigo-600 underline">Facebook Developers</a> ড্যাশবোর্ডে গিয়ে একটি নতুন অ্যাপ ক্রিয়েট করুন।</li>
+                  <li>অ্যাপ টাইপ হিসেবে <strong>Business</strong> বা <strong>Consumer</strong> সিলেক্ট করুন।</li>
+                  <li>অ্যাপ ক্রিয়েট করার পর সেখান থেকে আপনার <strong>App ID</strong> টি কপি করে আমাদের ড্যাশবোর্ডে দিন।</li>
+                </ul>
+              </div>
+
+              <div className="space-y-4">
+                <h3 className="font-bold text-zinc-900 border-b pb-2 flex items-center gap-2">
+                  <span className="bg-indigo-600 text-white w-6 h-6 rounded-full flex items-center justify-center text-xs">২</span>
+                  মেসেঞ্জার প্রোডাক্ট এড করুন
+                </h3>
+                <ul className="list-disc pl-5 space-y-1 text-sm text-zinc-600">
+                  <li>আপনার ফেসবুক অ্যাপ ড্যাশবোর্ড থেকে <strong>Messenger</strong> প্রোডাক্টটি সেটাপ করুন।</li>
+                  <li><strong>App Settings → Basic</strong> থেকে আপনার ডোমেইনটি (এই সাইটের URL) হোয়াইটলিস্ট করুন।</li>
+                </ul>
+              </div>
+
+              <div className="space-y-4">
+                <h3 className="font-bold text-zinc-900 border-b pb-2 flex items-center gap-2">
+                  <span className="bg-indigo-600 text-white w-6 h-6 rounded-full flex items-center justify-center text-xs">৩</span>
+                  ওয়েবহুক (Webhook) কনফিগারেশন
+                </h3>
+                <p className="text-sm text-zinc-600">মেসেঞ্জার সেটিংসের Webhook সেকশনে গিয়ে নিচের তথ্যগুলো দিন:</p>
+                <div className="bg-zinc-50 p-4 rounded-xl space-y-3">
+                  <div className="flex justify-between items-center text-xs">
+                    <span className="font-bold text-zinc-500 uppercase">Callback URL</span>
+                    <code className="bg-white px-2 py-1 rounded border shadow-sm text-indigo-600">{window.location.origin}/api/webhook/{business.id}</code>
+                  </div>
+                  <div className="flex justify-between items-center text-xs">
+                    <span className="font-bold text-zinc-500 uppercase">Verify Token</span>
+                    <code className="bg-white px-2 py-1 rounded border shadow-sm text-indigo-600">{business.messengerVerifyToken || 'আপনার সেট করা টোকেন'}</code>
+                  </div>
+                </div>
+                <p className="text-xs text-amber-600 bg-amber-50 p-2 rounded border border-amber-100">
+                  * Webhook Subscription এর সময় অবশ্যই <strong>messages</strong> এবং <strong>messaging_postbacks</strong> চেক করুন।
+                </p>
+              </div>
+
+              <div className="space-y-4">
+                <h3 className="font-bold text-zinc-900 border-b pb-2 flex items-center gap-2">
+                  <span className="bg-indigo-600 text-white w-6 h-6 rounded-full flex items-center justify-center text-xs">৪</span>
+                  পেজ এক্সেস টোকেন
+                </h3>
+                <ul className="list-disc pl-5 space-y-1 text-sm text-zinc-600">
+                  <li>আপনার ফেসবুক পেজটি কানেক্ট করে একটি <strong>Generate Token</strong> এ ক্লিক করে টোকেনটি কপি করুন।</li>
+                  <li>সেই টোকেনটি আমাদের ড্যাশবোর্ডের <strong>Page Access Token</strong> ঘরে বসিয়ে সেভ করুন।</li>
+                </ul>
+              </div>
+            </div>
+            <DialogFooter>
+              <Button onClick={() => setShowSetupGuide(false)} className="w-full sm:w-auto">বন্ধ করুন</Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
         
         {/* Abstract Background Elements */}
         <div className="absolute top-0 right-0 -translate-y-1/2 translate-x-1/4 w-[500px] h-[500px] bg-white opacity-5 rounded-full blur-3xl pointer-events-none" />
@@ -2219,6 +2314,17 @@ function MessengerConnect({ business }: { business: BusinessConfig }) {
               </div>
 
               <div className="grid md:grid-cols-2 gap-6">
+                <div className="space-y-3">
+                  <Label className="text-sm font-bold text-zinc-700">Facebook App ID</Label>
+                  <Input 
+                    value={business.facebookAppId || ''} 
+                    onChange={e => updateField('facebookAppId', e.target.value)}
+                    placeholder="1234567890..." 
+                    className="h-12 rounded-xl bg-zinc-50 border-zinc-200 focus:bg-white shadow-inner"
+                  />
+                  <p className="text-[10px] text-zinc-400">ফেসবুক ডেভেলপার ড্যাশবোর্ড থেকে আপনার অ্যাপ আইডি দিন।</p>
+                </div>
+
                 <div className="space-y-3">
                   <Label className="text-sm font-bold text-zinc-700">Verify Token</Label>
                   <Input 

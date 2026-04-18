@@ -46,6 +46,7 @@ export interface BusinessConfig {
   customSystemPrompt: string;
   messengerWebhookUrl?: string;
   messengerVerifyToken?: string;
+  facebookAppId?: string;
   pageAccessToken?: string;
   verifyToken?: string;
   pageName?: string;
