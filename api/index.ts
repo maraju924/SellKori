@@ -4,7 +4,7 @@ import { fileURLToPath } from 'url';
 import axios from 'axios';
 import cors from 'cors';
 import { initializeApp } from 'firebase/app';
-import { getFirestore, doc, getDoc, collection, addDoc, serverTimestamp } from 'firebase/firestore';
+import { getFirestore, doc, getDoc, collection, addDoc, serverTimestamp, query, where, getDocs } from 'firebase/firestore';
 import fs from 'fs';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -105,10 +105,89 @@ app.get('/api/webhook/:businessId', async (req, res) => {
   res.status(403).send('Forbidden');
 });
 
+import { GoogleGenAI } from '@google/genai';
+
+// Initialize AI
+const ai = process.env.GEMINI_API_KEY ? new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY }) : null;
+
+// Helper to send Messenger message
+async function sendMessengerMessage(recipientId: string, text: string, pageAccessToken: string) {
+  try {
+    await axios.post(`https://graph.facebook.com/v18.0/me/messages?access_token=${pageAccessToken}`, {
+      recipient: { id: recipientId },
+      message: { text }
+    });
+  } catch (error: any) {
+    console.error('[Messenger] Send Error:', error.response?.data || error.message);
+  }
+}
+
 // Messenger Message Handler
 app.post(['/api/webhook', '/api/webhook/:businessId'], async (req, res) => {
+  const { businessId } = req.params;
   const body = req.body;
+
   if (body.object === 'page') {
+    for (const entry of body.entry) {
+      const webhookEvent = entry.messaging?.[0];
+      if (!webhookEvent) continue;
+
+      const senderId = webhookEvent.sender.id;
+      const pageId = entry.id;
+
+      if (webhookEvent.message && webhookEvent.message.text) {
+        const messageText = webhookEvent.message.text;
+        console.log(`[Messenger] New message from ${senderId} on page ${pageId}: ${messageText}`);
+
+        try {
+          // 1. Find the business
+          let businessData: any = null;
+          let bizId = businessId;
+
+          if (bizId && bizId.startsWith('biz-')) {
+            const bizDoc = await getDoc(doc(db, 'businesses', bizId));
+            if (bizDoc.exists()) businessData = bizDoc.data();
+          } else {
+            // Search by Facebook Page ID if businessId isn't provided or found
+            const bizQuery = query(collection(db, 'businesses'), where('facebookPageId', '==', pageId));
+            const bizSnap = await getDocs(bizQuery);
+            if (!bizSnap.empty) {
+              businessData = bizSnap.docs[0].data();
+              bizId = bizSnap.docs[0].id;
+            }
+          }
+
+          if (businessData && businessData.pageAccessToken && ai) {
+            // 2. Generate AI Reply
+            const prompt = `
+              Shop Name: ${businessData.name}
+              Description: ${businessData.description}
+              Products: ${JSON.stringify(businessData.products)}
+              FAQs: ${JSON.stringify(businessData.faqs)}
+              
+              System Template: ${businessData.customSystemPrompt}
+              
+              Customer Message: ${messageText}
+              
+              Reply as the store assistant. keep it concise and friendly.
+            `;
+
+            const aiResponse = await ai.models.generateContent({
+              model: 'gemini-3-flash-preview',
+              contents: prompt
+            });
+
+            const replyText = aiResponse.text || 'ধন্যবাদ আপনার বার্তার জন্য। আমাদের প্রতিনিধি শীঘ্রই যোগাযোগ করবেন।';
+
+            // 3. Send back to Messenger
+            await sendMessengerMessage(senderId, replyText, businessData.pageAccessToken);
+          }
+        } catch (err) {
+          console.error('[Messenger Bot Error]', err);
+        }
+      }
+    }
+
     return res.status(200).send('EVENT_RECEIVED');
   }
   res.sendStatus(404);

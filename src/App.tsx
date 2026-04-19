@@ -42,6 +42,8 @@ import {
   CreditCard,
   Truck,
   Copy,
+  CheckCircle2,
+  AlertTriangle,
   Info,
   Mic,
   Megaphone,
@@ -2276,8 +2278,11 @@ function MessengerConnect({ business }: { business: BusinessConfig }) {
                 <p className="text-[11px] text-zinc-500 italic bg-white/50 p-2 rounded border border-dashed border-zinc-200">
                   * আপনি নিজের টোকেন না দিলে ডিফল্ট হিসেবে <strong>chatbyraju</strong> ব্যবহার করুন।
                 </p>
-                <p className="text-xs text-amber-600 bg-amber-50 p-2 rounded border border-amber-100">
-                  * Webhook Subscription এর সময় অবশ্যই <strong>messages</strong> এবং <strong>messaging_postbacks</strong> চেক করুন।
+                <p className="text-xs text-rose-600 bg-rose-50 p-4 rounded-xl border-2 border-rose-200 animate-pulse font-bold flex items-start gap-2 shadow-sm">
+                  <AlertTriangle className="w-5 h-5 shrink-0" />
+                  <span>
+                    গুরত্বপূর্ণ: শুধুমাত্র ভেরিফাই করলেই হবে না। ফেসবুক ড্যাশবোর্ডে "Webhook fields" টেবিল থেকে অবশ্যই "messages" এবং "messaging_postbacks" ফিল্ড দুটি "Subscribe" বাটনে ক্লিক করে অন করুন। (আপনার স্ক্রিনশটে এগুলো Unsubscribed দেখাচ্ছে)।
+                  </span>
                 </p>
               </div>
 
@@ -2317,7 +2322,33 @@ function MessengerConnect({ business }: { business: BusinessConfig }) {
             </CardHeader>
             <CardContent className="space-y-6 pt-2">
               <div className="space-y-3">
-                <Label className="text-sm font-bold text-zinc-700">Page Access Token</Label>
+                <div className="flex justify-between items-center">
+                  <Label className="text-sm font-bold text-zinc-700">Page Access Token</Label>
+                  {business.pageAccessToken && (
+                    <Button 
+                      variant="ghost" 
+                      size="sm" 
+                      className="text-[10px] h-6 px-2 text-indigo-600 hover:text-indigo-700 hover:bg-indigo-50"
+                      onClick={async () => {
+                        try {
+                          const res = await axios.get(`https://graph.facebook.com/v18.0/me?access_token=${business.pageAccessToken}`);
+                          if (res.data.name) {
+                            updateField('pageName', res.data.name);
+                            if (res.data.id) {
+                              updateField('facebookPageId', res.data.id);
+                            }
+                            toast.success(`Connected to ${res.data.name}`);
+                          }
+                        } catch (err) {
+                          toast.error("Invalid token or connection error");
+                        }
+                      }}
+                    >
+                      <Zap className="w-3 h-3 mr-1" />
+                      Verify & Fetch Name
+                    </Button>
+                  )}
+                </div>
                 <div className="relative group">
                   <Input 
                     type="password"
@@ -2357,11 +2388,18 @@ function MessengerConnect({ business }: { business: BusinessConfig }) {
                 </div>
                 <div className="space-y-3">
                   <Label className="text-sm font-bold text-zinc-700">Connected Page Name</Label>
-                  <Input 
-                    disabled
-                    value={business.pageName || 'Not Connected'} 
-                    className="h-12 rounded-xl bg-zinc-100 border-none font-medium text-zinc-900 shadow-inner"
-                  />
+                  <div className="relative">
+                    <Input 
+                      disabled
+                      value={business.pageName || 'Not Connected'} 
+                      className={`h-12 rounded-xl border-none font-medium shadow-inner pr-10 ${business.pageName ? 'bg-emerald-50 text-emerald-900' : 'bg-zinc-100 text-zinc-500'}`}
+                    />
+                    {business.pageName && (
+                      <div className="absolute right-3 top-3.5 text-emerald-600">
+                        <CheckCircle2 className="w-5 h-5" />
+                      </div>
+                    )}
+                  </div>
                 </div>
               </div>
             </CardContent>
