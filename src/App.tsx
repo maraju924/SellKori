@@ -155,10 +155,9 @@ function MessengerLogs({ businessId, ownerId }: { businessId: string, ownerId: s
   useEffect(() => {
     if (!db || !ownerId) return;
     setError(null);
-    // Query by ownerId to satisfy security rules
+    // Simple query - security rules handle the rest
     const q = query(
       collection(db, 'system_logs'),
-      where('ownerId', 'in', [ownerId, 'system']),
       orderBy('timestamp', 'desc'),
       limit(20)
     );

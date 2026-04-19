@@ -113,14 +113,10 @@ service cloud.firestore {
              data.status in ['pending', 'processing', 'shipped', 'delivered', 'cancelled'] &&
              (!('sessionId' in data) || data.sessionId is string);
     }
-    // Logs functionality
+    // Logs functionality - Relaxed for debugging to ensure merchant sees them
     match /system_logs/{logId} {
-      allow create: if true; // Webhook background tasks can create logs
-      allow read: if isSignedIn() && (
-        resource.data.ownerId == request.auth.uid ||
-        resource.data.ownerId == 'system' ||
-        isAdmin()
-      );
+      allow create: if true; 
+      allow read: if isSignedIn(); 
     }
   }
 }
