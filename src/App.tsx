@@ -152,15 +152,17 @@ function MessengerLogs({ businessId }: { businessId: string }) {
   const [logs, setLogs] = useState<any[]>([]);
 
   useEffect(() => {
-    if (!db || !businessId) return;
+    if (!db) return;
+    // Listen for logs belonging to this business OR unknown logs (to catch setup errors)
     const q = query(
       collection(db, 'system_logs'),
-      where('businessId', '==', businessId),
       orderBy('timestamp', 'desc'),
-      limit(5)
+      limit(20)
     );
     return onSnapshot(q, (snap) => {
-      setLogs(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+      const allLogs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      // Filter locally to ensure reactivity while still showing 'unknown' for debugging
+      setLogs(allLogs.filter((l: any) => l.businessId === businessId || l.businessId === 'unknown'));
     });
   }, [businessId]);
 
