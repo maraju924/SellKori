@@ -29,6 +29,7 @@ try {
     db = firebaseConfig.firestoreDatabaseId 
       ? getFirestore(firebaseApp, firebaseConfig.firestoreDatabaseId) 
       : getFirestore(firebaseApp);
+    console.log('[Firebase] Initialized successfully with config');
   } else {
     // Fallback search for config in current dir
     const altPath = path.join(__dirname, '..', 'firebase-applet-config.json');
@@ -121,6 +122,16 @@ async function sendMessengerMessage(recipientId: string, text: string, pageAcces
     console.error('[Messenger] Send Error:', error.response?.data || error.message);
   }
 }
+
+// Diagnostic route
+app.get('/api/health', (req, res) => {
+  res.json({
+    status: 'ok',
+    environment: process.env.NODE_ENV,
+    aiConfigured: !!ai,
+    timestamp: new Date().toISOString()
+  });
+});
 
 // Messenger Message Handler
 app.post(['/api/webhook', '/api/webhook/:businessId'], async (req, res) => {

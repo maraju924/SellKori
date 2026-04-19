@@ -2331,16 +2331,29 @@ function MessengerConnect({ business }: { business: BusinessConfig }) {
                       className="text-[10px] h-6 px-2 text-indigo-600 hover:text-indigo-700 hover:bg-indigo-50"
                       onClick={async () => {
                         try {
-                          const res = await axios.get(`https://graph.facebook.com/v18.0/me?access_token=${business.pageAccessToken}`);
-                          if (res.data.name) {
-                            updateField('pageName', res.data.name);
-                            if (res.data.id) {
-                              updateField('facebookPageId', res.data.id);
-                            }
-                            toast.success(`Connected to ${res.data.name}`);
+                          console.log('[Connection] Fetching page info...');
+                          const res = await axios.get(`https://graph.facebook.com/v18.0/me?fields=id,name&access_token=${business.pageAccessToken}`);
+                          if (res.data.name && res.data.id) {
+                            // Update multiple fields locally
+                            const updates = {
+                              pageName: res.data.name,
+                              facebookPageId: res.data.id
+                            };
+                            
+                            // Apply updates to the business object
+                            const updatedBusiness = { ...business, ...updates };
+                            setBusiness(updatedBusiness);
+                            
+                            // Persist to DB immediately
+                            await setDoc(doc(db, 'businesses', business.id), updatedBusiness, { merge: true });
+                            
+                            toast.success(`Connected to ${res.data.name} (ID: ${res.data.id})`);
+                          } else {
+                            toast.error("Could not fetch page details. Check token permissions.");
                           }
-                        } catch (err) {
-                          toast.error("Invalid token or connection error");
+                        } catch (err: any) {
+                          console.error('[Messenger Connection Error]', err.response?.data || err.message);
+                          toast.error(err.response?.data?.error?.message || "Invalid token or connection error");
                         }
                       }}
                     >
@@ -2386,19 +2399,32 @@ function MessengerConnect({ business }: { business: BusinessConfig }) {
                   />
                   <p className="text-[10px] text-zinc-400">ওয়েবহুক ভেরিফাই করার জন্য এটি আপনার ইচ্ছামতো দিন। (যেমন: <strong>chatbyraju</strong>)</p>
                 </div>
-                <div className="space-y-3">
-                  <Label className="text-sm font-bold text-zinc-700">Connected Page Name</Label>
-                  <div className="relative">
+                <div className="grid md:grid-cols-2 gap-6">
+                  <div className="space-y-3">
+                    <Label className="text-sm font-bold text-zinc-700">Connected Page Name</Label>
+                    <div className="relative">
+                      <Input 
+                        disabled
+                        value={business.pageName || 'Not Connected'} 
+                        className={`h-12 rounded-xl border-none font-medium shadow-inner pr-10 ${business.pageName ? 'bg-emerald-50 text-emerald-900' : 'bg-zinc-100 text-zinc-500'}`}
+                      />
+                      {business.pageName && (
+                        <div className="absolute right-3 top-3.5 text-emerald-600">
+                          <CheckCircle2 className="w-5 h-5" />
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="space-y-3">
+                    <Label className="text-sm font-bold text-zinc-700">Facebook Page ID</Label>
                     <Input 
-                      disabled
-                      value={business.pageName || 'Not Connected'} 
-                      className={`h-12 rounded-xl border-none font-medium shadow-inner pr-10 ${business.pageName ? 'bg-emerald-50 text-emerald-900' : 'bg-zinc-100 text-zinc-500'}`}
+                      value={business.facebookPageId || ''} 
+                      onChange={e => updateField('facebookPageId', e.target.value)}
+                      placeholder="পেজ আইডি (অটোমেটিক আসবে)" 
+                      className="h-12 rounded-xl bg-zinc-50 border-zinc-200 focus:bg-white shadow-inner font-mono text-xs"
                     />
-                    {business.pageName && (
-                      <div className="absolute right-3 top-3.5 text-emerald-600">
-                        <CheckCircle2 className="w-5 h-5" />
-                      </div>
-                    )}
+                    <p className="text-[10px] text-zinc-400">বট রিপ্লাই দেওয়ার জন্য এটি অত্যন্ত জরুরি।</p>
                   </div>
                 </div>
               </div>
