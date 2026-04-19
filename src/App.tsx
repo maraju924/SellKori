@@ -148,6 +148,56 @@ function GlobalBanner() {
   );
 }
 
+function MessengerLogs({ businessId }: { businessId: string }) {
+  const [logs, setLogs] = useState<any[]>([]);
+
+  useEffect(() => {
+    if (!db || !businessId) return;
+    const q = query(
+      collection(db, 'system_logs'),
+      where('businessId', '==', businessId),
+      orderBy('timestamp', 'desc'),
+      limit(5)
+    );
+    return onSnapshot(q, (snap) => {
+      setLogs(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+    });
+  }, [businessId]);
+
+  if (logs.length === 0) {
+    return (
+      <div className="p-8 text-center text-zinc-400 text-xs italic">
+        কোন অ্যাক্টিভিটি পাওয়া যায়নি। মেসেঞ্জারে একটি মেসেজ দিয়ে টেস্ট করুন।
+      </div>
+    );
+  }
+
+  return (
+    <>
+      {logs.map((log) => (
+        <div key={log.id} className="p-3 text-xs flex gap-3 items-start hover:bg-zinc-50 transition-colors">
+          <div className={`mt-1 w-2 h-2 rounded-full shrink-0 ${
+            log.status === 'success' ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]' : 
+            log.status === 'error' ? 'bg-rose-500 animate-pulse' : 'bg-indigo-500'
+          }`} />
+          <div className="space-y-1 flex-1">
+            <div className="flex justify-between items-center">
+              <span className={`font-bold uppercase text-[9px] ${
+                log.status === 'success' ? 'text-emerald-600' : 
+                log.status === 'error' ? 'text-rose-600' : 'text-indigo-600'
+              }`}>{log.type}</span>
+              <span className="text-zinc-400 text-[9px]">
+                {log.timestamp?.toDate ? log.timestamp.toDate().toLocaleTimeString() : 'Just now'}
+              </span>
+            </div>
+            <p className="text-zinc-700 leading-tight font-medium">{log.detail}</p>
+          </div>
+        </div>
+      ))}
+    </>
+  );
+}
+
 export default function App() {
   const [user, setUser] = useState<FirebaseUser | null>(null);
   const [profile, setProfile] = useState<UserProfile | null>(null);
@@ -667,7 +717,7 @@ function MerchantDashboard({ user, profile }: { user: FirebaseUser | null, profi
           </TabsContent>
 
           <TabsContent value="messenger" className="mt-0">
-            <MessengerConnect business={business} />
+            <MessengerConnect business={business} setBusiness={setBusiness} />
           </TabsContent>
         </Tabs>
       </div>
@@ -2099,7 +2149,7 @@ function AnalyticsDashboard({ business }: { business: BusinessConfig }) {
   );
 }
 
-function MessengerConnect({ business }: { business: BusinessConfig }) {
+function MessengerConnect({ business, setBusiness }: { business: BusinessConfig, setBusiness: (b: BusinessConfig) => void }) {
   const [isConnecting, setIsConnecting] = useState(false);
   const [showSetupGuide, setShowSetupGuide] = useState(false);
 
@@ -2427,6 +2477,23 @@ function MessengerConnect({ business }: { business: BusinessConfig }) {
                     <p className="text-[10px] text-zinc-400">বট রিপ্লাই দেওয়ার জন্য এটি অত্যন্ত জরুরি।</p>
                   </div>
                 </div>
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card className="border-none shadow-sm bg-white overflow-hidden mt-6">
+            <CardHeader className="bg-zinc-50/50 border-b border-zinc-100 py-3">
+              <CardTitle className="text-sm font-bold flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Terminal className="w-4 h-4 text-indigo-500" />
+                  Messenger Activity Log
+                </div>
+                <Badge variant="outline" className="text-[10px] bg-white">Real-time</Badge>
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="p-0">
+              <div className="divide-y divide-zinc-100 max-h-[300px] overflow-y-auto">
+                <MessengerLogs businessId={business.id} />
               </div>
             </CardContent>
           </Card>
