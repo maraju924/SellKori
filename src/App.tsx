@@ -2515,11 +2515,11 @@ function MessengerConnect({ business, setBusiness }: { business: BusinessConfig,
             <CardContent className="space-y-6">
               <div className="p-5 bg-zinc-50 rounded-[1.5rem] border border-zinc-100 space-y-3 relative overflow-hidden group">
                 <div className="absolute top-0 right-0 w-24 h-24 bg-indigo-500/5 rounded-full -translate-y-12 translate-x-12" />
-                <Label className="text-[10px] uppercase font-bold tracking-widest text-zinc-400 flex items-center gap-2">
-                  Callback URL <div className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse" />
+                <Label className="text-[10px] uppercase font-bold tracking-widest text-indigo-500 flex items-center gap-2">
+                  Facebook Callback URL (Copy this) <div className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse" />
                 </Label>
                 <div className="flex items-center gap-2">
-                  <code className="flex-1 text-xs font-mono text-indigo-600 truncate bg-white p-3 rounded-lg border border-indigo-50 shadow-sm">
+                  <code className="flex-1 text-[11px] font-mono text-indigo-700 break-all bg-white p-3 rounded-lg border border-indigo-100 shadow-inner">
                     {window.location.origin}/api/webhook/{business.id}
                   </code>
                   <Button 
