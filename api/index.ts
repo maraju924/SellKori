@@ -45,6 +45,29 @@ try {
   console.error('Failed to initialize Firebase:', error);
 }
 
+import { GoogleGenerativeAI } from '@google/generative-ai';
+
+// Initialize AI
+const ai = process.env.GEMINI_API_KEY ? new GoogleGenerativeAI(process.env.GEMINI_API_KEY) : null;
+
+// Helper to log activity
+async function logActivity(bizId: string | null, type: string, detail: string, status: 'info' | 'error' | 'success', ownerId?: string, data?: any) {
+  if (!db) return;
+  try {
+    await addDoc(collection(db, 'system_logs'), {
+      businessId: bizId || 'unknown',
+      ownerId: ownerId || 'system',
+      type,
+      detail,
+      status,
+      timestamp: serverTimestamp(),
+      data: data ? JSON.stringify(data).substring(0, 500) : null
+    });
+  } catch (err) {
+    console.error('[Logger Error]', err);
+  }
+}
+
 const app = express();
 const PORT = 3000;
 
@@ -90,8 +113,18 @@ app.post(['/webhook', '/api/webhook', '/api/webhook/:businessId'], async (req, r
   const { businessId } = req.params;
   const body = req.body;
 
-  // 1. Log the hit for instant feedback
-  console.log('[Webhook POST] Hit received:', JSON.stringify(body).substring(0, 200));
+  // GLOBAL LOGGER: Record every single hit from Facebook for debugging
+  (async () => {
+    if (!db) {
+      console.error('[CRITICAL] Database not initialized, cannot log signal');
+      return;
+    }
+    try {
+      await logActivity(businessId || 'unknown', 'RAW_SIGNAL_DETECTED', `Webhook hit from Facebook. Object: ${body.object || 'unknown'}`, 'info', 'system');
+    } catch (e) {
+      console.error('Failed to log global signal:', e);
+    }
+  })();
 
   if (body.object === 'page') {
     res.status(200).send('EVENT_RECEIVED');
@@ -112,6 +145,8 @@ app.post(['/webhook', '/api/webhook', '/api/webhook/:businessId'], async (req, r
             let bizId = businessId || 'unknown';
             let ownerId = 'system';
             try {
+              if (!db) throw new Error('Database not connected');
+
               // DETECTIVE LOG: Show what Page ID is hitting us
               await logActivity(bizId, 'DEBUG', `Event from Page ID: ${pageId}. Looking for store...`, 'info', 'system');
 
@@ -138,14 +173,14 @@ app.post(['/webhook', '/api/webhook', '/api/webhook/:businessId'], async (req, r
                 return;
               }
 
-              if (!process.env.GEMINI_API_KEY) {
-                await logActivity(bizId, 'ERROR', 'AI Service Error: GEMINI_API_KEY is missing in environment.', 'error', ownerId);
+              if (!process.env.GEMINI_API_KEY || !ai) {
+                await logActivity(bizId, 'ERROR', 'AI Service Error: GEMINI_API_KEY is missing or AI failed to init.', 'error', ownerId);
                 return;
               }
 
               // Generate AI Reply
               const prompt = `Shop: ${businessData.name}\nContext: ${businessData.description || ''}\nProducts: ${JSON.stringify(businessData.products || [])}\nCustomer: ${messageText}`;
-              const aiModel = ai!.getGenerativeModel({ model: 'gemini-1.5-flash' });
+              const aiModel = ai.getGenerativeModel({ model: 'gemini-1.5-flash' });
               const result = await aiModel.generateContent(prompt);
               const replyText = result.response.text();
 

@@ -150,9 +150,11 @@ function GlobalBanner() {
 
 function MessengerLogs({ businessId, ownerId }: { businessId: string, ownerId: string }) {
   const [logs, setLogs] = useState<any[]>([]);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!db || !ownerId) return;
+    setError(null);
     // Query by ownerId to satisfy security rules
     const q = query(
       collection(db, 'system_logs'),
@@ -160,12 +162,20 @@ function MessengerLogs({ businessId, ownerId }: { businessId: string, ownerId: s
       orderBy('timestamp', 'desc'),
       limit(20)
     );
-    return onSnapshot(q, (snap) => {
+    const unsubscribe = onSnapshot(q, (snap) => {
       const allLogs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
       // Filter locally for the specific businessId
       setLogs(allLogs.filter((l: any) => l.businessId === businessId || l.businessId === 'unknown'));
+    }, (err) => {
+      console.error('Logs Sync Error:', err);
+      setError(`ডাটা লোড হতে সমস্যা হচ্ছে: ${err.message}`);
     });
+    return unsubscribe;
   }, [businessId, ownerId]);
+
+  if (error) {
+    return <div className="p-8 text-center text-rose-500 text-[10px] font-medium italic">{error}</div>;
+  }
 
   if (logs.length === 0) {
     return (
@@ -2531,6 +2541,23 @@ function MessengerConnect({ business, setBusiness }: { business: BusinessConfig,
                     <Copy className="w-4 h-4 text-zinc-600" />
                   </Button>
                 </div>
+              </div>
+
+              <div className="p-5 bg-rose-50 border border-rose-100 rounded-2xl space-y-3">
+                <h4 className="text-sm font-bold text-rose-700 flex items-center gap-2">
+                  <AlertTriangle className="w-4 h-4" />
+                  কেন রিপ্লাই দিচ্ছে না? (চেকলিস্ট)
+                </h4>
+                <ul className="space-y-2 text-[11px] text-rose-600 font-medium">
+                  <li className="flex gap-2">
+                    <span className="shrink-0">১.</span>
+                    <span>ইউআরএল ভেরিফাই করার পর <b>Add Subscriptions</b> বাটনে ক্লিক করে <b>messages</b> ফিল্ডটি অন করেছেন? (এটি না করলে মেসেজ আসবে না)</span>
+                  </li>
+                  <li className="flex gap-2">
+                    <span className="shrink-0">২.</span>
+                    <span>আপনার অ্যাপ যদি <b>Live Mode</b> এ থাকে, তবে ফেসবুক থেকে <b>pages_messaging</b> পারমিশনটি Approve করাতে হবে। (নতুবা শুধু আপনি ছাড়া কেউ রিপ্লাই পাবে না)</span>
+                  </li>
+                </ul>
               </div>
 
               <div className="space-y-4">
