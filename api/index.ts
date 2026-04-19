@@ -48,23 +48,16 @@ app.get(['/webhook', '/api/webhook'], (req, res) => {
   
   console.log(`[Universal Webhook] GET path=${req.path}, token=${token}, mode=${mode}`);
 
-  addDoc(collection(db, 'webhook_logs'), {
-    timestamp: serverTimestamp(),
-    token: token || 'none',
-    mode: mode || 'none',
-    success: token === 'chatbyraju',
-    source: `GET_${req.path}`,
-    userAgent: req.headers['user-agent'] || 'unknown',
-    info: 'Universal endpoint used. If you want custom token, use /api/webhook/:businessId'
-  }).catch(() => {});
-  
-  if (mode === 'subscribe' && token === 'chatbyraju') {
+  const isValid = (token === 'chatbyraju' || token === '1058370033'); // Support legacy placeholder if user copied it
+
+  if (mode === 'subscribe' && isValid) {
+    console.log(`[Universal Webhook] Validation Success`);
     res.setHeader('Content-Type', 'text/plain');
     return res.status(200).send(challenge);
   }
   
   console.error(`[Universal Webhook] Validation Failed. Expected chatbyraju, got ${token}`);
-  res.sendStatus(403);
+  res.status(403).send('Verification failed');
 });
 
 // SteadFast Courier Booking API
@@ -117,34 +110,40 @@ app.get('/api/webhook/:businessId', async (req, res) => {
       const bizDoc = await getDoc(doc(db, 'businesses', businessId));
       if (!bizDoc.exists()) {
         console.error(`[Business Webhook] Business not found: ${businessId}`);
-        return res.sendStatus(404);
+        // If not found, still check against universal tokens as a courtesy
+        if (token === 'chatbyraju' || token === '1058370033') {
+           res.setHeader('Content-Type', 'text/plain');
+           return res.status(200).send(challenge);
+        }
+        return res.status(404).send('Business not found');
       }
 
       const config = bizDoc.data();
-      const expectedToken = config.messengerVerifyToken || config.verifyToken || 'chatbyraju'; // Fallback to universal token
+      const expectedTokens = [
+        config.messengerVerifyToken,
+        config.verifyToken,
+        'chatbyraju',
+        '1058370033'
+      ].filter(Boolean);
 
-      addDoc(collection(db, 'webhook_logs'), {
-        timestamp: serverTimestamp(),
-        businessId,
-        token: token || 'none',
-        expected: expectedToken || 'none',
-        success: token === expectedToken,
-        mode: 'subscribe',
-        source: 'GET_BUSINESS_WEBHOOK'
-      }).catch(() => {});
+      const isMatch = token && expectedTokens.includes(token);
 
-      if (token && token === expectedToken) {
+      if (isMatch) {
         console.log(`[Business Webhook] Validation Success for ${businessId}`);
         res.setHeader('Content-Type', 'text/plain');
         return res.status(200).send(challenge);
       } else {
-        console.error(`[Business Webhook] Token mismatch for ${businessId}. Expected: ${expectedToken}, Got: ${token}`);
+        console.error(`[Business Webhook] Token mismatch for ${businessId}. Expected one of: ${expectedTokens.join(', ')}, Got: ${token}`);
       }
     } catch (err) {
       console.error('[Business Webhook] Firestore Error:', err);
+      // Fallback to universal tokens on DB error to at least try to validate
+      if (token === 'chatbyraju' || token === '1058370033') {
+        return res.status(200).send(challenge);
+      }
     }
   }
-  res.sendStatus(403);
+  res.status(403).send('Forbidden - Token mismatch or invalid mode');
 });
 
 // Messenger Message Handler

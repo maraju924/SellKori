@@ -2232,6 +2232,23 @@ function MessengerConnect({ business }: { business: BusinessConfig }) {
               <div className="space-y-4">
                 <h3 className="font-bold text-zinc-900 border-b pb-2 flex items-center gap-2">
                   <span className="bg-indigo-600 text-white w-6 h-6 rounded-full flex items-center justify-center text-xs">২</span>
+                  ফেসবুক লগইন প্রোডাক্ট যুক্ত করুন (খুবই গুরুত্বপূর্ণ)
+                </h3>
+                <div className="bg-blue-50 p-4 rounded-lg border border-blue-100 text-sm text-blue-800 space-y-3">
+                  <p className="font-bold">অপশনটি খুঁজে না পেলে এই ধাপটি অনুসরণ করুন:</p>
+                  <ul className="list-decimal pl-5 space-y-2">
+                    <li>ড্যাশবোর্ডের বাম পাশের মেনু থেকে <strong>Add Product</strong> এ ক্লিক করুন অথবা নিচে স্ক্রোল করে <strong>Facebook Login</strong> খুজে বের করুন।</li>
+                    <li><strong>Set up</strong> বাটনে ক্লিক করে এটি যুক্ত করুন এবং প্ল্যাটফর্ম হিসেবে <strong>Web</strong> সিলেক্ট করুন।</li>
+                    <li>এখন বাম পাশে মেনুতে <strong>Facebook Login → Settings</strong> এ যান।</li>
+                    <li>সেখানে <strong>"Login with JavaScript SDK"</strong> অপশনটি খুজে পাবেন, সেটি <strong>YES</strong> করে দিন।</li>
+                    <li>নিচে <strong>Allowed Domains for the JavaScript SDK</strong> বক্সে এই সাইটের URL টি দিয়ে সেভ করুন।</li>
+                  </ul>
+                </div>
+              </div>
+
+              <div className="space-y-4">
+                <h3 className="font-bold text-zinc-900 border-b pb-2 flex items-center gap-2">
+                  <span className="bg-indigo-600 text-white w-6 h-6 rounded-full flex items-center justify-center text-xs">৩</span>
                   মেসেঞ্জার প্রোডাক্ট এড করুন
                 </h3>
                 <ul className="list-disc pl-5 space-y-1 text-sm text-zinc-600">
