@@ -149,16 +149,58 @@ async function logActivity(bizId: string | null, type: string, detail: string, s
   }
 }
 
+// Webhook Verification (GET)
+app.get(['/api/webhook', '/api/webhook/:businessId'], async (req, res) => {
+  const { businessId } = req.params;
+  const mode = req.query['hub.mode'];
+  const token = req.query['hub.verify_token'];
+  const challenge = req.query['hub.challenge'];
+
+  console.log(`[Webhook GET] businessId=${businessId}, token=${token}`);
+  
+  // Also log this to the DB for user visibility
+  await logActivity(businessId || 'unknown', 'WEBHOOK_VERIFY', `Facebook is verifying webhook with token: ${token}`, 'info');
+
+  if (mode && token) {
+    if (mode === 'subscribe') {
+      // Find business to verify token
+      let authorized = false;
+      if (businessId) {
+        const bizDoc = await getDoc(doc(db, 'businesses', businessId));
+        if (bizDoc.exists()) {
+          const data = bizDoc.data();
+          if (token === (data.messengerVerifyToken || data.verifyToken || 'chatbyraju')) {
+            authorized = true;
+          }
+        }
+      } else if (token === 'sendbyraju') { // Fallback global token
+        authorized = true;
+      }
+
+      if (authorized) {
+        console.log('[Webhook GET] Verified successfully');
+        await logActivity(businessId || 'unknown', 'WEBHOOK_VERIFIED', 'Webhook verified and connected successfully!', 'success');
+        return res.status(200).send(challenge);
+      }
+    }
+  }
+  await logActivity(businessId || 'unknown', 'WEBHOOK_FAILED', 'Verification failed. Token mismatch.', 'error');
+  res.sendStatus(403);
+});
+
 // Messenger Message Handler
 app.post(['/api/webhook', '/api/webhook/:businessId'], async (req, res) => {
   const { businessId } = req.params;
   const body = req.body;
 
   if (body.object === 'page') {
+    // 1. Respond immediately with 200 OK to prevent Facebook timeout
+    res.status(200).send('EVENT_RECEIVED');
+
+    // 2. Process in background
     for (const entry of body.entry) {
       const pageId = entry.id;
       const messaging = entry.messaging || entry.standby;
-      
       if (!messaging) continue;
 
       for (const webhookEvent of messaging) {
@@ -168,53 +210,56 @@ app.post(['/api/webhook', '/api/webhook/:businessId'], async (req, res) => {
         if (webhookEvent.message && webhookEvent.message.text && !webhookEvent.message.is_echo) {
           const messageText = webhookEvent.message.text;
           
-          try {
-            // Find Business
-            let businessData: any = null;
-            let bizId = businessId;
+          // Background execution
+          (async () => {
+            let bizId = businessId || 'unknown';
+            try {
+              // Find Business
+              let businessData: any = null;
+              const bizQuery = query(collection(db, 'businesses'), where('facebookPageId', '==', pageId));
+              const bizSnap = await getDocs(bizQuery);
+              
+              if (!bizSnap.empty) {
+                businessData = bizSnap.docs[0].data();
+                bizId = bizSnap.docs[0].id;
+              }
 
-            const bizQuery = query(collection(db, 'businesses'), where('facebookPageId', '==', pageId));
-            const bizSnap = await getDocs(bizQuery);
-            if (!bizSnap.empty) {
-              businessData = bizSnap.docs[0].data();
-              bizId = bizSnap.docs[0].id;
+              await logActivity(bizId, 'INCOMING', `Customer: "${messageText}"`, 'info');
+
+              if (!businessData?.pageAccessToken) {
+                await logActivity(bizId, 'ERROR', 'Page Access Token missing. Go to Settings and click Verify & Connect.', 'error');
+                return;
+              }
+
+              if (!ai) {
+                await logActivity(bizId, 'ERROR', 'AI Service not configured. Check GEMINI_API_KEY environment variable.', 'error');
+                return;
+              }
+
+              // Generate AI Reply
+              const prompt = `Shop: ${businessData.name}\nDescription: ${businessData.description || ''}\nProducts: ${JSON.stringify(businessData.products || [])}\nQuestion: ${messageText}\n\nAct as the shop assistant. keep it friendly and short.`;
+              const aiModel = ai.getGenerativeModel({ model: 'gemini-1.5-flash' });
+              const result = await aiModel.generateContent(prompt);
+              const replyText = result.response.text();
+
+              // Send to Messenger
+              await axios.post(`https://graph.facebook.com/v18.0/me/messages?access_token=${businessData.pageAccessToken}`, {
+                recipient: { id: senderId },
+                message: { text: replyText }
+              });
+
+              await logActivity(bizId, 'REPLY_SENT', `Bot: "${replyText.substring(0, 100)}..."`, 'success');
+            } catch (err: any) {
+              const errorMsg = err.response?.data?.error?.message || err.message;
+              await logActivity(bizId, 'ERROR', `Delivery Failed: ${errorMsg}`, 'error', err.response?.data);
             }
-
-            await logActivity(bizId, 'INCOMING', `Received message: "${messageText}" from ${senderId}`, 'info');
-
-            if (!businessData?.pageAccessToken) {
-              await logActivity(bizId, 'ERROR', 'Page Access Token missing in configuration', 'error');
-              continue;
-            }
-
-            if (!ai) {
-              await logActivity(bizId, 'ERROR', 'Gemini AI Key is missing on server', 'error');
-              continue;
-            }
-
-            // Generate AI
-            const prompt = `Shop: ${businessData.name}\nProducts: ${JSON.stringify(businessData.products || [])}\nQuestion: ${messageText}`;
-            const aiResponse = await ai.models.generateContent({ model: 'gemini-3-flash-preview', contents: prompt });
-            const replyText = aiResponse.text || 'ধন্যবাদ।';
-
-            // Send to Messenger
-            const fbRes = await axios.post(`https://graph.facebook.com/v18.0/me/messages?access_token=${businessData.pageAccessToken}`, {
-              recipient: { id: senderId },
-              message: { text: replyText }
-            });
-
-            await logActivity(bizId, 'REPLY_SENT', `Replied: "${replyText.substring(0, 50)}"`, 'success');
-          } catch (err: any) {
-            const errorMsg = err.response?.data?.error?.message || err.message;
-            await logActivity(null, 'ERROR', `Failure processing message: ${errorMsg}`, 'error', err.response?.data);
-            console.error('[Messenger Bot Error]', errorMsg);
-          }
+          })();
         }
       }
     }
-    return res.status(200).send('EVENT_RECEIVED');
+  } else {
+    res.sendStatus(404);
   }
-  res.sendStatus(404);
 });
 
 // Initialize server
