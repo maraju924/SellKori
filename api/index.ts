@@ -130,109 +130,110 @@ app.post(['/webhook', '/api/webhook', '/api/webhook/:businessId'], async (req, r
   const { businessId } = req.params;
   const body = req.body;
 
-  // GLOBAL LOGGER: Record every single hit from Facebook for debugging
-  (async () => {
-    if (!db) {
-      console.error('[CRITICAL] Database not initialized, cannot log signal');
-      return;
-    }
-    try {
-      await logActivity(businessId || 'unknown', 'RAW_SIGNAL_DETECTED', `Webhook hit from Facebook. Object: ${body.object || 'unknown'}`, 'info', 'system');
-    } catch (e) {
-      console.error('Failed to log global signal:', e);
-    }
-  })();
-
+  // 1. INSTANT RESPONSE TO FACEBOOK (Crucial for not timing out)
   if (body.object === 'page') {
     res.status(200).send('EVENT_RECEIVED');
+  } else {
+    return res.sendStatus(404);
+  }
 
-    for (const entry of body.entry) {
-      const pageId = entry.id;
-      const messaging = entry.messaging || entry.standby;
-      if (!messaging) continue;
+  // 2. BACKGROUND PROCESSING
+  (async () => {
+    try {
+      if (!db) return;
+      
+      // LOG: Immediate proof that Facebook reached us
+      await logActivity(businessId || 'unknown', 'SIGNAL_REACHED', `Facebook sent data. Object: ${body.object}`, 'info', 'system');
 
-      for (const webhookEvent of messaging) {
-        if (!webhookEvent.sender) continue;
-        const senderId = webhookEvent.sender.id;
+      for (const entry of body.entry) {
+        const pageId = entry.id; // Usually a string from FB
+        const messaging = entry.messaging || entry.standby;
+        if (!messaging) continue;
 
-        if (webhookEvent.message && webhookEvent.message.text && !webhookEvent.message.is_echo) {
-          const messageText = webhookEvent.message.text;
-          
-          (async () => {
+        for (const webhookEvent of messaging) {
+          if (!webhookEvent.sender) continue;
+          const senderId = webhookEvent.sender.id;
+
+          if (webhookEvent.message && webhookEvent.message.text && !webhookEvent.message.is_echo) {
+            const messageText = webhookEvent.message.text;
+            
             let bizId = businessId || 'unknown';
             let ownerId = 'system';
+            
             try {
-              if (!db) throw new Error('Database not connected');
-
-              // DETECTIVE LOG: Show what Page ID is hitting us
-              await logActivity(bizId, 'DEBUG', `Event from Page ID: ${pageId}. Looking for store...`, 'info', 'system');
-
-              // Find Business by Page ID or fallback to the provided businessId in URL
+              // Lookup store by Page ID (try both string and number just in case)
               let businessData: any = null;
+              const shopsRef = collection(db, 'businesses');
               
-              // 1. Try global lookup by Page ID
-              const bizQuery = query(collection(db, 'businesses'), where('facebookPageId', '==', pageId));
-              const bizSnap = await getDocs(bizQuery);
+              // Try string lookup first
+              const qStr = query(shopsRef, where('facebookPageId', '==', String(pageId)));
+              const snapStr = await getDocs(qStr);
               
-              if (!bizSnap.empty) {
-                businessData = bizSnap.docs[0].data();
-                bizId = bizSnap.docs[0].id;
-                ownerId = businessData.ownerId;
-              } else if (businessId && businessId !== 'unknown') {
-                // 2. Try lookup by URL businessId as fallback
-                const bizDoc = await getDoc(doc(db, 'businesses', businessId));
-                if (bizDoc.exists()) {
-                  const data = bizDoc.data();
-                  // Even if pageId doesn't match perfectly, check if this ID is what we want
-                  if (data.facebookPageId === pageId || !data.facebookPageId) {
-                    businessData = data;
-                    bizId = bizDoc.id;
-                    ownerId = businessData.ownerId;
-                  }
+              if (!snapStr.empty) {
+                businessData = snapStr.docs[0].data();
+                bizId = snapStr.docs[0].id;
+              } else {
+                // Try number lookup
+                const qNum = query(shopsRef, where('facebookPageId', '==', Number(pageId)));
+                const snapNum = await getDocs(qNum);
+                if (!snapNum.empty) {
+                  businessData = snapNum.docs[0].data();
+                  bizId = snapNum.docs[0].id;
+                }
+              }
+
+              // Fallback to URL's businessId if ID lookup fails
+              if (!businessData && businessId && businessId !== 'unknown') {
+                const bDoc = await getDoc(doc(db, 'businesses', businessId));
+                if (bDoc.exists()) {
+                  businessData = bDoc.data();
+                  bizId = bDoc.id;
                 }
               }
 
               if (!businessData) {
-                await logActivity('unknown', 'ERROR', `Could not find store for Page ID "${pageId}". শপ সেটিংসে গিয়ে ফেসবুক পেজ আইডি সেভ করেছেন তো?`, 'error', 'system');
-                return;
+                await logActivity('unknown', 'ERROR', `Could not identify store for Page ID: ${pageId}. চেক করুন আপনার শপ সেটিংসে এই আইডি দেওয়া কি না।`, 'error', 'system');
+                continue;
               }
 
-              await logActivity(bizId, 'INCOMING', `Customer sent: "${messageText}"`, 'info', ownerId);
+              ownerId = businessData.ownerId;
+              await logActivity(bizId, 'INCOMING', `Customer: "${messageText}"`, 'info', ownerId);
 
               if (!businessData.pageAccessToken) {
-                await logActivity(bizId, 'ERROR', 'Page Access Token missing. Go to Settings -> Verify & Connect.', 'error', ownerId);
-                return;
+                await logActivity(bizId, 'ERROR', 'Page Access Token missing in Settings.', 'error', ownerId);
+                continue;
               }
 
               if (!process.env.GEMINI_API_KEY || !ai) {
-                await logActivity(bizId, 'ERROR', 'AI Service Error: GEMINI_API_KEY is missing or AI failed to init.', 'error', ownerId);
-                return;
+                await logActivity(bizId, 'ERROR', 'AI Service setup error.', 'error', ownerId);
+                continue;
               }
 
-              // Generate AI Reply
-              const prompt = `Shop: ${businessData.name}\nContext: ${businessData.description || ''}\nProducts: ${JSON.stringify(businessData.products || [])}\nCustomer: ${messageText}`;
-              const aiModel = ai.getGenerativeModel({ model: 'gemini-1.5-flash' });
-              const result = await aiModel.generateContent(prompt);
-              const replyText = result.response.text();
+              // AI Generation
+              const prompt = `Shop: ${businessData.name}\nDescription: ${businessData.description}\nProducts: ${JSON.stringify(businessData.products)}\nCustomer: ${messageText}`;
+              const model = ai.getGenerativeModel({ model: 'gemini-1.5-flash' });
+              const result = await model.generateContent(prompt);
+              const reply = result.response.text();
 
-              // Send to Messenger
+              // Send Message
               await axios.post(`https://graph.facebook.com/v18.0/me/messages?access_token=${businessData.pageAccessToken}`, {
                 recipient: { id: senderId },
-                message: { text: replyText }
+                message: { text: reply }
               });
 
-              await logActivity(bizId, 'REPLY_SENT', `Replied: "${replyText.substring(0, 50)}..."`, 'success', ownerId);
-            } catch (err: any) {
-              const errorMsg = err.response?.data?.error?.message || err.message;
-              await logActivity(bizId, 'ERROR', `Failed to reply: ${errorMsg}`, 'error', ownerId, err.response?.data);
+              await logActivity(bizId, 'REPLY_SENT', `Bot: "${reply.substring(0, 50)}..."`, 'success', ownerId);
+
+            } catch (innerErr: any) {
+              console.error('Inner webhook error:', innerErr);
+              await logActivity(bizId, 'ERROR', `Processing failed: ${innerErr.message}`, 'error', ownerId);
             }
-          })();
+          }
         }
       }
+    } catch (outerErr: any) {
+      console.error('Outer webhook error:', outerErr);
     }
-  } else {
-    res.sendStatus(404);
-  }
+  })();
 });
 
 // Initialize server
