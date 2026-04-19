@@ -115,11 +115,11 @@ service cloud.firestore {
     }
     // Logs functionality
     match /system_logs/{logId} {
-      allow create: if true; // Server/Webhook can create logs
+      allow create: if true; // Webhook background tasks can create logs
       allow read: if isSignedIn() && (
-        resource.data.businessId == 'unknown' || 
-        exists(/databases/$(database)/documents/businesses/$(resource.data.businessId)) &&
-        get(/databases/$(database)/documents/businesses/$(resource.data.businessId)).data.ownerId == request.auth.uid
+        resource.data.ownerId == request.auth.uid ||
+        resource.data.ownerId == 'system' ||
+        isAdmin()
       );
     }
   }

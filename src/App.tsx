@@ -148,23 +148,24 @@ function GlobalBanner() {
   );
 }
 
-function MessengerLogs({ businessId }: { businessId: string }) {
+function MessengerLogs({ businessId, ownerId }: { businessId: string, ownerId: string }) {
   const [logs, setLogs] = useState<any[]>([]);
 
   useEffect(() => {
-    if (!db) return;
-    // Listen for logs belonging to this business OR unknown logs (to catch setup errors)
+    if (!db || !ownerId) return;
+    // Query by ownerId to satisfy security rules
     const q = query(
       collection(db, 'system_logs'),
+      where('ownerId', 'in', [ownerId, 'system']),
       orderBy('timestamp', 'desc'),
       limit(20)
     );
     return onSnapshot(q, (snap) => {
       const allLogs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-      // Filter locally to ensure reactivity while still showing 'unknown' for debugging
+      // Filter locally for the specific businessId
       setLogs(allLogs.filter((l: any) => l.businessId === businessId || l.businessId === 'unknown'));
     });
-  }, [businessId]);
+  }, [businessId, ownerId]);
 
   if (logs.length === 0) {
     return (
@@ -2495,7 +2496,7 @@ function MessengerConnect({ business, setBusiness }: { business: BusinessConfig,
             </CardHeader>
             <CardContent className="p-0">
               <div className="divide-y divide-zinc-100 max-h-[300px] overflow-y-auto">
-                <MessengerLogs businessId={business.id} />
+                <MessengerLogs businessId={business.id} ownerId={business.ownerId} />
               </div>
             </CardContent>
           </Card>

@@ -106,10 +106,10 @@ app.get('/api/webhook/:businessId', async (req, res) => {
   res.status(403).send('Forbidden');
 });
 
-import { GoogleGenAI } from '@google/genai';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 
 // Initialize AI
-const ai = process.env.GEMINI_API_KEY ? new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY }) : null;
+const ai = process.env.GEMINI_API_KEY ? new GoogleGenerativeAI(process.env.GEMINI_API_KEY) : null;
 
 // Helper to send Messenger message
 async function sendMessengerMessage(recipientId: string, text: string, pageAccessToken: string) {
@@ -134,10 +134,11 @@ app.get('/api/health', (req, res) => {
 });
 
 // Helper to log webhook activity
-async function logActivity(bizId: string | null, type: string, detail: string, status: 'info' | 'error' | 'success', data?: any) {
+async function logActivity(bizId: string | null, type: string, detail: string, status: 'info' | 'error' | 'success', ownerId?: string, data?: any) {
   try {
     await addDoc(collection(db, 'system_logs'), {
       businessId: bizId || 'unknown',
+      ownerId: ownerId || 'system',
       type,
       detail,
       status,
@@ -159,7 +160,12 @@ app.get(['/api/webhook', '/api/webhook/:businessId'], async (req, res) => {
   console.log(`[Webhook GET] businessId=${businessId}, token=${token}`);
   
   // Also log this to the DB for user visibility
-  await logActivity(businessId || 'unknown', 'WEBHOOK_VERIFY', `Facebook is verifying webhook with token: ${token}`, 'info');
+  let ownerId = 'system';
+  if (businessId) {
+    const bizDoc = await getDoc(doc(db, 'businesses', businessId));
+    if (bizDoc.exists()) ownerId = bizDoc.data().ownerId;
+  }
+  await logActivity(businessId || 'unknown', 'WEBHOOK_VERIFY', `Facebook is verifying webhook with token: ${token}`, 'info', ownerId);
 
   if (mode && token) {
     if (mode === 'subscribe') {
@@ -179,12 +185,12 @@ app.get(['/api/webhook', '/api/webhook/:businessId'], async (req, res) => {
 
       if (authorized) {
         console.log('[Webhook GET] Verified successfully');
-        await logActivity(businessId || 'unknown', 'WEBHOOK_VERIFIED', 'Webhook verified and connected successfully!', 'success');
+        await logActivity(businessId || 'unknown', 'WEBHOOK_VERIFIED', 'Webhook verified and connected successfully!', 'success', ownerId);
         return res.status(200).send(challenge);
       }
     }
   }
-  await logActivity(businessId || 'unknown', 'WEBHOOK_FAILED', 'Verification failed. Token mismatch.', 'error');
+  await logActivity(businessId || 'unknown', 'WEBHOOK_FAILED', 'Verification failed. Token mismatch.', 'error', ownerId);
   res.sendStatus(403);
 });
 
@@ -213,9 +219,9 @@ app.post(['/api/webhook', '/api/webhook/:businessId'], async (req, res) => {
           // Background execution
           (async () => {
             let bizId = businessId || 'unknown';
+            let businessData: any = null;
             try {
               // Find Business
-              let businessData: any = null;
               const bizQuery = query(collection(db, 'businesses'), where('facebookPageId', '==', pageId));
               const bizSnap = await getDocs(bizQuery);
               
@@ -224,20 +230,21 @@ app.post(['/api/webhook', '/api/webhook/:businessId'], async (req, res) => {
                 bizId = bizSnap.docs[0].id;
               }
 
-              await logActivity(bizId, 'INCOMING', `Customer: "${messageText}"`, 'info');
+              await logActivity(bizId, 'INCOMING', `Customer: "${messageText}"`, 'info', businessData?.ownerId);
 
               if (!businessData?.pageAccessToken) {
-                await logActivity(bizId, 'ERROR', 'Page Access Token missing. Go to Settings and click Verify & Connect.', 'error');
+                await logActivity(bizId, 'ERROR', 'Page Access Token missing. Go to Settings and click Verify & Connect.', 'error', businessData?.ownerId);
                 return;
               }
 
               if (!ai) {
-                await logActivity(bizId, 'ERROR', 'AI Service not configured. Check GEMINI_API_KEY environment variable.', 'error');
+                await logActivity(bizId, 'ERROR', 'AI Service not configured. Check GEMINI_API_KEY environment variable.', 'error', businessData?.ownerId);
                 return;
               }
 
               // Generate AI Reply
               const prompt = `Shop: ${businessData.name}\nDescription: ${businessData.description || ''}\nProducts: ${JSON.stringify(businessData.products || [])}\nQuestion: ${messageText}\n\nAct as the shop assistant. keep it friendly and short.`;
+              if (!ai) throw new Error('AI not configured');
               const aiModel = ai.getGenerativeModel({ model: 'gemini-1.5-flash' });
               const result = await aiModel.generateContent(prompt);
               const replyText = result.response.text();
@@ -248,10 +255,10 @@ app.post(['/api/webhook', '/api/webhook/:businessId'], async (req, res) => {
                 message: { text: replyText }
               });
 
-              await logActivity(bizId, 'REPLY_SENT', `Bot: "${replyText.substring(0, 100)}..."`, 'success');
+              await logActivity(bizId, 'REPLY_SENT', `Bot: "${replyText.substring(0, 100)}..."`, 'success', businessData?.ownerId);
             } catch (err: any) {
               const errorMsg = err.response?.data?.error?.message || err.message;
-              await logActivity(bizId, 'ERROR', `Delivery Failed: ${errorMsg}`, 'error', err.response?.data);
+              await logActivity(bizId, 'ERROR', `Delivery Failed: ${errorMsg}`, 'error', businessData?.ownerId, err.response?.data);
             }
           })();
         }
