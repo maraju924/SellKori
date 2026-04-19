@@ -127,49 +127,84 @@ app.post(['/api/webhook', '/api/webhook/:businessId'], async (req, res) => {
   const { businessId } = req.params;
   const body = req.body;
 
+  console.log(`[Webhook Received] path=${req.path}, businessId=${businessId}, body=${JSON.stringify(body).substring(0, 500)}`);
+
   if (body.object === 'page') {
     for (const entry of body.entry) {
-      const webhookEvent = entry.messaging?.[0];
-      if (!webhookEvent) continue;
-
-      const senderId = webhookEvent.sender.id;
       const pageId = entry.id;
+      const messaging = entry.messaging || entry.standby; // Handle normal and standby messages
+      
+      if (!messaging) {
+        console.log(`[Webhook] No messaging or standby fields in entry for page ${pageId}`);
+        continue;
+      }
 
-      if (webhookEvent.message && webhookEvent.message.text) {
-        const messageText = webhookEvent.message.text;
-        console.log(`[Messenger] New message from ${senderId} on page ${pageId}: ${messageText}`);
+      for (const webhookEvent of messaging) {
+        if (!webhookEvent.sender) continue;
+        
+        const senderId = webhookEvent.sender.id;
 
-        try {
-          // 1. Find the business
-          let businessData: any = null;
-          let bizId = businessId;
+        // Skip echo messages or messages from the page itself
+        if (webhookEvent.message?.is_echo) {
+          console.log(`[Webhook] Skipping echo message for page ${pageId}`);
+          continue;
+        }
 
-          if (bizId && bizId.startsWith('biz-')) {
-            const bizDoc = await getDoc(doc(db, 'businesses', bizId));
-            if (bizDoc.exists()) businessData = bizDoc.data();
-          } else {
-            // Search by Facebook Page ID if businessId isn't provided or found
-            const bizQuery = query(collection(db, 'businesses'), where('facebookPageId', '==', pageId));
-            const bizSnap = await getDocs(bizQuery);
-            if (!bizSnap.empty) {
-              businessData = bizSnap.docs[0].data();
-              bizId = bizSnap.docs[0].id;
+        if (webhookEvent.message && webhookEvent.message.text) {
+          const messageText = webhookEvent.message.text;
+          console.log(`[Messenger] Content: "${messageText}" from ${senderId} on page ${pageId}`);
+
+          try {
+            // 1. Find the business
+            let businessData: any = null;
+            let bizId = businessId;
+
+            // Priority 1: Use businessId from URL
+            if (bizId && bizId.startsWith('biz-')) {
+              const bizDoc = await getDoc(doc(db, 'businesses', bizId));
+              if (bizDoc.exists()) {
+                businessData = bizDoc.data();
+                console.log(`[Business Found] Using URL ID: ${bizId}`);
+              }
             }
-          }
 
-          if (businessData && businessData.pageAccessToken && ai) {
+            // Priority 2: Use Page ID lookup if URL ID wasn't enough
+            if (!businessData) {
+              const bizQuery = query(collection(db, 'businesses'), where('facebookPageId', '==', pageId));
+              const bizSnap = await getDocs(bizQuery);
+              if (!bizSnap.empty) {
+                businessData = bizSnap.docs[0].data();
+                bizId = bizSnap.docs[0].id;
+                console.log(`[Business Found] Using Page ID Lookup: ${bizId}`);
+              }
+            }
+
+            if (!businessData) {
+              console.error(`[Business Not Found] No business matched pageId=${pageId} or urlId=${businessId}`);
+              continue;
+            }
+
+            if (!businessData.pageAccessToken) {
+              console.error(`[Token Missing] Business ${bizId} has no Page Access Token`);
+              continue;
+            }
+
+            if (!ai) {
+              console.error(`[AI Missing] Gemini API Key not configured in server environment`);
+              await sendMessengerMessage(senderId, 'ধন্যবাদ আপনার বার্তার জন্য। আমাদের প্রতিনিধি শীঘ্রই যোগাযোগ করবেন।', businessData.pageAccessToken);
+              continue;
+            }
+
             // 2. Generate AI Reply
+            console.log(`[AI] Generating reply for ${senderId}...`);
             const prompt = `
               Shop Name: ${businessData.name}
-              Description: ${businessData.description}
-              Products: ${JSON.stringify(businessData.products)}
-              FAQs: ${JSON.stringify(businessData.faqs)}
-              
-              System Template: ${businessData.customSystemPrompt}
-              
+              Description: ${businessData.description || 'N/A'}
+              Products: ${JSON.stringify(businessData.products || [])}
+              FAQs: ${JSON.stringify(businessData.faqs || [])}
+              System Template: ${businessData.customSystemPrompt || 'You are a helpful assistant.'}
               Customer Message: ${messageText}
-              
-              Reply as the store assistant. keep it concise and friendly.
+              Reply as the store assistant. keep it concise and friendly. Respond in the language of the customer.
             `;
 
             const aiResponse = await ai.models.generateContent({
@@ -177,13 +212,15 @@ app.post(['/api/webhook', '/api/webhook/:businessId'], async (req, res) => {
               contents: prompt
             });
 
-            const replyText = aiResponse.text || 'ধন্যবাদ আপনার বার্তার জন্য। আমাদের প্রতিনিধি শীঘ্রই যোগাযোগ করবেন।';
+            const replyText = aiResponse.text || 'ধন্যবাদ। কি সাহায্য করতে পারি?';
+            console.log(`[AI Output] -> ${replyText.substring(0, 100)}...`);
 
             // 3. Send back to Messenger
             await sendMessengerMessage(senderId, replyText, businessData.pageAccessToken);
+            console.log(`[Messenger Sent] Done.`);
+          } catch (err) {
+            console.error('[Messenger Bot Error]', err);
           }
-        } catch (err) {
-          console.error('[Messenger Bot Error]', err);
         }
       }
     }
