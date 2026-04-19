@@ -597,6 +597,24 @@ function MerchantDashboard({ user, profile }: { user: FirebaseUser | null, profi
     });
   }, [user]);
 
+  useEffect(() => {
+    if (!user || !business) return;
+    // Log dashboard access for debugging
+    const logDashboardOpen = async () => {
+      try {
+        await addDoc(collection(db, 'system_logs'), {
+          businessId: business.id,
+          ownerId: business.ownerId,
+          type: 'DASHBOARD_LIVE',
+          detail: 'মার্চেন্ট ড্যাশবোর্ড সফলভাবে ওপেন হয়েছে।',
+          status: 'success',
+          timestamp: serverTimestamp()
+        });
+      } catch (e) {}
+    };
+    logDashboardOpen();
+  }, [user, business]);
+
   if (loading) return <div className="h-screen flex items-center justify-center">Loading Dashboard...</div>;
   if (!business) return <div className="h-screen flex items-center justify-center">No business found.</div>;
 
@@ -2557,6 +2575,26 @@ function MessengerConnect({ business, setBusiness }: { business: BusinessConfig,
                     <span>আপনার অ্যাপ যদি <b>Live Mode</b> এ থাকে, তবে ফেসবুক থেকে <b>pages_messaging</b> পারমিশনটি Approve করাতে হবে। (নতুবা শুধু আপনি ছাড়া কেউ রিপ্লাই পাবে না)</span>
                   </li>
                 </ul>
+                <Button 
+                  variant="outline" 
+                  size="sm" 
+                  className="w-full bg-white text-rose-600 border-rose-200 hover:bg-rose-100 text-[10px] font-bold h-8"
+                  onClick={async () => {
+                    if (!business) return;
+                    try {
+                      const res = await fetch('/api/test-connection', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ businessId: business.id, ownerId: business.ownerId })
+                      });
+                      if (res.ok) alert('Test signal sent! Check Activity Log.');
+                    } catch (e) {
+                      alert('Failed to send test signal.');
+                    }
+                  }}
+                >
+                  সিস্টেম টেস্ট করুন (যদি লগ না আসে)
+                </Button>
               </div>
 
               <div className="space-y-4">

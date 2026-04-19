@@ -52,7 +52,10 @@ const ai = process.env.GEMINI_API_KEY ? new GoogleGenerativeAI(process.env.GEMIN
 
 // Helper to log activity
 async function logActivity(bizId: string | null, type: string, detail: string, status: 'info' | 'error' | 'success', ownerId?: string, data?: any) {
-  if (!db) return;
+  if (!db) {
+    console.error('[Logger] DB not initialized. Cannot log:', type);
+    return;
+  }
   try {
     await addDoc(collection(db, 'system_logs'), {
       businessId: bizId || 'unknown',
@@ -63,16 +66,30 @@ async function logActivity(bizId: string | null, type: string, detail: string, s
       timestamp: serverTimestamp(),
       data: data ? JSON.stringify(data).substring(0, 500) : null
     });
+    console.log(`[Logged] ${type}: ${detail}`);
   } catch (err) {
     console.error('[Logger Error]', err);
   }
 }
+
+// Internal Startup Log
+(async () => {
+  await new Promise(r => setTimeout(r, 2000)); // Wait for DB
+  await logActivity('system', 'SERVER_READY', 'সার্ভার সচল হয়েছে এবং সিগন্যালের জন্য অপেক্ষা করছে।', 'success', 'system');
+})();
 
 const app = express();
 const PORT = 3000;
 
 app.use(cors());
 app.use(express.json());
+
+// Test Connection Endpoint
+app.post('/api/test-connection', async (req, res) => {
+  const { businessId, ownerId } = req.body;
+  await logActivity(businessId, 'TEST_CONNECTION', 'সিস্টেম টেস্ট সফল! আপনার লগিং সিস্টেম ঠিকঠাক কাজ করছে। এবার ফেসবুক চেক করুন।', 'success', ownerId);
+  res.json({ success: true });
+});
 
 // Consolidated Webhook Verification (GET)
 app.get(['/webhook', '/api/webhook', '/api/webhook/:businessId'], async (req, res) => {
