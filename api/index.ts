@@ -167,8 +167,10 @@ app.post(['/webhook', '/api/webhook', '/api/webhook/:businessId'], async (req, r
               // DETECTIVE LOG: Show what Page ID is hitting us
               await logActivity(bizId, 'DEBUG', `Event from Page ID: ${pageId}. Looking for store...`, 'info', 'system');
 
-              // Find Business by Page ID
+              // Find Business by Page ID or fallback to the provided businessId in URL
               let businessData: any = null;
+              
+              // 1. Try global lookup by Page ID
               const bizQuery = query(collection(db, 'businesses'), where('facebookPageId', '==', pageId));
               const bizSnap = await getDocs(bizQuery);
               
@@ -176,10 +178,22 @@ app.post(['/webhook', '/api/webhook', '/api/webhook/:businessId'], async (req, r
                 businessData = bizSnap.docs[0].data();
                 bizId = bizSnap.docs[0].id;
                 ownerId = businessData.ownerId;
+              } else if (businessId && businessId !== 'unknown') {
+                // 2. Try lookup by URL businessId as fallback
+                const bizDoc = await getDoc(doc(db, 'businesses', businessId));
+                if (bizDoc.exists()) {
+                  const data = bizDoc.data();
+                  // Even if pageId doesn't match perfectly, check if this ID is what we want
+                  if (data.facebookPageId === pageId || !data.facebookPageId) {
+                    businessData = data;
+                    bizId = bizDoc.id;
+                    ownerId = businessData.ownerId;
+                  }
+                }
               }
 
               if (!businessData) {
-                await logActivity('unknown', 'ERROR', `Could not find a store with Page ID: "${pageId}". Please check your Settings.`, 'error', 'system');
+                await logActivity('unknown', 'ERROR', `Could not find store for Page ID "${pageId}". শপ সেটিংসে গিয়ে ফেসবুক পেজ আইডি সেভ করেছেন তো?`, 'error', 'system');
                 return;
               }
 
