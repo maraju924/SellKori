@@ -13,16 +13,27 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // Load firebase config for server-side use
-const firebaseConfigPath = path.join(process.cwd(), 'firebase-applet-config.json');
-const firebaseConfig = JSON.parse(fs.readFileSync(firebaseConfigPath, 'utf8'));
+let db: any;
+let firebaseApp: any;
 
-const firebaseApp = initializeApp(firebaseConfig);
-const db = firebaseConfig.firestoreDatabaseId 
-  ? getFirestore(firebaseApp, firebaseConfig.firestoreDatabaseId) 
-  : getFirestore(firebaseApp);
+try {
+  const firebaseConfigPath = path.join(process.cwd(), 'firebase-applet-config.json');
+  if (fs.existsSync(firebaseConfigPath)) {
+    const firebaseConfig = JSON.parse(fs.readFileSync(firebaseConfigPath, 'utf8'));
+    firebaseApp = initializeApp(firebaseConfig);
+    db = firebaseConfig.firestoreDatabaseId 
+      ? getFirestore(firebaseApp, firebaseConfig.firestoreDatabaseId) 
+      : getFirestore(firebaseApp);
+  } else {
+    console.error('Firebase config file not found at:', firebaseConfigPath);
+  }
+} catch (error) {
+  console.error('Failed to initialize Firebase:', error);
+}
 
 // Helper to get system config
 async function getSystemConfig() {
+  if (!db) return null;
   try {
     const configDoc = await getDoc(doc(db, 'system_config', 'config'));
     if (configDoc.exists()) {
@@ -117,6 +128,11 @@ app.get('/api/webhook/:businessId', async (req, res) => {
          return res.status(200).send(challenge);
       }
 
+      if (!db) {
+        console.error('[Business Webhook] DB not initialized');
+        return res.status(500).send('Database connection error');
+      }
+
       const bizDoc = await getDoc(doc(db, 'businesses', businessId));
       if (!bizDoc.exists()) {
         console.error(`[Business Webhook] Business not found: ${businessId}`);
@@ -138,6 +154,10 @@ app.get('/api/webhook/:businessId', async (req, res) => {
       }
     } catch (err) {
       console.error('[Business Webhook] Error:', err);
+      // Even on error, if token matches universal, let it through
+      if (universalTokens.includes(normalizedToken)) {
+         return res.status(200).send(challenge);
+      }
     }
   }
   res.status(403).send('Forbidden');
@@ -168,27 +188,32 @@ app.post(['/api/webhook', '/api/webhook/:businessId'], async (req, res) => {
   res.sendStatus(404);
 });
 
-// Vite middleware for development
-if (process.env.NODE_ENV !== 'production') {
-  const vite = await createViteServer({
-    server: { middlewareMode: true },
-    appType: 'spa',
-  });
-  app.use(vite.middlewares);
-} else {
-  const distPath = path.join(process.cwd(), 'dist');
-  app.use(express.static(distPath));
-  // Standard SPA fallback handled by Vercel rewrites but keeping for safety
-  app.get('*', (req, res, next) => {
-    if (req.path.startsWith('/api/') || req.path.startsWith('/webhook')) return next();
-    res.sendFile(path.join(distPath, 'index.html'));
-  });
+// Initialize server
+async function init() {
+  // Vite middleware for development
+  if (process.env.NODE_ENV !== 'production') {
+    const vite = await createViteServer({
+      server: { middlewareMode: true },
+      appType: 'spa',
+    });
+    app.use(vite.middlewares);
+  } else {
+    const distPath = path.join(process.cwd(), 'dist');
+    app.use(express.static(distPath));
+    // Standard SPA fallback
+    app.get('*', (req, res, next) => {
+      if (req.path.startsWith('/api/') || req.path.startsWith('/webhook')) return next();
+      res.sendFile(path.join(distPath, 'index.html'));
+    });
+  }
+
+  if (process.env.NODE_ENV !== 'production' || !process.env.VERCEL) {
+    app.listen(PORT, '0.0.0.0', () => {
+      console.log(`Server running on http://localhost:${PORT}`);
+    });
+  }
 }
 
-if (process.env.NODE_ENV !== 'production' || !process.env.VERCEL) {
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Server running on http://localhost:${PORT}`);
-  });
-}
+init().catch(console.error);
 
 export default app;
