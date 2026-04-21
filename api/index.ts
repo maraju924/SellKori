@@ -196,7 +196,7 @@ app.post(['/webhook', '/api/webhook', '/api/webhook/:businessId'], async (req, r
           const prompt = `Shop: ${businessData.name}\nDescription: ${businessData.description || ''}\nCustomer: ${messageText}. Reply briefly and politely in Bengali as a salesperson.`;
           
           const response = await ai.models.generateContent({
-            model: "gemini-1.5-flash-latest",
+            model: "gemini-flash-latest",
             contents: prompt,
           });
           
