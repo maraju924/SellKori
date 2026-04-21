@@ -62,7 +62,7 @@ export async function getAIResponse(
     },
     show_product_image: {
       type: Type.BOOLEAN,
-      description: "Set to true ONLY if the customer explicitly asks to see a picture/image of a product, or if they are asking about price/details for the first time. Set to false for general conversation or order processing.",
+      description: "Set to true ONLY if the customer explicitly asks to see a picture/image/photo of a product, or if they are asking about price/details for the first time. Set to false for general conversation or order processing.",
     },
     product_name: {
       type: Type.STRING,

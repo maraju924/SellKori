@@ -4,7 +4,7 @@ import { fileURLToPath } from 'url';
 import axios from 'axios';
 import cors from 'cors';
 import { initializeApp } from 'firebase/app';
-import { getFirestore, doc, getDoc, collection, addDoc, serverTimestamp, query, where, getDocs } from 'firebase/firestore';
+import { getFirestore, doc, getDoc, collection, addDoc, serverTimestamp, query, where, getDocs, orderBy, limit } from 'firebase/firestore';
 import fs from 'fs';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -77,6 +77,21 @@ async function logActivity(bizId: string | null, type: string, detail: string, s
   await new Promise(r => setTimeout(r, 2000)); // Wait for DB
   await logActivity('system', 'SERVER_READY', 'সার্ভার সচল হয়েছে এবং সিগন্যালের জন্য অপেক্ষা করছে।', 'success', 'system');
 })();
+
+async function saveChatMessage(bizId: string, senderId: string, role: 'user' | 'bot', text: string) {
+  if (!db) return;
+  try {
+    await addDoc(collection(db, 'chat_history'), {
+      businessId: bizId,
+      senderId: senderId,
+      role: role,
+      text: text,
+      timestamp: serverTimestamp()
+    });
+  } catch (err) {
+    console.error('[History Error]', err);
+  }
+}
 
 const app = express();
 const PORT = 3000;
@@ -185,29 +200,119 @@ app.post(['/webhook', '/api/webhook', '/api/webhook/:businessId'], async (req, r
 
           ownerId = businessData.ownerId;
           await logActivity(bizId, 'INCOMING', `Customer: "${messageText}"`, 'info', ownerId);
+          
+          // Save incoming message to history
+          await saveChatMessage(bizId, senderId, 'user', messageText);
 
           if (!businessData.pageAccessToken || !process.env.GEMINI_API_KEY || !ai) {
             await logActivity(bizId, 'ERROR', 'Missing Token or AI Config.', 'error', ownerId);
             continue;
           }
 
+          // Fetch History (Last 15 messages)
+          let chatHistoryText = "";
+          try {
+            const histRef = collection(db, 'chat_history');
+            const qHist = query(
+              histRef, 
+              where('senderId', '==', senderId), 
+              where('businessId', '==', bizId),
+              orderBy('timestamp', 'desc'), 
+              limit(15)
+            );
+            const histSnap = await getDocs(qHist);
+            const history = histSnap.docs.reverse().map(d => {
+              const data = d.data();
+              return `${data.role === 'user' ? 'Customer' : 'Bot'}: ${data.text}`;
+            });
+            chatHistoryText = history.join('\n');
+          } catch (histErr) {
+            console.error('History fetch failed:', histErr);
+          }
+
           // AI Generation
           await logActivity(bizId, 'AI_START', `বট উত্তর তৈরি করছে...`, 'info', ownerId);
-          const prompt = `Shop: ${businessData.name}\nDescription: ${businessData.description || ''}\nCustomer: ${messageText}. Reply briefly and politely in Bengali as a salesperson.`;
+          
+          const systemPrompt = `You are a helpful and polite salesperson for "${businessData.name}".
+Shop Info: ${businessData.description || 'Professional Store'}
+Products: ${JSON.stringify(businessData.products || [])}
+FAQs: ${JSON.stringify(businessData.faqs || [])}
+
+Rules:
+1. Always prioritize the Product and FAQ details provided above for prices and info.
+2. If the user asks for photos, images, or "pic", set "show_product_image" to true and identify the "product_name".
+3. Reply in Bengali.
+4. Output should ALWAYS be JSON.
+
+Recent Conversation Context:
+${chatHistoryText}
+Customer: ${messageText}`;
           
           const response = await ai.models.generateContent({
             model: "gemini-flash-latest",
-            contents: prompt,
+            contents: [{ role: 'user', parts: [{ text: systemPrompt }] }],
+            config: {
+              responseMimeType: "application/json"
+            }
           });
           
-          const reply = response.text || "দুঃখিত, আমি উত্তরটি তৈরি করতে পারছি না।";
+          const aiRaw = response.text;
+          let aiRes: any;
+          try {
+            aiRes = JSON.parse(aiRaw);
+          } catch (e) {
+            aiRes = { reply: aiRaw, show_product_image: false };
+          }
+          
+          const reply = aiRes.reply || "দুঃখিত, আমি উত্তরটি তৈরি করতে পারছি না।";
 
           // Send Message
           await logActivity(bizId, 'SENDING_MESSAGE', `ফেসবুকে পাঠানো হচ্ছে...`, 'info', ownerId);
+          
+          // If the AI wants to show product images
+          if (aiRes.show_product_image && aiRes.product_name) {
+            const product = businessData.products?.find((p: any) => 
+               p.name.toLowerCase().includes(aiRes.product_name.toLowerCase())
+            );
+
+            if (product && product.images && product.images.length > 0) {
+              // Send images as a generic template
+              const elements = product.images.slice(0, 5).map((imgUrl: string) => ({
+                title: product.name,
+                subtitle: `দাম: ${product.price} TK`,
+                image_url: imgUrl,
+                buttons: [
+                  {
+                    type: "postback",
+                    title: "অর্ডার করতে চাই",
+                    payload: `ORDER_${product.id}`
+                  }
+                ]
+              }));
+
+              await axios.post(`https://graph.facebook.com/v18.0/me/messages?access_token=${businessData.pageAccessToken}`, {
+                recipient: { id: senderId },
+                message: {
+                  attachment: {
+                    type: "template",
+                    payload: {
+                      template_type: "generic",
+                      elements: elements
+                    }
+                  }
+                }
+              });
+            }
+          }
+
+          // Always send the text reply
           await axios.post(`https://graph.facebook.com/v18.0/me/messages?access_token=${businessData.pageAccessToken}`, {
             recipient: { id: senderId },
             message: { text: reply }
           });
+
+          // Save bot reply to history
+          await saveChatMessage(bizId, senderId, 'bot', reply);
 
           await logActivity(bizId, 'REPLY_SENT', `সফলভাবে রিপ্লাই পাঠানো হয়েছে।`, 'success', ownerId);
 

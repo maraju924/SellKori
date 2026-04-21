@@ -757,64 +757,159 @@ function MerchantDashboard({ user, profile }: { user: FirebaseUser | null, profi
 
 function ProductManager({ business }: { business: BusinessConfig }) {
   const [newProduct, setNewProduct] = useState<Partial<Product>>({});
+  const [imageUrls, setImageUrls] = useState<string>('');
+
   const save = async (products: Product[]) => {
     await setDoc(doc(db, 'businesses', business.id), { ...business, products });
   };
 
   const add = () => {
     if (!newProduct.name || !newProduct.price) return;
+    
+    // Split by newline or comma to handle multiple URLs
+    const images = imageUrls.split(/[\n,]/).map(url => url.trim()).filter(url => url.length > 0);
+
     const p: Product = { 
       id: Date.now().toString(), 
       name: newProduct.name, 
       price: Number(newProduct.price), 
       minPrice: newProduct.minPrice ? Number(newProduct.minPrice) : undefined,
       description: newProduct.description || '',
-      image: newProduct.image || ''
+      images: images // Use the new images array
     };
     save([...business.products, p]);
     setNewProduct({});
-    toast.success('Product added');
+    setImageUrls('');
+    toast.success('প্রোডাক্ট সফলভাবে যোগ করা হয়েছে');
   };
 
   return (
     <div className="grid md:grid-cols-3 gap-8">
-      <Card className="md:col-span-1">
-        <CardHeader><CardTitle>Add Product</CardTitle></CardHeader>
-        <CardContent className="space-y-4">
-          <Input placeholder="Name" value={newProduct.name || ''} onChange={e => setNewProduct({...newProduct, name: e.target.value})} />
-          <div className="grid grid-cols-2 gap-4">
-            <Input type="number" placeholder="Price" value={newProduct.price || ''} onChange={e => setNewProduct({...newProduct, price: e.target.value})} />
-            <Input type="number" placeholder="Min Price (Bargain)" value={newProduct.minPrice || ''} onChange={e => setNewProduct({...newProduct, minPrice: e.target.value})} />
+      <Card className="md:col-span-1 border-none shadow-xl rounded-3xl overflow-hidden">
+        <CardHeader className="bg-indigo-600 text-white">
+          <CardTitle className="text-xl font-bold flex items-center gap-2">
+            <Plus className="w-6 h-6" />
+            নতুন প্রোডাক্ট
+          </CardTitle>
+          <CardDescription className="text-indigo-100">আপনার স্টোরে নতুন প্রোডাক্ট যোগ করুন।</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4 pt-6">
+          <div className="space-y-2">
+            <Label className="font-bold text-zinc-700">নাম (Product Name)</Label>
+            <Input placeholder="প্রোডাক্টের নাম লিখুন" value={newProduct.name || ''} onChange={e => setNewProduct({...newProduct, name: e.target.value})} className="h-12 rounded-xl" />
           </div>
-          <Input placeholder="Image URL" value={newProduct.image || ''} onChange={e => setNewProduct({...newProduct, image: e.target.value})} />
-          <Textarea placeholder="Description" value={newProduct.description || ''} onChange={e => setNewProduct({...newProduct, description: e.target.value})} />
-          <Button onClick={add} className="w-full">Add Product</Button>
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <Label className="font-bold text-zinc-700">দাম (Price)</Label>
+              <Input type="number" placeholder="৳ দাম" value={newProduct.price || ''} onChange={e => setNewProduct({...newProduct, price: e.target.value})} className="h-12 rounded-xl" />
+            </div>
+            <div className="space-y-2">
+              <Label className="font-bold text-zinc-700">সর্বনিম্ন দাম (Min Price)</Label>
+              <Input type="number" placeholder="৳ বারগেইনিং দাম" value={newProduct.minPrice || ''} onChange={e => setNewProduct({...newProduct, minPrice: e.target.value})} className="h-12 rounded-xl" />
+            </div>
+          </div>
+          <div className="space-y-2">
+            <Label className="font-bold text-zinc-700">ছবির লিঙ্ক (Image URLs - একটির বেশি হলে নতুন লাইনে লিখুন)</Label>
+            <Textarea 
+              placeholder="https://example.com/image1.jpg\nhttps://example.com/image2.jpg" 
+              value={imageUrls} 
+              onChange={e => setImageUrls(e.target.value)} 
+              className="h-32 rounded-xl text-xs font-mono"
+            />
+            <p className="text-[10px] text-zinc-400 italic font-medium">* আপনি যত খুশি লিঙ্ক দিতে পারেন, প্রতিটি আলাদা লাইনে দিন।</p>
+          </div>
+          <div className="space-y-2">
+            <Label className="font-bold text-zinc-700">বিস্তারিত (Description)</Label>
+            <Textarea placeholder="প্রোডাক্ট সম্পর্কে কিছু বিস্তারিত লিখুন..." value={newProduct.description || ''} onChange={e => setNewProduct({...newProduct, description: e.target.value})} className="h-24 rounded-xl" />
+          </div>
+          <Button onClick={add} className="w-full h-14 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-lg rounded-2xl shadow-lg shadow-indigo-100">
+            প্রোডাক্ট সেভ করুন
+          </Button>
         </CardContent>
       </Card>
-      <Card className="md:col-span-2">
+
+      <Card className="md:col-span-2 border-none shadow-xl rounded-3xl overflow-hidden">
+        <CardHeader className="border-b pb-4">
+          <div className="flex justify-between items-center">
+            <div>
+              <CardTitle className="text-xl font-bold">প্রোডাক্ট লিস্ট</CardTitle>
+              <CardDescription>আপনার শপের সকল প্রোডাক্ট এখানে দেখতে পারবেন।</CardDescription>
+            </div>
+            <Badge variant="secondary" className="px-3 py-1 bg-indigo-50 text-indigo-700 border-indigo-100">
+              Total {business.products.length} Items
+            </Badge>
+          </div>
+        </CardHeader>
         <CardContent className="pt-6">
-          <Table>
-            <TableHeader><TableRow><TableHead>Image</TableHead><TableHead>Name</TableHead><TableHead>Price</TableHead><TableHead>Min Price</TableHead><TableHead className="text-right">Action</TableHead></TableRow></TableHeader>
-            <TableBody>
-              {business.products.map(p => (
-                <TableRow key={p.id}>
-                  <TableCell>
-                    {p.image ? (
-                      <img src={p.image} alt={p.name} className="w-10 h-10 object-cover rounded" referrerPolicy="no-referrer" />
-                    ) : (
-                      <div className="w-10 h-10 bg-zinc-100 rounded flex items-center justify-center"><Package className="w-4 h-4 text-zinc-400" /></div>
-                    )}
-                  </TableCell>
-                  <TableCell>{p.name}</TableCell>
-                  <TableCell>{p.price} TK</TableCell>
-                  <TableCell className="text-zinc-500">{p.minPrice ? `${p.minPrice} TK` : '-'}</TableCell>
-                  <TableCell className="text-right">
-                    <Button variant="ghost" size="icon" onClick={() => save(business.products.filter(x => x.id !== p.id))} className="text-red-500"><Trash2 className="w-4 h-4" /></Button>
-                  </TableCell>
+          <div className="overflow-x-auto">
+            <Table>
+              <TableHeader>
+                <TableRow className="bg-zinc-50 border-none">
+                  <TableHead className="rounded-tl-2xl">ছবি (Gallery)</TableHead>
+                  <TableHead>নাম ও কোয়ালিটি</TableHead>
+                  <TableHead>দাম (৳)</TableHead>
+                  <TableHead>মিনিমাম (৳)</TableHead>
+                  <TableHead className="text-right rounded-tr-2xl">অ্যাকশন</TableHead>
                 </TableRow>
-              ))}
-            </TableBody>
-          </Table>
+              </TableHeader>
+              <TableBody>
+                {business.products.map(p => (
+                  <TableRow key={p.id} className="border-b border-zinc-50 hover:bg-zinc-50/50 transition-colors">
+                    <TableCell>
+                      <div className="flex -space-x-4 overflow-hidden p-1">
+                        {p.images && p.images.length > 0 ? (
+                          p.images.slice(0, 3).map((img, i) => (
+                            <div key={i} className="relative inline-block border-2 border-white rounded-xl shadow-sm overflow-hidden w-12 h-12 bg-white">
+                              <img src={img} alt={`${p.name} ${i}`} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                              {i === 2 && p.images.length > 3 && (
+                                <div className="absolute inset-0 bg-black/50 flex items-center justify-center text-white text-[10px] font-bold">
+                                  +{p.images.length - 3}
+                                </div>
+                              )}
+                            </div>
+                          ))
+                        ) : (
+                          <div className="w-12 h-12 bg-zinc-100 rounded-xl flex items-center justify-center border-2 border-white shadow-sm">
+                            <Package className="w-5 h-5 text-zinc-300" />
+                          </div>
+                        )}
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      <div className="font-bold text-zinc-900">{p.name}</div>
+                      <div className="text-[10px] text-zinc-400 font-medium truncate max-w-[150px]">
+                        {p.description || 'No description provided'}
+                      </div>
+                    </TableCell>
+                    <TableCell className="font-extrabold text-indigo-600">৳{p.price}</TableCell>
+                    <TableCell className="text-zinc-500 font-medium">{p.minPrice ? `৳${p.minPrice}` : '-'}</TableCell>
+                    <TableCell className="text-right">
+                      <Button 
+                        variant="ghost" 
+                        size="icon" 
+                        onClick={() => {
+                          if (confirm('আপনি কি এই প্রোডাক্টটি মুছে ফেলতে চান?')) {
+                            save(business.products.filter(x => x.id !== p.id));
+                          }
+                        }} 
+                        className="text-zinc-400 hover:text-red-500 hover:bg-red-50 rounded-xl transition-all"
+                      >
+                        <Trash2 className="w-5 h-5" />
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+          {business.products.length === 0 && (
+            <div className="text-center py-24">
+              <div className="w-20 h-20 bg-zinc-50 rounded-[2.5rem] flex items-center justify-center mx-auto mb-6">
+                <ShoppingBag className="w-10 h-10 text-zinc-300" />
+              </div>
+              <h3 className="text-lg font-bold text-zinc-400 italic">আপনার স্টোরে এখনও কোনো প্রোডাক্ট নেই।</h3>
+            </div>
+          )}
         </CardContent>
       </Card>
     </div>
@@ -1616,6 +1711,30 @@ function ChatView() {
                   <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
                 </div>
               </div>
+              
+              {msg.aiMetadata?.show_product_image && msg.aiMetadata.product_name && (
+                <div className="flex gap-2 overflow-x-auto pb-2 px-4 scrollbar-hide animate-out fade-out zoom-out-95 duration-500 delay-150">
+                  {(() => {
+                    const productName = msg.aiMetadata.product_name;
+                    const product = business.products.find(p => p.name.toLowerCase().includes(productName.toLowerCase()));
+                    if (!product || !product.images || product.images.length === 0) return null;
+                    return product.images.map((img, i) => (
+                      <div key={i} className="relative min-w-[200px] w-[200px] aspect-square rounded-2xl overflow-hidden border shadow-sm bg-white shrink-0">
+                        <img 
+                          src={img} 
+                          alt={product.name} 
+                          className="w-full h-full object-cover hover:scale-110 transition-transform duration-500" 
+                          referrerPolicy="no-referrer" 
+                        />
+                        <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/60 to-transparent p-3">
+                          <p className="text-white text-[10px] font-bold truncate">{product.name}</p>
+                          <p className="text-indigo-200 text-xs font-black">৳{product.price}</p>
+                        </div>
+                      </div>
+                    ));
+                  })()}
+                </div>
+              )}
               
               {msg.aiMetadata?.recommendations && msg.aiMetadata.recommendations.length > 0 && (
                 <div className="flex flex-wrap gap-2 animate-in fade-in slide-in-from-bottom-2 duration-500">
@@ -2759,14 +2878,22 @@ function FAQManager({ business }: { business: BusinessConfig }) {
   const [faqs, setFaqs] = useState<FAQ[]>(business.faqs || []);
   const [newQuestion, setNewQuestion] = useState('');
   const [newAnswer, setNewAnswer] = useState('');
+  const [newProductId, setNewProductId] = useState<string>('general');
 
   const addFAQ = async () => {
     if (!newQuestion || !newAnswer) return;
-    const updated = [...faqs, { id: Date.now().toString(), question: newQuestion, answer: newAnswer }];
+    const faq: FAQ = { 
+      id: Date.now().toString(), 
+      question: newQuestion, 
+      answer: newAnswer,
+      productId: newProductId === 'general' ? undefined : newProductId
+    };
+    const updated = [...faqs, faq];
     await updateDoc(doc(db, 'businesses', business.id), { faqs: updated });
     setFaqs(updated);
     setNewQuestion('');
     setNewAnswer('');
+    setNewProductId('general');
     toast.success('FAQ যোগ করা হয়েছে');
   };
 
@@ -2777,22 +2904,40 @@ function FAQManager({ business }: { business: BusinessConfig }) {
     toast.success('FAQ মুছে ফেলা হয়েছে');
   };
 
+  const getProductName = (productId?: string) => {
+    if (!productId || productId === 'general') return 'সাধারন (General)';
+    return business.products.find(p => p.id === productId)?.name || 'অজানা প্রোডাক্ট';
+  };
+
   return (
     <div className="space-y-6">
       <Card className="border-none shadow-sm rounded-3xl bg-white">
         <CardHeader>
           <CardTitle className="text-lg font-bold">নতুন FAQ যোগ করুন</CardTitle>
-          <CardDescription>বট এই প্রশ্নগুলোর উত্তর দিতে পারবে।</CardDescription>
+          <CardDescription>বট এই প্রশ্নগুলোর উত্তর দিতে পারবে। প্রতিটি প্রোডাক্টের জন্য আলাদা FAQ সেট করা যাবে।</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="grid gap-4">
             <div className="space-y-2">
+              <Label>প্রোডাক্ট সিলেক্ট করুন (মার্কেটিং/সাধারন হলে General রাখুন)</Label>
+              <select 
+                value={newProductId} 
+                onChange={e => setNewProductId(e.target.value)}
+                className="w-full h-11 px-3 rounded-xl border border-zinc-200 bg-white text-sm focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
+              >
+                <option value="general">সাধারণ / জেনারেল FAQ (সকলের জন্য)</option>
+                {business.products.map(p => (
+                  <option key={p.id} value={p.id}>{p.name}</option>
+                ))}
+              </select>
+            </div>
+            <div className="space-y-2">
               <Label>সাধারণ প্রশ্ন (Question)</Label>
-              <Input value={newQuestion} onChange={e => setNewQuestion(e.target.value)} placeholder="উদা: আপনার অফিস কোথায়?" className="rounded-xl" />
+              <Input value={newQuestion} onChange={e => setNewQuestion(e.target.value)} placeholder="উদা: ডেলিভারি চার্জ কত?" className="rounded-xl" />
             </div>
             <div className="space-y-2">
               <Label>উত্তর (Answer)</Label>
-              <Textarea value={newAnswer} onChange={e => setNewAnswer(e.target.value)} placeholder="উদা: আমাদের অফিস ঢাকা মিরপুর ১০..." className="rounded-xl" />
+              <Textarea value={newAnswer} onChange={e => setNewAnswer(e.target.value)} placeholder="উদা: ঢাকা সিটির ভেতরে ৬০ টাকা..." className="rounded-xl" />
             </div>
           </div>
           <Button onClick={addFAQ} className="w-full bg-indigo-600 rounded-xl py-6">FAQ সেভ করুন</Button>
@@ -2803,17 +2948,28 @@ function FAQManager({ business }: { business: BusinessConfig }) {
         {faqs.map((faq) => (
           <Card key={faq.id} className="border-none shadow-sm rounded-2xl bg-white overflow-hidden group">
             <CardContent className="p-5 flex justify-between items-start gap-3">
-              <div className="space-y-2">
-                <div className="font-bold text-sm text-indigo-600">Q: {faq.question}</div>
-                <div className="text-xs text-zinc-500 line-clamp-3">A: {faq.answer}</div>
+              <div className="space-y-2 flex-1">
+                <div className="flex items-center gap-2 mb-1">
+                  <Badge variant="outline" className="text-[9px] py-0 px-1 bg-indigo-50 text-indigo-600 border-indigo-100">
+                    {getProductName(faq.productId)}
+                  </Badge>
+                </div>
+                <div className="font-bold text-sm text-zinc-900 line-clamp-2">Q: {faq.question}</div>
+                <div className="text-xs text-zinc-500 line-clamp-3 leading-relaxed">A: {faq.answer}</div>
               </div>
-              <Button variant="ghost" size="icon" onClick={() => removeFAQ(faq.id)} className="shrink-0 text-zinc-300 hover:text-red-500 hover:bg-red-50">
+              <Button variant="ghost" size="icon" onClick={() => removeFAQ(faq.id)} className="shrink-0 text-zinc-300 hover:text-red-500 hover:bg-red-50 transition-colors">
                 <Trash2 className="w-4 h-4" />
               </Button>
             </CardContent>
           </Card>
         ))}
       </div>
+      {faqs.length === 0 && (
+        <div className="p-12 text-center bg-white rounded-3xl border-2 border-dashed border-zinc-100">
+          <HelpCircle className="w-12 h-12 text-zinc-200 mx-auto mb-3" />
+          <p className="text-zinc-400 text-sm italic">এখনও কোনো FAQ যোগ করা হয়নি।</p>
+        </div>
+      )}
     </div>
   );
 }
@@ -2976,12 +3132,12 @@ function TestChat({ business }: { business: BusinessConfig }) {
               {msg.role === 'assistant' && msg.aiMetadata?.product_name && msg.aiMetadata?.show_product_image && (
                 (() => {
                   const product = business.products.find(p => p.name.toLowerCase().includes(msg.aiMetadata!.product_name.toLowerCase()));
-                  if (product && product.image) {
+                  if (product && product.images && product.images.length > 0) {
                     return (
                       <div className="flex justify-start animate-in fade-in zoom-in-95 duration-300">
                         <div className="rounded-2xl overflow-hidden border bg-white shadow-sm max-w-[250px]">
                           <img 
-                            src={product.image} 
+                            src={product.images[0]} 
                             alt={product.name} 
                             className="w-full aspect-square object-cover"
                             referrerPolicy="no-referrer"

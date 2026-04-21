@@ -9,7 +9,7 @@ export interface Product {
   price: number;
   minPrice?: number;
   description: string;
-  image?: string;
+  images: string[];
 }
 
 export interface FAQ {
