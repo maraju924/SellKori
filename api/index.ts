@@ -45,10 +45,10 @@ try {
   console.error('Failed to initialize Firebase:', error);
 }
 
-import { GoogleGenerativeAI } from '@google/generative-ai';
+import { GoogleGenAI } from '@google/genai';
 
 // Initialize AI
-const ai = process.env.GEMINI_API_KEY ? new GoogleGenerativeAI(process.env.GEMINI_API_KEY) : null;
+const ai = process.env.GEMINI_API_KEY ? new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY }) : null;
 
 // Helper to log activity
 async function logActivity(bizId: string | null, type: string, detail: string, status: 'info' | 'error' | 'success', ownerId?: string, data?: any) {
@@ -161,24 +161,31 @@ app.post(['/webhook', '/api/webhook', '/api/webhook/:businessId'], async (req, r
             let ownerId = 'system';
             
             try {
+              const cleanPageId = String(pageId).trim();
+
               // Lookup store by Page ID (try both string and number just in case)
               let businessData: any = null;
               const shopsRef = collection(db, 'businesses');
               
+              // DETECTIVE: Let's log what we are looking for
+              await logActivity('system', 'LOOKUP', `Searching for Page ID: "${cleanPageId}"...`, 'info', 'system');
+
               // Try string lookup first
-              const qStr = query(shopsRef, where('facebookPageId', '==', String(pageId)));
+              const qStr = query(shopsRef, where('facebookPageId', '==', cleanPageId));
               const snapStr = await getDocs(qStr);
               
               if (!snapStr.empty) {
                 businessData = snapStr.docs[0].data();
                 bizId = snapStr.docs[0].id;
+                console.log('[Lookup] Found via String!');
               } else {
                 // Try number lookup
-                const qNum = query(shopsRef, where('facebookPageId', '==', Number(pageId)));
+                const qNum = query(shopsRef, where('facebookPageId', '==', Number(cleanPageId)));
                 const snapNum = await getDocs(qNum);
                 if (!snapNum.empty) {
                   businessData = snapNum.docs[0].data();
                   bizId = snapNum.docs[0].id;
+                  console.log('[Lookup] Found via Number!');
                 }
               }
 
@@ -205,23 +212,34 @@ app.post(['/webhook', '/api/webhook', '/api/webhook/:businessId'], async (req, r
               }
 
               if (!process.env.GEMINI_API_KEY || !ai) {
-                await logActivity(bizId, 'ERROR', 'AI Service setup error.', 'error', ownerId);
+                await logActivity(bizId, 'ERROR', 'AI Service setup error: API Key missing.', 'error', ownerId);
                 continue;
               }
 
               // AI Generation
-              const prompt = `Shop: ${businessData.name}\nDescription: ${businessData.description}\nProducts: ${JSON.stringify(businessData.products)}\nCustomer: ${messageText}`;
-              const model = ai.getGenerativeModel({ model: 'gemini-1.5-flash' });
-              const result = await model.generateContent(prompt);
-              const reply = result.response.text();
+              await logActivity(bizId, 'AI_START', `বট উত্তর তৈরি করছে...`, 'info', ownerId);
+              const prompt = `Shop: ${businessData.name}\nDescription: ${businessData.description || 'General store'}\nProducts: ${JSON.stringify(businessData.products || [])}\nCustomer: ${messageText}. Reply in Bengali briefly.`;
+              
+              const response = await ai.models.generateContent({
+                model: "gemini-3-flash-preview",
+                contents: prompt,
+              });
+              
+              const reply = response.text || "দুঃখিত, আমি উত্তরটি তৈরি করতে পারছি না।";
 
               // Send Message
-              await axios.post(`https://graph.facebook.com/v18.0/me/messages?access_token=${businessData.pageAccessToken}`, {
-                recipient: { id: senderId },
-                message: { text: reply }
-              });
+              await logActivity(bizId, 'SENDING_MESSAGE', `ফেসবুকে পাঠানো হচ্ছে...`, 'info', ownerId);
+              try {
+                await axios.post(`https://graph.facebook.com/v18.0/me/messages?access_token=${businessData.pageAccessToken}`, {
+                  recipient: { id: senderId },
+                  message: { text: reply }
+                });
 
-              await logActivity(bizId, 'REPLY_SENT', `Bot: "${reply.substring(0, 50)}..."`, 'success', ownerId);
+                await logActivity(bizId, 'REPLY_SENT', `Bot: "${reply.substring(0, 50)}..."`, 'success', ownerId);
+              } catch (fbErr: any) {
+                const fbErrorMessage = fbErr.response?.data?.error?.message || fbErr.message;
+                await logActivity(bizId, 'ERROR', `Facebook Sending Failed: ${fbErrorMessage}`, 'error', ownerId, fbErr.response?.data);
+              }
 
             } catch (innerErr: any) {
               console.error('Inner webhook error:', innerErr);
