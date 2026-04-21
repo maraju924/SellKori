@@ -2518,7 +2518,12 @@ function MessengerConnect({ business, setBusiness }: { business: BusinessConfig,
                   <Terminal className="w-4 h-4 text-indigo-500" />
                   Messenger Activity Log
                 </div>
-                <Badge variant="outline" className="text-[10px] bg-white">Real-time</Badge>
+                <div className="flex items-center gap-2">
+                  {!window.location.hostname.includes('google.com') && (
+                    <Badge variant="destructive" className="animate-pulse text-[9px] px-2 py-0 h-5">Outdated System</Badge>
+                  )}
+                  <Badge variant="outline" className="text-[10px] bg-white text-zinc-400">Real-time</Badge>
+                </div>
               </CardTitle>
             </CardHeader>
             <CardContent className="p-0">
