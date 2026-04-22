@@ -31,7 +31,7 @@ Output ONLY the Bengali message text.
 
   try {
     const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
+      model: "gemini-flash-latest",
       contents: prompt,
     });
     return response.text.trim();
@@ -177,7 +177,7 @@ Voice/Audio: কাস্টমার ভয়েস মেসেজ দিলে 
     }
 
     const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
+      model: "gemini-flash-latest",
       contents: [
         { role: 'user', parts }
       ],

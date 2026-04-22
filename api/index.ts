@@ -259,12 +259,12 @@ app.post(['/webhook', '/api/webhook', '/api/webhook/:businessId'], async (req, r
         
         let bizId = businessId || 'unknown';
         let ownerId = 'system';
+        let businessData: any = null;
         
         try {
           const cleanPageId = String(pageId).trim();
 
           // Lookup store by Page ID
-          let businessData: any = null;
           const shopsRef = collection(db, 'businesses');
           
           const qStr = query(shopsRef, where('facebookPageId', '==', cleanPageId));
@@ -298,16 +298,23 @@ app.post(['/webhook', '/api/webhook', '/api/webhook/:businessId'], async (req, r
             continue;
           }
 
-          // Fetch History (Last 15 messages)
+          // Fetch History (Last 8 messages - optimized from 15)
           let chatHistoryText = "";
+          let existingSummary = "";
           try {
+            // Fetch summary first
+            const custDoc = await getDoc(doc(db, 'customers', `${bizId}_${senderId}`));
+            if (custDoc.exists()) {
+              existingSummary = custDoc.data().chatSummary || "";
+            }
+
             const histRef = collection(db, 'chat_history');
             const qHist = query(
               histRef, 
               where('senderId', '==', senderId), 
               where('businessId', '==', bizId),
               orderBy('timestamp', 'desc'), 
-              limit(15)
+              limit(8)
             );
             const histSnap = await getDocs(qHist);
             const history = histSnap.docs.reverse().map(d => {
@@ -316,18 +323,25 @@ app.post(['/webhook', '/api/webhook', '/api/webhook/:businessId'], async (req, r
             });
             chatHistoryText = history.join('\n');
           } catch (histErr) {
-            console.error('History fetch failed:', histErr);
+            console.error('History/Summary fetch failed:', histErr);
           }
 
           // AI Generation
           await logActivity(bizId, 'AI_START', `বট উত্তর তৈরি করছে...`, 'info', ownerId);
           
+          // Optimize Product list for prompt efficiency
+          const optimizedProducts = (businessData.products || []).map((p: any) => ({
+             name: p.name,
+             price: p.price,
+             stock: p.stockCount
+          }));
+
           const systemPrompt = `
 # সেলস অ্যাসিস্ট্যান্ট গাইডলাইন
 তুমি "${businessData.name}" এর একজন স্মার্ট এবং কৌশলী সেলস পারসন।
 
 Shop Info: ${businessData.description || 'Professional Store'}
-Products: ${JSON.stringify(businessData.products || [])}
+Products: ${JSON.stringify(optimizedProducts)}
 FAQs: ${JSON.stringify(businessData.faqs || [])}
 
 ## কথা বলার নিয়ম (Tone & Style):
@@ -344,11 +358,13 @@ FAQs: ${JSON.stringify(businessData.faqs || [])}
 ৬. আউটপুট সবসময় JSON হবে।
 
 কনটেক্সট:
+${existingSummary ? `আগের কথার সারসংক্ষেপ: ${existingSummary}\n` : ''}
+সাম্প্রতিক আলাপ:
 ${chatHistoryText}
 কাস্টমার: ${messageText}`;
           
           const response = await ai.models.generateContent({
-            model: "gemini-3-flash-preview",
+            model: "gemini-flash-latest",
             contents: [{ role: 'user', parts: [{ text: systemPrompt }] }],
             config: {
               responseMimeType: "application/json",
@@ -490,6 +506,16 @@ ${chatHistoryText}
         } catch (innerErr: any) {
           const errMsg = innerErr.response?.data?.error?.message || innerErr.message;
           await logActivity(bizId, 'ERROR', `বট কাজ করতে পারেনি: ${errMsg}`, 'error', ownerId);
+          
+          // Send polite fallback to customer instead of silent failure
+          try {
+             if (businessData && businessData.pageAccessToken) {
+               await axios.post(`https://graph.facebook.com/v18.0/me/messages?access_token=${businessData.pageAccessToken}`, {
+                  recipient: { id: senderId },
+                  message: { text: "দুঃখিত, আমাদের সিস্টেমে সাময়িক চাপের কারণে উত্তর দিতে দেরি হচ্ছে। অনুগ্রহ করে এক মিনিট পর আবার চেষ্টা করুন।" }
+               });
+             }
+          } catch (fbErr) {}
         }
       }
     }
