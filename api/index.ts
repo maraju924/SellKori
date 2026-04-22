@@ -102,6 +102,34 @@ const responseSchema = {
   required: ["intent", "reply", "conversation_stage", "event_name", "need_more_info", "confidence", "summary"],
 };
 
+// Helper to send Facebook Conversions API events
+async function fireFacebookEvent(bizConfig: any, eventName: string, userData: any, customData: any = {}) {
+  if (!bizConfig.facebookConfig?.pixelId || !bizConfig.facebookConfig?.accessToken) return;
+
+  try {
+    const payload = {
+      data: [{
+        event_name: eventName,
+        event_time: Math.floor(Date.now() / 1000),
+        action_source: "chat",
+        user_data: {
+          client_user_agent: "AI_Sales_Bot_Messenger",
+          external_id: userData.external_id,
+          ph: userData.phone ? [userData.phone] : [],
+          fn: userData.name ? [userData.name] : [],
+        },
+        custom_data: customData
+      }],
+      test_event_code: bizConfig.facebookConfig.testEventCode || undefined
+    };
+
+    await axios.post(`https://graph.facebook.com/v18.0/${bizConfig.facebookConfig.pixelId}/events?access_token=${bizConfig.facebookConfig.accessToken}`, payload);
+    console.log(`[CAPI] Event Fired: ${eventName}`);
+  } catch (err: any) {
+    console.error('[CAPI Error]', err.response?.data || err.message);
+  }
+}
+
 // Helper to log activity
 async function logActivity(bizId: string | null, type: string, detail: string, status: 'info' | 'error' | 'success', ownerId?: string, data?: any) {
   if (!db) {
@@ -215,10 +243,19 @@ app.post(['/webhook', '/api/webhook', '/api/webhook/:businessId'], async (req, r
       if (!messaging) continue;
 
       for (const webhookEvent of messaging) {
-        if (!webhookEvent.sender || !webhookEvent.message?.text || webhookEvent.message?.is_echo) continue;
-        
         const senderId = webhookEvent.sender.id;
-        const messageText = webhookEvent.message.text;
+        let messageText = webhookEvent.message?.text;
+        
+        // Handle Postbacks (Buttons clicks)
+        if (webhookEvent.postback) {
+          const payload = webhookEvent.postback.payload;
+          if (payload.startsWith('ORDER_')) {
+            const productId = payload.replace('ORDER_', '');
+            messageText = `আমি পণ্যটি (ID: ${productId}) অর্ডার করতে চাই।`;
+          }
+        }
+
+        if (!messageText || webhookEvent.message?.is_echo) continue;
         
         let bizId = businessId || 'unknown';
         let ownerId = 'system';
@@ -287,18 +324,23 @@ app.post(['/webhook', '/api/webhook', '/api/webhook/:businessId'], async (req, r
           
           const systemPrompt = `
 # সেলস অ্যাসিস্ট্যান্ট গাইডলাইন
-তুমি "${businessData.name}" এর একজন দক্ষ সেলস অ্যাসিস্ট্যান্ট। কাস্টমারকে সর্বোচ্চ সহায়তা করা এবং পণ্য বিক্রয় নিশ্চিত করা তোমার দায়িত্ব।
+তুমি "${businessData.name}" এর একজন স্মার্ট এবং কৌশলী সেলস পারসন।
 
 Shop Info: ${businessData.description || 'Professional Store'}
 Products: ${JSON.stringify(businessData.products || [])}
 FAQs: ${JSON.stringify(businessData.faqs || [])}
 
-## নিয়মাবলি:
-১. প্রোডাক্ট ও FAQ এর তথ্য ব্যবহার করে দাম ও অন্যান্য ডিটেইলস জানাবে।
+## কথা বলার নিয়ম (Tone & Style):
+১. উত্তর সবসময় **ছোট, টু-দি-পয়েন্ট এবং মানবিক** হবে। বড় প্যারাগ্রাফ লিখবে না।
+২. কাস্টমারের কথার সাথে তাল মিলিয়ে ছোট ছোট ২-৩ লাইনে উত্তর দাও। অতিরিক্ত তথ্য দিয়ে কাস্টমারকে বিরক্ত করবে না।
+৩. উত্তর সবসময় বাংলায় দিবে।
+
+## কাজের নিয়মাবলি:
+১. প্রোডাক্টের দাম ও ডিটেইলস সঠিক দিবে।
 ২. কাস্টমার ছবি চাইলে 'show_product_image: true' করবে এবং সঠিক 'product_name' দিবে।
-৩. প্রতিটি প্রোডাক্টের 'stockCount' চেক করবে। স্টকে না থাকলে (stockCount <= 0) বিনীতভাবে জানাবে।
-৪. কাস্টমারের আগ্রহ অনুযায়ী তাকে Hot, Warm বা Cold লিড হিসেবে চিহ্নিত করবে।
-৫. উত্তর সবসময় বাংলায় দিবে।
+৩. প্রতিটি প্রোডাক্টের 'stockCount' চেক করবে। স্টকে না থাকলে বিনীতভাবে জানাবে।
+৪. কাস্টমার যদি নাম, ফোন নম্বর এবং ঠিকানা দেয়, তবেই 'conversation_stage: order_completed' এবং 'event_name: Purchase' সেট করবে।
+৫. কাস্টমার "অর্ডার করতে চাই" বললে তার কাছে নাম, মোবাইল নম্বর ও ঠিকানা চাও।
 ৬. আউটপুট সবসময় JSON হবে।
 
 কনটেক্সট:
@@ -375,6 +417,45 @@ ${chatHistoryText}
             segment = 'Hot';
           } else if (aiRes.conversation_stage === 'interested') {
             segment = 'Warm';
+          }
+
+          // FIRE Facebook Event (CAPI)
+          if (aiRes.event_name) {
+            await fireFacebookEvent(businessData, aiRes.event_name, {
+              external_id: senderId,
+              phone: aiRes.order_data?.phone,
+              name: aiRes.order_data?.name
+            });
+          }
+
+          // SAVE ORDER to Dashboard if completed
+          if (aiRes.conversation_stage === 'order_completed') {
+            try {
+              const product = businessData.products?.find((p: any) => 
+                 p.name.toLowerCase().includes(aiRes.product_name?.toLowerCase() || '')
+              );
+              
+              const orderPayload = {
+                merchantId: ownerId,
+                businessId: bizId,
+                customerName: aiRes.order_data?.name || 'Customer',
+                phone: aiRes.order_data?.phone || '',
+                address: aiRes.order_data?.address || '',
+                quantity: parseInt(aiRes.order_data?.quantity) || 1,
+                productName: aiRes.product_name || product?.name || 'Unknown Product',
+                unitPrice: product?.price || 0,
+                totalPrice: (product?.price || 0) * (parseInt(aiRes.order_data?.quantity) || 1),
+                status: 'pending',
+                paymentStatus: 'unpaid',
+                paymentMethod: 'cod',
+                createdAt: serverTimestamp()
+              };
+
+              await addDoc(collection(db, 'orders'), orderPayload);
+              await logActivity(bizId, 'ORDER_CREATED', `নতুন অর্ডার তৈরি হয়েছে: ${orderPayload.productName}`, 'success', ownerId);
+            } catch (orderErr) {
+              console.error('Order recording failed:', orderErr);
+            }
           }
 
           // Update customer record in background
