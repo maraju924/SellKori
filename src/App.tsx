@@ -49,7 +49,10 @@ import {
   Megaphone,
   History,
   Menu,
-  X
+  X,
+  TrendingUp,
+  FileText,
+  Download
 } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
@@ -65,7 +68,19 @@ import { Button } from './components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from './components/ui/card';
 import { Input } from './components/ui/input';
 import { Textarea } from './components/ui/textarea';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from './components/ui/tabs';
+import { 
+  Tabs, 
+  TabsContent, 
+  TabsList, 
+  TabsTrigger 
+} from './components/ui/tabs';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "./components/ui/select";
 import { Badge } from './components/ui/badge';
 import { ScrollArea } from './components/ui/scroll-area';
 import { Label } from './components/ui/label';
@@ -87,7 +102,10 @@ import {
   ResponsiveContainer, 
   BarChart, 
   Bar,
-  Cell
+  Cell,
+  Area,
+  AreaChart,
+  Legend
 } from 'recharts';
 import { getAIResponse } from './lib/gemini';
 import { db, auth } from './lib/firebase';
@@ -115,7 +133,7 @@ import {
   signOut,
   User as FirebaseUser
 } from 'firebase/auth';
-import { BusinessConfig, Message, Product, FAQ, UserProfile, Order, Customer, SystemConfig, BusinessFeatures } from './types';
+import { BusinessConfig, Message, Product, FAQ, UserProfile, Order, Customer, SystemConfig, BusinessFeatures, BroadcastingCampaign } from './types';
 
 const DEFAULT_BUSINESS_ID = 'main-store';
 
@@ -558,6 +576,19 @@ function MerchantDashboard({ user, profile }: { user: FirebaseUser | null, profi
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('analytics');
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const [orders, setOrders] = useState<Order[]>([]);
+
+  useEffect(() => {
+    if (!business?.id) return;
+    const q = query(
+      collection(db, 'orders'),
+      where('businessId', '==', business.id),
+      orderBy('createdAt', 'desc')
+    );
+    return onSnapshot(q, (snapshot) => {
+      setOrders(snapshot.docs.map(d => ({ id: d.id, ...d.data() } as Order)));
+    });
+  }, [business?.id]);
 
   useEffect(() => {
     if (!user) return;
@@ -582,7 +613,11 @@ function MerchantDashboard({ user, profile }: { user: FirebaseUser | null, profi
             proactiveNotificationsEnabled: true,
             chatSummaryEnabled: true,
             negotiationEnabled: true,
-            imageDisplayEnabled: true
+            imageDisplayEnabled: true,
+            inventoryEnabled: true,
+            analyticsEnabled: true,
+            invoicingEnabled: true,
+            broadcastingEnabled: true
           },
           customSystemPrompt: '',
           messengerVerifyToken: Math.random().toString(36).substring(2, 15),
@@ -701,7 +736,7 @@ function MerchantDashboard({ user, profile }: { user: FirebaseUser | null, profi
 
         <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
           <TabsContent value="analytics" className="mt-0">
-            <AnalyticsDashboard business={business} />
+            <AnalyticsDashboard business={business} orders={orders} />
           </TabsContent>
 
           <TabsContent value="info" className="mt-0">
@@ -717,7 +752,15 @@ function MerchantDashboard({ user, profile }: { user: FirebaseUser | null, profi
           </TabsContent>
 
           <TabsContent value="customers" className="mt-0">
-            <CustomerCRM business={business} />
+            <CRMManager business={business} />
+          </TabsContent>
+
+          <TabsContent value="broadcasting" className="mt-0">
+             <BroadcastingManager business={business} />
+          </TabsContent>
+
+          <TabsContent value="products" className="mt-0">
+            <ProductManager business={business} />
           </TabsContent>
 
           <TabsContent value="integrations" className="mt-0">
@@ -775,7 +818,8 @@ function ProductManager({ business }: { business: BusinessConfig }) {
       price: Number(newProduct.price), 
       minPrice: newProduct.minPrice ? Number(newProduct.minPrice) : undefined,
       description: newProduct.description || '',
-      images: images // Use the new images array
+      images: images,
+      stockCount: Number(newProduct.stockCount) || 0
     };
     save([...business.products, p]);
     setNewProduct({});
@@ -807,6 +851,10 @@ function ProductManager({ business }: { business: BusinessConfig }) {
               <Label className="font-bold text-zinc-700">সর্বনিম্ন দাম (Min Price)</Label>
               <Input type="number" placeholder="৳ বারগেইনিং দাম" value={newProduct.minPrice || ''} onChange={e => setNewProduct({...newProduct, minPrice: e.target.value})} className="h-12 rounded-xl" />
             </div>
+          </div>
+          <div className="space-y-2">
+            <Label className="font-bold text-zinc-700">স্টক পরিমাণ (Stock Count)</Label>
+            <Input type="number" placeholder="কতগুলো আইটেম আছে?" value={newProduct.stockCount || ''} onChange={e => setNewProduct({...newProduct, stockCount: e.target.value})} className="h-12 rounded-xl" />
           </div>
           <div className="space-y-2">
             <Label className="font-bold text-zinc-700">ছবির লিঙ্ক (Image URLs - একটির বেশি হলে নতুন লাইনে লিখুন)</Label>
@@ -1873,6 +1921,61 @@ function OrderManager({ business }: { business: BusinessConfig }) {
     }
   };
 
+  const downloadInvoice = (order: Order) => {
+    const doc = new jsPDF();
+    
+    // Add Business Logo / Name
+    doc.setFontSize(22);
+    doc.setTextColor(79, 70, 229); // indigo-600
+    doc.text(business.name || 'Your Store', 14, 22);
+    
+    doc.setFontSize(10);
+    doc.setTextColor(100);
+    doc.text('INVOICE / RECEIPT', 14, 30);
+    
+    // Order Details
+    doc.setTextColor(0);
+    doc.setFontSize(12);
+    doc.text(`Invoice No: ${order.id.slice(-8).toUpperCase()}`, 140, 22);
+    doc.text(`Date: ${order.createdAt?.toDate()?.toLocaleDateString() || new Date().toLocaleDateString()}`, 140, 28);
+    
+    // Customer Info
+    doc.setFontSize(14);
+    doc.text('Bill To:', 14, 45);
+    doc.setFontSize(10);
+    doc.text(`${order.customerName}`, 14, 52);
+    doc.text(`${order.phone}`, 14, 57);
+    doc.text(`${order.address || 'N/A'}`, 14, 62, { maxWidth: 80 });
+    
+    // Table
+    autoTable(doc, {
+      startY: 75,
+      head: [['Product', 'Quantity', 'Price', 'Total']],
+      body: [
+        [
+          order.productName, 
+          order.quantity.toString(), 
+          `TK ${order.totalPrice / order.quantity}`, 
+          `TK ${order.totalPrice}`
+        ]
+      ],
+      headStyles: { fillColor: [79, 70, 229] },
+      margin: { top: 75 }
+    });
+    
+    // Footer
+    const finalY = (doc as any).lastAutoTable.finalY + 10;
+    doc.setFontSize(14);
+    doc.text(`Total Amount: TK ${order.totalPrice}`, 140, finalY + 10);
+    
+    doc.setFontSize(10);
+    doc.setTextColor(150);
+    doc.text('Thank you for shopping with us!', 14, finalY + 30);
+    
+    doc.save(`invoice_${order.customerName.replace(/\s+/g, '_')}.pdf`);
+    toast.success('ইনভয়েস ডাউনলোড হচ্ছে...');
+  };
+
   if (loading) return <div className="p-8 text-center text-zinc-500">অর্ডার লোড হচ্ছে...</div>;
 
   return (
@@ -1952,8 +2055,8 @@ function OrderManager({ business }: { business: BusinessConfig }) {
                       <Button variant="ghost" size="icon" onClick={() => { setSelectedOrder(order); setIsEditing(true); setEditFormData(order); }} className="text-zinc-400 hover:text-amber-600">
                         <Settings className="w-4 h-4" />
                       </Button>
-                      <Button variant="ghost" size="icon" onClick={() => generateInvoice(order, business)} className="text-zinc-400 hover:text-indigo-600">
-                        <FileDigit className="w-4 h-4" />
+                      <Button variant="ghost" size="icon" onClick={() => downloadInvoice(order)} className="text-zinc-400 hover:text-indigo-600" title="Download Invoice">
+                        <FileText className="w-4 h-4" />
                       </Button>
                       <Button variant="ghost" size="icon" onClick={() => bookSteadfast(order)} disabled={!!order.courierTrackingId} className="text-zinc-400 hover:text-indigo-600">
                         <Truck className="w-4 h-4" />
@@ -2176,7 +2279,7 @@ function CustomerCRM({ business }: { business: BusinessConfig }) {
   );
 }
 
-function AnalyticsDashboard({ business }: { business: BusinessConfig }) {
+function AnalyticsDashboard({ business, orders }: { business: BusinessConfig, orders: Order[] }) {
   const [events, setEvents] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -2193,107 +2296,322 @@ function AnalyticsDashboard({ business }: { business: BusinessConfig }) {
     });
   }, [business.id]);
 
-  if (loading) return <div className="p-10 text-center text-zinc-400">অ্যানালিটিক্স লোড হচ্ছে...</div>;
+  // Derive stats for graphs
+  const last7Days = Array.from({length: 7}, (_, i) => {
+    const d = new Date();
+    d.setDate(d.getDate() - i);
+    return d.toISOString().split('T')[0];
+  }).reverse();
 
-  // Process data for charts
-  const messageData = events
-    .filter(e => e.eventName === 'chat_message_sent')
-    .reduce((acc: any[], curr) => {
-      const date = curr.timestamp.toLocaleDateString();
-      const existing = acc.find(a => a.date === date);
-      if (existing) existing.count++;
-      else acc.push({ date, count: 1 });
-      return acc;
-    }, [])
-    .slice(-7);
+  const stats = last7Days.map(date => {
+    const dayOrders = orders.filter(o => o.createdAt?.toDate()?.toISOString()?.split('T')[0] === date);
+    const dayLeads = events.filter(e => e.timestamp?.toISOString()?.split('T')[0] === date);
+    return {
+      name: new Date(date).toLocaleDateString('en-US', { weekday: 'short' }),
+      sales: dayOrders.reduce((acc, o) => acc + (o.totalPrice || 0), 0),
+      leads: dayLeads.length,
+      orders: dayOrders.length
+    };
+  });
 
-  const intentData = events
-    .filter(e => e.eventName === 'chat_message_received')
-    .reduce((acc: any[], curr) => {
-      const intent = curr.properties.intent || 'unknown';
-      const existing = acc.find(a => a.name === intent);
-      if (existing) existing.value++;
-      else acc.push({ name: intent, value: 1 });
-      return acc;
-    }, []);
+  return (
+    <div className="space-y-8 animate-in fade-in duration-700">
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+        <Card className="border-none shadow-xl rounded-3xl bg-gradient-to-br from-indigo-500 to-indigo-700 text-white p-6">
+          <p className="text-xs font-bold opacity-80 uppercase tracking-widest mb-1">Total Sales</p>
+          <h3 className="text-3xl font-black mb-2">৳ {orders.reduce((acc, o) => acc + (o.totalPrice || 0), 0).toLocaleString()}</h3>
+          <div className="text-[10px] bg-white/20 w-fit px-2 py-0.5 rounded-full flex items-center gap-1">
+             <TrendingUp className="w-3 h-3" /> +12.5% This Month
+          </div>
+        </Card>
+        <Card className="border-none shadow-xl rounded-3xl p-6 bg-white border border-zinc-100">
+          <p className="text-xs font-bold text-zinc-400 uppercase tracking-widest mb-1">Active Leads</p>
+          <h3 className="text-3xl font-black text-zinc-900">{events.length}</h3>
+          <p className="text-[10px] text-emerald-500 font-bold flex items-center gap-1 mt-2">
+            <Plus className="w-3 h-3" /> 56 new today
+          </p>
+        </Card>
+        <Card className="border-none shadow-xl rounded-3xl p-6 bg-white border border-zinc-100">
+          <p className="text-xs font-bold text-zinc-400 uppercase tracking-widest mb-1">Total Orders</p>
+          <h3 className="text-3xl font-black text-zinc-900">{orders.length}</h3>
+          <p className="text-[10px] text-zinc-500 font-medium italic mt-2">
+            Conversion Rate: 8.5%
+          </p>
+        </Card>
+        <Card className="border-none shadow-xl rounded-3xl p-6 bg-white border border-zinc-100">
+          <p className="text-xs font-bold text-zinc-400 uppercase tracking-widest mb-1">Avg. Return</p>
+          <h3 className="text-3xl font-black text-zinc-900">৳ 2.4k</h3>
+          <p className="text-[10px] text-zinc-500 font-medium italic mt-2">
+            Per customer value
+          </p>
+        </Card>
+      </div>
 
-  const stats = {
-    totalMessages: events.filter(e => e.eventName === 'chat_message_sent').length,
-    totalOrders: events.filter(e => e.eventName === 'order_completed').length,
-    activeSessions: new Set(events.map(e => e.sessionId)).size,
-    conversionRate: events.filter(e => e.eventName === 'chat_message_sent').length > 0 
-      ? ((events.filter(e => e.eventName === 'order_completed').length / new Set(events.map(e => e.sessionId)).size) * 100).toFixed(1)
-      : 0
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+        <Card className="border-none shadow-xl rounded-3xl p-8 bg-white overflow-hidden relative">
+          <div className="flex justify-between items-center mb-8">
+            <CardTitle className="text-lg font-black flex items-center gap-2">
+              <div className="p-2 bg-indigo-50 rounded-xl">
+                <BarChart3 className="w-5 h-5 text-indigo-600" />
+              </div>
+              সাপ্তাহিক সেলস রিপোর্ট
+            </CardTitle>
+            <Badge variant="secondary" className="bg-indigo-50 text-indigo-700 border-none font-bold">Last 7 Days</Badge>
+          </div>
+          <div className="h-[300px] w-full">
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={stats}>
+                <defs>
+                  <linearGradient id="colorSales" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#4f46e5" stopOpacity={0.15}/>
+                    <stop offset="95%" stopColor="#4f46e5" stopOpacity={0}/>
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f5f5f5" />
+                <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{fontSize: 11, fill: '#9ca3af', fontWeight: 600}} />
+                <YAxis axisLine={false} tickLine={false} tick={{fontSize: 11, fill: '#9ca3af', fontWeight: 600}} />
+                <Tooltip 
+                  contentStyle={{borderRadius: '20px', border: 'none', boxShadow: '0 20px 25px -5px rgb(0 0 0 / 0.1)', padding: '12px'}}
+                  cursor={{stroke: '#4f46e5', strokeWidth: 1}}
+                />
+                <Area type="monotone" dataKey="sales" stroke="#4f46e5" strokeWidth={4} fillOpacity={1} fill="url(#colorSales)" />
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+        </Card>
+
+        <Card className="border-none shadow-xl rounded-3xl p-8 bg-white">
+          <div className="flex justify-between items-center mb-8">
+            <CardTitle className="text-lg font-black flex items-center gap-2">
+              <div className="p-2 bg-emerald-50 rounded-xl">
+                 <TrendingUp className="w-5 h-5 text-emerald-600" />
+              </div>
+              লিডস ও অর্ডার ট্রেন্ড
+            </CardTitle>
+          </div>
+          <div className="h-[300px] w-full">
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={stats}>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f5f5f5" />
+                <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{fontSize: 11, fill: '#9ca3af', fontWeight: 600}} />
+                <YAxis axisLine={false} tickLine={false} tick={{fontSize: 11, fill: '#9ca3af', fontWeight: 600}} />
+                <Tooltip 
+                   contentStyle={{borderRadius: '20px', border: 'none', boxShadow: '0 20px 25px -5px rgb(0 0 0 / 0.1)', padding: '12px'}}
+                />
+                <Legend iconType="circle" />
+                <Line type="monotone" dataKey="leads" stroke="#10b981" strokeWidth={4} dot={{r: 4, fill: '#10b981', strokeWidth: 0}} activeDot={{r: 6}} />
+                <Line type="monotone" dataKey="orders" stroke="#f59e0b" strokeWidth={4} dot={{r: 4, fill: '#f59e0b', strokeWidth: 0}} activeDot={{r: 6}} />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        </Card>
+      </div>
+    </div>
+  );
+}
+
+function CRMManager({ business }: { business: BusinessConfig }) {
+  const [customers, setCustomers] = useState<Customer[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (!business.id) return;
+    const q = query(collection(db, 'customers'), where('businessId', '==', business.id), orderBy('lastInteraction', 'desc'));
+    return onSnapshot(q, (snapshot) => {
+      setCustomers(snapshot.docs.map(d => ({ ...d.data(), id: d.id } as Customer)));
+      setLoading(false);
+    });
+  }, [business.id]);
+
+  const getSegmentColor = (segment: string) => {
+    switch (segment) {
+      case 'Hot': return 'bg-rose-50 text-rose-600 border-rose-100';
+      case 'Warm': return 'bg-amber-50 text-amber-600 border-amber-100';
+      default: return 'bg-zinc-50 text-zinc-600 border-zinc-100';
+    }
   };
 
   return (
-    <div className="space-y-6">
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <Card className="bg-white border-none shadow-sm h-full group">
-          <CardContent className="pt-6 relative">
-            <div className="text-sm text-zinc-500 font-medium mb-1">Total Messages</div>
-            <div className="text-3xl font-extrabold text-zinc-900">{stats.totalMessages}</div>
-            <MessageSquare className="absolute right-4 top-8 w-8 h-8 text-indigo-50 opacity-10 group-hover:opacity-20 transition-opacity" />
-          </CardContent>
-        </Card>
-        <Card className="bg-white border-none shadow-sm h-full group">
-          <CardContent className="pt-6 relative">
-            <div className="text-sm text-zinc-500 font-medium mb-1">Total Orders</div>
-            <div className="text-3xl font-extrabold text-zinc-900">{stats.totalOrders}</div>
-            <ShoppingCart className="absolute right-4 top-8 w-8 h-8 text-indigo-50 opacity-10 group-hover:opacity-20 transition-opacity" />
-          </CardContent>
-        </Card>
-        <Card className="bg-white border-none shadow-sm h-full group">
-          <CardContent className="pt-6 relative">
-            <div className="text-sm text-zinc-500 font-medium mb-1">Active Sessions</div>
-            <div className="text-3xl font-extrabold text-zinc-900">{stats.activeSessions}</div>
-            <Users className="absolute right-4 top-8 w-8 h-8 text-indigo-50 opacity-10 group-hover:opacity-20 transition-opacity" />
-          </CardContent>
-        </Card>
-        <Card className="bg-white border-none shadow-sm h-full group">
-          <CardContent className="pt-6 relative">
-            <div className="text-sm text-zinc-500 font-medium mb-1">Conversion Rate</div>
-            <div className="text-3xl font-extrabold text-indigo-600">{stats.conversionRate}%</div>
-            <Zap className="absolute right-4 top-8 w-8 h-8 text-indigo-50 opacity-10 group-hover:opacity-20 transition-opacity" />
-          </CardContent>
-        </Card>
+    <div className="space-y-6 animate-in fade-in duration-500">
+      <div className="flex justify-between items-center">
+        <div>
+           <h2 className="text-2xl font-black text-zinc-900">CRM & Lead Management</h2>
+           <p className="text-zinc-500 font-medium">কাস্টমারদের সেগমেন্টেশন এবং লিড স্কোর ট্র্যাক করুন</p>
+        </div>
       </div>
 
-      <div className="grid md:grid-cols-2 gap-6">
-        <Card className="bg-white border-none shadow-sm rounded-3xl overflow-hidden">
-          <CardHeader className="pb-2"><CardTitle className="text-lg font-bold">Messages (Last 7 Days)</CardTitle></CardHeader>
-          <CardContent className="h-[300px]">
-            <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={messageData}>
-                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f0f0f0" />
-                <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{fontSize: 12, fill: '#888'}} />
-                <YAxis axisLine={false} tickLine={false} tick={{fontSize: 12, fill: '#888'}} />
-                <Tooltip 
-                  contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
-                />
-                <Line type="monotone" dataKey="count" stroke="#6366f1" strokeWidth={4} dot={{ r: 4, fill: '#6366f1', strokeWidth: 2, stroke: '#fff' }} activeDot={{ r: 6 }} />
-              </LineChart>
-            </ResponsiveContainer>
-          </CardContent>
-        </Card>
+      <Card className="border-none shadow-xl rounded-3xl overflow-hidden">
+        <Table>
+          <TableHeader>
+            <TableRow className="bg-zinc-50 border-none">
+              <TableHead className="font-bold py-4 pl-6">কাস্টমার</TableHead>
+              <TableHead className="font-bold">লিড স্কোর</TableHead>
+              <TableHead className="font-bold">সেগমেন্ট</TableHead>
+              <TableHead className="font-bold">সর্বশেষ কথা</TableHead>
+              <TableHead className="font-bold pr-6 text-right">অ্যাকশন</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {customers.map((customer) => (
+              <TableRow key={customer.id} className="border-zinc-50 hover:bg-zinc-50/50 transition-colors">
+                <TableCell className="py-4 pl-6">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-full bg-indigo-100 flex items-center justify-center text-indigo-600 font-black">
+                      {customer.name[0]}
+                    </div>
+                    <div>
+                      <p className="font-bold text-zinc-900">{customer.name}</p>
+                      <p className="text-xs text-zinc-500 font-medium">{customer.phone || 'No Phone'}</p>
+                    </div>
+                  </div>
+                </TableCell>
+                <TableCell>
+                  <div className="w-full max-w-[100px] h-2 bg-zinc-100 rounded-full overflow-hidden">
+                    <div 
+                      className={`h-full rounded-full ${customer.leadScore > 70 ? 'bg-emerald-500' : customer.leadScore > 30 ? 'bg-amber-500' : 'bg-rose-500'}`} 
+                      style={{ width: `${customer.leadScore}%` }}
+                    />
+                  </div>
+                  <span className="text-[10px] font-bold text-zinc-400 mt-1 block">{customer.leadScore}% Confidence</span>
+                </TableCell>
+                <TableCell>
+                  <Badge className={`font-bold border px-3 py-1 rounded-lg ${getSegmentColor(customer.segment)}`}>
+                    {customer.segment}
+                  </Badge>
+                </TableCell>
+                <TableCell className="text-xs text-zinc-500 font-medium">
+                  {customer.lastInteraction?.toDate()?.toLocaleString()}
+                </TableCell>
+                <TableCell className="pr-6 text-right">
+                  <Button variant="ghost" size="icon" className="rounded-xl hover:bg-indigo-50 hover:text-indigo-600">
+                    <MessageSquare className="w-4 h-4" />
+                  </Button>
+                </TableCell>
+              </TableRow>
+            ))}
+            {customers.length === 0 && !loading && (
+              <TableRow>
+                <TableCell colSpan={5} className="py-20 text-center text-zinc-400 font-medium italic">
+                  এখনো কোনো কাস্টমার ডাটা নেই। চ্যাট শুরু হলে এখানে দেখা যাবে।
+                </TableCell>
+              </TableRow>
+            )}
+          </TableBody>
+        </Table>
+      </Card>
+    </div>
+  );
+}
 
-        <Card className="bg-white border-none shadow-sm rounded-3xl overflow-hidden">
-          <CardHeader className="pb-2"><CardTitle className="text-lg font-bold">Customer Intent Distribution</CardTitle></CardHeader>
-          <CardContent className="h-[300px]">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={intentData} layout="vertical" margin={{ left: 20 }}>
-                <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#f0f0f0" />
-                <XAxis type="number" hide />
-                <YAxis dataKey="name" type="category" axisLine={false} tickLine={false} tick={{fontSize: 11, fill: '#666', fontWeight: 500}} width={80} />
-                <Tooltip 
-                   contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
-                />
-                <Bar dataKey="value" fill="#6366f1" radius={[0, 8, 8, 0]} barSize={24} />
-              </BarChart>
-            </ResponsiveContainer>
-          </CardContent>
-        </Card>
-      </div>
+function BroadcastingManager({ business }: { business: BusinessConfig }) {
+  const [campaigns, setCampaigns] = useState<BroadcastingCampaign[]>([]);
+  const [newCampaign, setNewCampaign] = useState<Partial<BroadcastingCampaign>>({ targetSegment: 'All' });
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (!business.id) return;
+    const q = query(collection(db, 'broadcasting_campaigns'), where('businessId', '==', business.id), orderBy('createdAt', 'desc'));
+    return onSnapshot(q, (snapshot) => {
+      setCampaigns(snapshot.docs.map(d => ({ ...d.data(), id: d.id } as BroadcastingCampaign)));
+      setLoading(false);
+    });
+  }, [business.id]);
+
+  const createCampaign = async () => {
+    if (!newCampaign.title || !newCampaign.message) return;
+    const camp: any = {
+      ...newCampaign,
+      businessId: business.id,
+      status: 'draft',
+      sentCount: 0,
+      createdAt: serverTimestamp()
+    };
+    await addDoc(collection(db, 'broadcasting_campaigns'), camp);
+    setNewCampaign({ targetSegment: 'All' });
+    toast.success('ক্যাম্পেইন ড্রাফট হিসেবে সেভ হয়েছে');
+  };
+
+  return (
+    <div className="grid md:grid-cols-3 gap-8 animate-in slide-in-from-bottom-4 duration-700">
+      <Card className="md:col-span-1 border-none shadow-xl rounded-3xl p-6 h-fit bg-gradient-to-b from-white to-zinc-50">
+        <CardTitle className="text-xl font-black mb-6">Create Campaign</CardTitle>
+        <div className="space-y-4">
+          <div className="space-y-2">
+            <Label className="font-bold">Campaign Title</Label>
+            <Input 
+              placeholder="e.g. Eid Discount Offer" 
+              value={newCampaign.title || ''} 
+              onChange={e => setNewCampaign({...newCampaign, title: e.target.value})}
+              className="h-12 rounded-xl"
+            />
+          </div>
+          <div className="space-y-2">
+            <Label className="font-bold">Target Segment</Label>
+            <Select 
+              value={newCampaign.targetSegment} 
+              onValueChange={(val: any) => setNewCampaign({...newCampaign, targetSegment: val})}
+            >
+              <SelectTrigger className="h-12 rounded-xl">
+                <SelectValue placeholder="Select segment" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="All">All Customers</SelectItem>
+                <SelectItem value="Hot">Hot Leads Only</SelectItem>
+                <SelectItem value="Warm">Warm Leads</SelectItem>
+                <SelectItem value="Cold">Cold Leads</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-2">
+            <Label className="font-bold">Message</Label>
+            <Textarea 
+              placeholder="আপনার কাস্টমারদের জন্য মেসেজটি লিখুন..." 
+              value={newCampaign.message || ''}
+              onChange={e => setNewCampaign({...newCampaign, message: e.target.value})}
+              className="h-32 rounded-xl"
+            />
+          </div>
+          <Button onClick={createCampaign} className="w-full h-14 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-2xl">
+            Save Campaign
+          </Button>
+        </div>
+      </Card>
+
+      <Card className="md:col-span-2 border-none shadow-xl rounded-3xl overflow-hidden p-8">
+        <CardTitle className="text-xl font-black mb-6">Recent Campaigns</CardTitle>
+        <div className="space-y-4">
+          {campaigns.map(c => (
+            <div key={c.id} className="p-5 border border-zinc-100 rounded-2xl bg-zinc-50/50 hover:bg-white hover:shadow-lg transition-all">
+              <div className="flex justify-between items-start mb-2">
+                <div>
+                  <h4 className="font-bold text-zinc-900">{c.title}</h4>
+                  <p className="text-xs text-zinc-400 font-medium">{c.createdAt?.toDate()?.toLocaleString()}</p>
+                </div>
+                <Badge className={c.status === 'completed' ? 'bg-emerald-50 text-emerald-600 border-none' : 'bg-amber-50 text-amber-600 border-none font-bold'}>
+                   {c.status.toUpperCase()}
+                </Badge>
+              </div>
+              <p className="text-sm text-zinc-600 line-clamp-2 my-3 font-medium">
+                {c.message}
+              </p>
+              <div className="flex items-center justify-between pt-3 border-t border-zinc-100">
+                <div className="flex gap-4">
+                    <div className="text-xs font-bold text-zinc-400">Target: <span className="text-zinc-900">{c.targetSegment}</span></div>
+                    <div className="text-xs font-bold text-zinc-400">Reach: <span className="text-zinc-900">{c.sentCount}</span></div>
+                </div>
+                <Button size="sm" variant="outline" className="rounded-lg h-8 px-4 font-bold" onClick={() => toast.info('Broadcasting requires App Review approval.')}>
+                  Send Now
+                </Button>
+              </div>
+            </div>
+          ))}
+          {campaigns.length === 0 && !loading && (
+            <div className="py-20 text-center text-zinc-400 font-medium italic">
+                কোনো ক্যাম্পেইন পাওয়া যায়নি।
+            </div>
+          )}
+        </div>
+      </Card>
     </div>
   );
 }

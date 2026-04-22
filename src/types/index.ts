@@ -10,6 +10,7 @@ export interface Product {
   minPrice?: number;
   description: string;
   images: string[];
+  stockCount: number;
 }
 
 export interface FAQ {
@@ -32,6 +33,10 @@ export interface BusinessFeatures {
   chatSummaryEnabled: boolean;
   negotiationEnabled: boolean;
   imageDisplayEnabled: boolean;
+  inventoryEnabled: boolean;
+  analyticsEnabled: boolean;
+  invoicingEnabled: boolean;
+  broadcastingEnabled: boolean;
 }
 
 export interface BusinessConfig {
@@ -143,8 +148,20 @@ export interface Customer {
   totalOrders: number;
   totalSpent: number;
   leadScore: number; // 0-100
+  segment: 'Hot' | 'Warm' | 'Cold';
   chatSummary?: string; // Summary of the complete chat history for AI context
   lastInteraction: any;
+  createdAt: any;
+}
+
+export interface BroadcastingCampaign {
+  id: string;
+  businessId: string;
+  title: string;
+  message: string;
+  targetSegment: 'All' | 'Hot' | 'Warm' | 'Cold';
+  status: 'draft' | 'sending' | 'completed';
+  sentCount: number;
   createdAt: any;
 }
 

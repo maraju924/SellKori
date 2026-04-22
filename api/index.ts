@@ -45,10 +45,62 @@ try {
   console.error('Failed to initialize Firebase:', error);
 }
 
-import { GoogleGenAI } from '@google/genai';
+import { GoogleGenAI, Type } from '@google/genai';
 
 // Initialize AI
 const ai = process.env.GEMINI_API_KEY ? new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY }) : null;
+
+// Response Schema for AI
+const responseSchema = {
+  type: Type.OBJECT,
+  properties: {
+    intent: {
+      type: Type.STRING,
+      description: "Intent of the user message: product_query, order, delivery_status, general, unknown",
+    },
+    show_product_image: {
+      type: Type.BOOLEAN,
+      description: "Set to true ONLY if the customer explicitly asks to see a picture/image/photo of a product, or if they are asking about price/details for the first time. Set to false for general conversation or order processing.",
+    },
+    product_name: {
+      type: Type.STRING,
+      description: "Identified product name if any",
+    },
+    reply: {
+      type: Type.STRING,
+      description: "The reply in Bengali language",
+    },
+    summary: {
+      type: Type.STRING,
+      description: "Concise updated summary of the entire conversation until now in Bengali",
+    },
+    order_data: {
+      type: Type.OBJECT,
+      properties: {
+        name: { type: Type.STRING },
+        phone: { type: Type.STRING },
+        address: { type: Type.STRING },
+        quantity: { type: Type.STRING },
+        negotiated_price: { type: Type.STRING, description: "The final agreed unit price after bargaining" },
+      },
+    },
+    conversation_stage: {
+      type: Type.STRING,
+      description: "Stage: new_lead, interested, checkout_started, order_completed",
+    },
+    event_name: {
+      type: Type.STRING,
+      description: "Facebook Event: Lead, ViewContent, InitiateCheckout, AddToCart, Purchase",
+    },
+    need_more_info: {
+      type: Type.BOOLEAN,
+    },
+    confidence: {
+      type: Type.NUMBER,
+    },
+  },
+  required: ["intent", "reply", "conversation_stage", "event_name", "need_more_info", "confidence", "summary"],
+};
 
 // Helper to log activity
 async function logActivity(bizId: string | null, type: string, detail: string, status: 'info' | 'error' | 'success', ownerId?: string, data?: any) {
@@ -233,35 +285,42 @@ app.post(['/webhook', '/api/webhook', '/api/webhook/:businessId'], async (req, r
           // AI Generation
           await logActivity(bizId, 'AI_START', `বট উত্তর তৈরি করছে...`, 'info', ownerId);
           
-          const systemPrompt = `You are a helpful and polite salesperson for "${businessData.name}".
+          const systemPrompt = `
+# সেলস অ্যাসিস্ট্যান্ট গাইডলাইন
+তুমি "${businessData.name}" এর একজন দক্ষ সেলস অ্যাসিস্ট্যান্ট। কাস্টমারকে সর্বোচ্চ সহায়তা করা এবং পণ্য বিক্রয় নিশ্চিত করা তোমার দায়িত্ব।
+
 Shop Info: ${businessData.description || 'Professional Store'}
 Products: ${JSON.stringify(businessData.products || [])}
 FAQs: ${JSON.stringify(businessData.faqs || [])}
 
-Rules:
-1. Always prioritize the Product and FAQ details provided above for prices and info.
-2. If the user asks for photos, images, or "pic", set "show_product_image" to true and identify the "product_name".
-3. Reply in Bengali.
-4. Output should ALWAYS be JSON.
+## নিয়মাবলি:
+১. প্রোডাক্ট ও FAQ এর তথ্য ব্যবহার করে দাম ও অন্যান্য ডিটেইলস জানাবে।
+২. কাস্টমার ছবি চাইলে 'show_product_image: true' করবে এবং সঠিক 'product_name' দিবে।
+৩. প্রতিটি প্রোডাক্টের 'stockCount' চেক করবে। স্টকে না থাকলে (stockCount <= 0) বিনীতভাবে জানাবে।
+৪. কাস্টমারের আগ্রহ অনুযায়ী তাকে Hot, Warm বা Cold লিড হিসেবে চিহ্নিত করবে।
+৫. উত্তর সবসময় বাংলায় দিবে।
+৬. আউটপুট সবসময় JSON হবে।
 
-Recent Conversation Context:
+কনটেক্সট:
 ${chatHistoryText}
-Customer: ${messageText}`;
+কাস্টমার: ${messageText}`;
           
           const response = await ai.models.generateContent({
-            model: "gemini-flash-latest",
+            model: "gemini-3-flash-preview",
             contents: [{ role: 'user', parts: [{ text: systemPrompt }] }],
             config: {
-              responseMimeType: "application/json"
+              responseMimeType: "application/json",
+              responseSchema: responseSchema
             }
           });
           
-          const aiRaw = response.text;
+          const aiRaw = response.text || "";
           let aiRes: any;
           try {
             aiRes = JSON.parse(aiRaw);
           } catch (e) {
-            aiRes = { reply: aiRaw, show_product_image: false };
+            console.error("AI JSON Parse Error:", e, aiRaw);
+            aiRes = { reply: "দুঃখিত, আমি বিষয়টি বুঝতে পারছি না। দয়া করে আবার বলবেন কি?", conversation_stage: 'new_lead' };
           }
           
           const reply = aiRes.reply || "দুঃখিত, আমি উত্তরটি তৈরি করতে পারছি না।";
@@ -275,11 +334,12 @@ Customer: ${messageText}`;
                p.name.toLowerCase().includes(aiRes.product_name.toLowerCase())
             );
 
-            if (product && product.images && product.images.length > 0) {
+            // ONLY show if stock > 0
+            if (product && product.stockCount > 0 && product.images && product.images.length > 0) {
               // Send images as a generic template
               const elements = product.images.slice(0, 5).map((imgUrl: string) => ({
                 title: product.name,
-                subtitle: `দাম: ${product.price} TK`,
+                subtitle: `দাম: ${product.price} TK | স্টকে আছে: ${product.stockCount} পিস`,
                 image_url: imgUrl,
                 buttons: [
                   {
@@ -302,7 +362,37 @@ Customer: ${messageText}`;
                   }
                 }
               });
+            } else if (product && product.stockCount <= 0) {
+              // Handle out of stock specifically if show_product_image was requested
+              // The AI reply already has info but we ensure no carousel is sent
+              console.log(`[Inventory] Product ${product.name} is out of stock.`);
             }
+          }
+
+          // Lead Segmentation Logic
+          let segment: 'Hot' | 'Warm' | 'Cold' = 'Cold';
+          if (aiRes.conversation_stage === 'order_completed' || aiRes.conversation_stage === 'checkout_started') {
+            segment = 'Hot';
+          } else if (aiRes.conversation_stage === 'interested') {
+            segment = 'Warm';
+          }
+
+          // Update customer record in background
+          try {
+            await addDoc(collection(db, 'customers'), {
+              id: `${bizId}_${senderId}`,
+              businessId: bizId,
+              messengerId: senderId,
+              name: aiRes.order_data?.name || 'Customer',
+              phone: aiRes.order_data?.phone || '',
+              leadScore: aiRes.confidence * 100,
+              segment: segment,
+              chatSummary: aiRes.summary || '',
+              lastInteraction: serverTimestamp(),
+              createdAt: serverTimestamp()
+            });
+          } catch (e) {
+            // Silently fail or update existing
           }
 
           // Always send the text reply

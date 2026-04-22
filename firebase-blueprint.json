@@ -23,7 +23,52 @@
         "products": { "type": "array" },
         "faqs": { "type": "array" },
         "facebookConfig": { "type": "object" },
+        "features": { "type": "object" },
         "customSystemPrompt": { "type": "string" }
+      }
+    },
+    "Order": {
+      "title": "Order",
+      "description": "Customer order details",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "businessId": { "type": "string" },
+        "customerName": { "type": "string" },
+        "productName": { "type": "string" },
+        "quantity": { "type": "number" },
+        "totalPrice": { "type": "number" },
+        "status": { "type": "string", "enum": ["pending", "processing", "shipped", "delivered", "cancelled"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "Customer": {
+      "title": "Customer",
+      "description": "CRM customer tracking",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "businessId": { "type": "string" },
+        "name": { "type": "string" },
+        "phone": { "type": "string" },
+        "leadScore": { "type": "number" },
+        "segment": { "type": "string", "enum": ["Hot", "Warm", "Cold"] },
+        "lastInteraction": { "type": "string", "format": "date-time" }
+      }
+    },
+    "BroadcastingCampaign": {
+      "title": "BroadcastingCampaign",
+      "description": "Marketing broadcast campaigns",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "businessId": { "type": "string" },
+        "title": { "type": "string" },
+        "message": { "type": "string" },
+        "targetSegment": { "type": "string", "enum": ["All", "Hot", "Warm", "Cold"] },
+        "status": { "type": "string", "enum": ["draft", "sending", "completed"] },
+        "sentCount": { "type": "number" },
+        "createdAt": { "type": "string", "format": "date-time" }
       }
     }
   },
@@ -39,6 +84,14 @@
     "/orders/{orderId}": {
       "schema": "Order",
       "description": "Customer orders"
+    },
+    "/customers/{customerId}": {
+      "schema": "Customer",
+      "description": "CRM data for marketing"
+    },
+    "/broadcasting_campaigns/{campaignId}": {
+      "schema": "BroadcastingCampaign",
+      "description": "Bulk messaging campaigns"
     }
   }
 }
