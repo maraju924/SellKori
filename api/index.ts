@@ -60,7 +60,7 @@ const responseSchema = {
     },
     show_product_image: {
       type: Type.BOOLEAN,
-      description: "Set to true ONLY if the customer explicitly asks to see a picture/image/photo of a product, or if they are asking about price/details for the first time. Set to false for general conversation or order processing.",
+      description: "Set to true ONLY if the customer EXPLICITLY asks to see a picture, photo, or image (e.g., 'ছবি দিন', 'ফটো পাঠান'). Set to false for price queries or general information unless they specifically ask for a visual.",
     },
     product_name: {
       type: Type.STRING,
@@ -350,8 +350,8 @@ FAQs: ${JSON.stringify(businessData.faqs || [])}
 ৩. উত্তর সবসময় বাংলায় দিবে।
 
 ## কাজের নিয়মাবলি:
-১. প্রোডাক্টের দাম ও ডিটেইলস সঠিক দিবে।
-২. কাস্টমার ছবি বা ফটো চাইলে 'show_product_image: true' করবে এবং সঠিক 'product_name' দিবে। ছবি পাঠানোর সময় অতিরিক্ত কোনো কথা বলবে না, শুধুমাত্র ছবি পাঠাবে (সিস্টেম এটি হ্যান্ডেল করবে)।
+১. প্রোডাক্টের দাম ও ডিটেইলস সঠিক দিবে। যদি কাস্টমার শুধু দাম জানতে চায়, তবে শুধু দাম বলবে।
+২. কাস্টমার ছবি বা ফটো চাইলে 'show_product_image: true' করবে এবং সঠিক 'product_name' দিবে। কাস্টমার সরাসরি ছবি না চাওয়া পর্যন্ত কোনো ছবি পাঠাবে না। ছবি পাঠানোর সময় সাথে কোনো টেক্সট বা কথা বলবে না (সিস্টেম এটি হ্যান্ডেল করবে)।
 ৩. প্রতিটি প্রোডাক্টের 'stockCount' চেক করবে। স্টকে না থাকলে বিনীতভাবে জানাবে।
 ৪. কাস্টমার যদি নাম, ফোন নম্বর এবং ঠিকানা দেয়, তবেই 'conversation_stage: order_completed' এবং 'event_name: Purchase' সেট করবে।
 ৫. কাস্টমার "অর্ডার করতে চাই" বললে তার কাছে নাম, মোবাইল নম্বর ও ঠিকানা চাও। 
