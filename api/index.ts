@@ -4,7 +4,7 @@ import { fileURLToPath } from 'url';
 import axios from 'axios';
 import cors from 'cors';
 import { initializeApp } from 'firebase/app';
-import { getFirestore, doc, getDoc, collection, addDoc, serverTimestamp, query, where, getDocs, orderBy, limit } from 'firebase/firestore';
+import { getFirestore, doc, getDoc, collection, addDoc, setDoc, serverTimestamp, query, where, getDocs, orderBy, limit } from 'firebase/firestore';
 import fs from 'fs';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -314,7 +314,7 @@ app.post(['/webhook', '/api/webhook', '/api/webhook/:businessId'], async (req, r
               where('senderId', '==', senderId), 
               where('businessId', '==', bizId),
               orderBy('timestamp', 'desc'), 
-              limit(8)
+              limit(10)
             );
             const histSnap = await getDocs(qHist);
             const history = histSnap.docs.reverse().map(d => {
@@ -354,8 +354,9 @@ FAQs: ${JSON.stringify(businessData.faqs || [])}
 ২. কাস্টমার ছবি বা ফটো চাইলে 'show_product_image: true' করবে এবং সঠিক 'product_name' দিবে। ছবি পাঠানোর সময় অতিরিক্ত কোনো কথা বলবে না, শুধুমাত্র ছবি পাঠাবে (সিস্টেম এটি হ্যান্ডেল করবে)।
 ৩. প্রতিটি প্রোডাক্টের 'stockCount' চেক করবে। স্টকে না থাকলে বিনীতভাবে জানাবে।
 ৪. কাস্টমার যদি নাম, ফোন নম্বর এবং ঠিকানা দেয়, তবেই 'conversation_stage: order_completed' এবং 'event_name: Purchase' সেট করবে।
-৫. কাস্টমার "অর্ডার করতে চাই" বললে তার কাছে নাম, মোবাইল নম্বর ও ঠিকানা চাও।
-৬. আউটপুট সবসময় JSON হবে।
+৫. কাস্টমার "অর্ডার করতে চাই" বললে তার কাছে নাম, মোবাইল নম্বর ও ঠিকানা চাও। 
+৬. **গুরুত্বপূর্ণ:** আগের আলাপ এবং সারসংক্ষেপ ভালো করে পড়বে। যদি কাস্টমার আগেই তার নাম বা ঠিকানা দিয়ে থাকে, তবে তা আবার চাইবে না। কাস্টমার অর্ডার কনফার্ম হয়েছে কিনা জানতে চাইলে আগের কথা দেখে উত্তর দাও।
+৭. আউটপুট সবসময় JSON হবে।
 
 কনটেক্সট:
 ${existingSummary ? `আগের কথার সারসংক্ষেপ: ${existingSummary}\n` : ''}
@@ -402,25 +403,25 @@ ${chatHistoryText}
               await logActivity(bizId, 'PRODUCT_FOUND', `পণ্য পাওয়া গেছে: ${product.name}`, 'info', ownerId);
               
               const hasImages = product.images && product.images.length > 0;
-              const hasStock = product.stockCount > 0;
+              const stock = product.stockCount || 0;
 
-              if (hasImages && hasStock) {
+              if (hasImages) {
                 // Send images as a generic template
                 const elements = product.images.slice(0, 5).map((imgUrl: string) => ({
                   title: product.name,
-                  subtitle: `দাম: ${product.price} TK | স্টকে আছে: ${product.stockCount} পিস`,
+                  subtitle: `দাম: ${product.price} TK | ${stock > 0 ? `স্টকে আছে: ${stock} পিস` : 'বর্তমানে স্টক আউট'}`,
                   image_url: imgUrl,
                   buttons: [
                     {
                       type: "postback",
-                      title: "অর্ডার করতে চাই",
-                      payload: `ORDER_${product.id}`
+                      title: stock > 0 ? "অর্ডার করতে চাই" : "স্টক আসলে জানান",
+                      payload: stock > 0 ? `ORDER_${product.id}` : `NOTIFY_${product.id}`
                     }
                   ]
                 }));
 
                 try {
-                  const fbResponse = await axios.post(`https://graph.facebook.com/v18.0/me/messages?access_token=${businessData.pageAccessToken}`, {
+                  await axios.post(`https://graph.facebook.com/v18.0/me/messages?access_token=${businessData.pageAccessToken}`, {
                     recipient: { id: senderId },
                     message: {
                       attachment: {
@@ -440,7 +441,7 @@ ${chatHistoryText}
                   console.error("FB Image Send Error:", fbImgErr.response?.data || fbImgErr.message);
                 }
               } else {
-                await logActivity(bizId, 'IMAGE_NOT_AVAILABLE', `পণ্য পাওয়া গেছে কিন্তু ${!hasImages ? 'ছবি নেই' : 'স্টক নেই'}।`, 'error', ownerId);
+                await logActivity(bizId, 'IMAGE_NOT_AVAILABLE', `পণ্য পাওয়া গেছে কিন্তু কোনো ছবি আপলোড করা নেই।`, 'error', ownerId);
               }
             } else {
               await logActivity(bizId, 'PRODUCT_NOT_FOUND', `পণ্যটি ডাটাবেজে পাওয়া যায়নি: "${searchName}"`, 'error', ownerId);
@@ -494,10 +495,9 @@ ${chatHistoryText}
             }
           }
 
-          // Update customer record in background
+          // Update customer record in background - Use setDoc with merge to PERSIST summary
           try {
-            await addDoc(collection(db, 'customers'), {
-              id: `${bizId}_${senderId}`,
+            await setDoc(doc(db, 'customers', `${bizId}_${senderId}`), {
               businessId: bizId,
               messengerId: senderId,
               name: aiRes.order_data?.name || 'Customer',
@@ -506,10 +506,10 @@ ${chatHistoryText}
               segment: segment,
               chatSummary: aiRes.summary || '',
               lastInteraction: serverTimestamp(),
-              createdAt: serverTimestamp()
-            });
+              updatedAt: serverTimestamp()
+            }, { merge: true });
           } catch (e) {
-            // Silently fail or update existing
+            console.error('Customer Summary sync failed:', e);
           }
 
           // Always send the text reply IF no image was sent (User request: image only when requested)
