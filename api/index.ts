@@ -351,7 +351,7 @@ FAQs: ${JSON.stringify(businessData.faqs || [])}
 
 ## কাজের নিয়মাবলি:
 ১. প্রোডাক্টের দাম ও ডিটেইলস সঠিক দিবে।
-২. কাস্টমার ছবি চাইলে 'show_product_image: true' করবে এবং সঠিক 'product_name' দিবে।
+২. কাস্টমার ছবি বা ফটো চাইলে 'show_product_image: true' করবে এবং সঠিক 'product_name' দিবে। ছবি পাঠানোর সময় অতিরিক্ত কোনো কথা বলবে না, শুধুমাত্র ছবি পাঠাবে (সিস্টেম এটি হ্যান্ডেল করবে)।
 ৩. প্রতিটি প্রোডাক্টের 'stockCount' চেক করবে। স্টকে না থাকলে বিনীতভাবে জানাবে।
 ৪. কাস্টমার যদি নাম, ফোন নম্বর এবং ঠিকানা দেয়, তবেই 'conversation_stage: order_completed' এবং 'event_name: Purchase' সেট করবে।
 ৫. কাস্টমার "অর্ডার করতে চাই" বললে তার কাছে নাম, মোবাইল নম্বর ও ঠিকানা চাও।
@@ -386,10 +386,13 @@ ${chatHistoryText}
           // Send Message
           await logActivity(bizId, 'SENDING_MESSAGE', `ফেসবুকে পাঠানো হচ্ছে...`, 'info', ownerId);
           
+          let imageSent = false;
           // If the AI wants to show product images
           if (aiRes.show_product_image && aiRes.product_name) {
+            const searchName = aiRes.product_name.toLowerCase().trim();
             const product = businessData.products?.find((p: any) => 
-               p.name.toLowerCase().includes(aiRes.product_name.toLowerCase())
+               p.name.toLowerCase().includes(searchName) || 
+               searchName.includes(p.name.toLowerCase())
             );
 
             // ONLY show if stock > 0
@@ -408,21 +411,24 @@ ${chatHistoryText}
                 ]
               }));
 
-              await axios.post(`https://graph.facebook.com/v18.0/me/messages?access_token=${businessData.pageAccessToken}`, {
-                recipient: { id: senderId },
-                message: {
-                  attachment: {
-                    type: "template",
-                    payload: {
-                      template_type: "generic",
-                      elements: elements
+              try {
+                await axios.post(`https://graph.facebook.com/v18.0/me/messages?access_token=${businessData.pageAccessToken}`, {
+                  recipient: { id: senderId },
+                  message: {
+                    attachment: {
+                      type: "template",
+                      payload: {
+                        template_type: "generic",
+                        elements: elements
+                      }
                     }
                   }
-                }
-              });
+                });
+                imageSent = true;
+              } catch (fbImgErr) {
+                console.error("FB Image Send Error:", fbImgErr);
+              }
             } else if (product && product.stockCount <= 0) {
-              // Handle out of stock specifically if show_product_image was requested
-              // The AI reply already has info but we ensure no carousel is sent
               console.log(`[Inventory] Product ${product.name} is out of stock.`);
             }
           }
@@ -492,11 +498,13 @@ ${chatHistoryText}
             // Silently fail or update existing
           }
 
-          // Always send the text reply
-          await axios.post(`https://graph.facebook.com/v18.0/me/messages?access_token=${businessData.pageAccessToken}`, {
-            recipient: { id: senderId },
-            message: { text: reply }
-          });
+          // Always send the text reply IF no image was sent (User request: image only when requested)
+          if (!imageSent) {
+            await axios.post(`https://graph.facebook.com/v18.0/me/messages?access_token=${businessData.pageAccessToken}`, {
+              recipient: { id: senderId },
+              message: { text: reply }
+            });
+          }
 
           // Save bot reply to history
           await saveChatMessage(bizId, senderId, 'bot', reply);
