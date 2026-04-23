@@ -406,35 +406,25 @@ ${chatHistoryText}
               const stock = product.stockCount || 0;
 
               if (hasImages) {
-                // Send images as a generic template
-                const elements = product.images.slice(0, 5).map((imgUrl: string) => ({
-                  title: product.name,
-                  subtitle: `দাম: ${product.price} TK | ${stock > 0 ? `স্টকে আছে: ${stock} পিস` : 'বর্তমানে স্টক আউট'}`,
-                  image_url: imgUrl,
-                  buttons: [
-                    {
-                      type: "postback",
-                      title: stock > 0 ? "অর্ডার করতে চাই" : "স্টক আসলে জানান",
-                      payload: stock > 0 ? `ORDER_${product.id}` : `NOTIFY_${product.id}`
-                    }
-                  ]
-                }));
-
+                // Send raw images like a manual user (no buttons, no titles, just photos)
                 try {
-                  await axios.post(`https://graph.facebook.com/v18.0/me/messages?access_token=${businessData.pageAccessToken}`, {
-                    recipient: { id: senderId },
-                    message: {
-                      attachment: {
-                        type: "template",
-                        payload: {
-                          template_type: "generic",
-                          elements: elements
+                  const imagesToSend = product.images.slice(0, 3); // Send max 3 images to avoid flooding
+                  for (const imgUrl of imagesToSend) {
+                    await axios.post(`https://graph.facebook.com/v18.0/me/messages?access_token=${businessData.pageAccessToken}`, {
+                      recipient: { id: senderId },
+                      message: {
+                        attachment: {
+                          type: "image",
+                          payload: {
+                            url: imgUrl,
+                            is_reusable: true
+                          }
                         }
                       }
-                    }
-                  });
+                    });
+                  }
                   imageSent = true;
-                  await logActivity(bizId, 'IMAGE_SENT_FB', `ফেসবুকে ছবি পাঠানো হয়েছে (Success)`, 'success', ownerId);
+                  await logActivity(bizId, 'IMAGE_SENT_FB', `ফেসবুকে ${imagesToSend.length}টি ছবি র ইমেজ হিসেবে পাঠানো হয়েছে`, 'success', ownerId);
                 } catch (fbImgErr: any) {
                   const errorMsg = fbImgErr.response?.data?.error?.message || fbImgErr.message;
                   await logActivity(bizId, 'IMAGE_FB_ERROR', `ফেসবুক এপিআই ত্রুটি: ${errorMsg}`, 'error', ownerId);
