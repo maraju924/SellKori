@@ -390,46 +390,60 @@ ${chatHistoryText}
           // If the AI wants to show product images
           if (aiRes.show_product_image && aiRes.product_name) {
             const searchName = aiRes.product_name.toLowerCase().trim();
-            const product = businessData.products?.find((p: any) => 
-               p.name.toLowerCase().includes(searchName) || 
-               searchName.includes(p.name.toLowerCase())
-            );
+            await logActivity(bizId, 'IMAGE_SEARCH', `পণ্য খোঁজা হচ্ছে: "${searchName}"`, 'info', ownerId);
 
-            // ONLY show if stock > 0
-            if (product && product.stockCount > 0 && product.images && product.images.length > 0) {
-              // Send images as a generic template
-              const elements = product.images.slice(0, 5).map((imgUrl: string) => ({
-                title: product.name,
-                subtitle: `দাম: ${product.price} TK | স্টকে আছে: ${product.stockCount} পিস`,
-                image_url: imgUrl,
-                buttons: [
-                  {
-                    type: "postback",
-                    title: "অর্ডার করতে চাই",
-                    payload: `ORDER_${product.id}`
-                  }
-                ]
-              }));
+            const product = businessData.products?.find((p: any) => {
+               const pName = p.name.toLowerCase();
+               // Robust matching: Check if search name is in product name or vice-versa, or if they share significant keywords
+               return pName.includes(searchName) || searchName.includes(pName);
+            });
 
-              try {
-                await axios.post(`https://graph.facebook.com/v18.0/me/messages?access_token=${businessData.pageAccessToken}`, {
-                  recipient: { id: senderId },
-                  message: {
-                    attachment: {
-                      type: "template",
-                      payload: {
-                        template_type: "generic",
-                        elements: elements
+            if (product) {
+              await logActivity(bizId, 'PRODUCT_FOUND', `পণ্য পাওয়া গেছে: ${product.name}`, 'info', ownerId);
+              
+              const hasImages = product.images && product.images.length > 0;
+              const hasStock = product.stockCount > 0;
+
+              if (hasImages && hasStock) {
+                // Send images as a generic template
+                const elements = product.images.slice(0, 5).map((imgUrl: string) => ({
+                  title: product.name,
+                  subtitle: `দাম: ${product.price} TK | স্টকে আছে: ${product.stockCount} পিস`,
+                  image_url: imgUrl,
+                  buttons: [
+                    {
+                      type: "postback",
+                      title: "অর্ডার করতে চাই",
+                      payload: `ORDER_${product.id}`
+                    }
+                  ]
+                }));
+
+                try {
+                  const fbResponse = await axios.post(`https://graph.facebook.com/v18.0/me/messages?access_token=${businessData.pageAccessToken}`, {
+                    recipient: { id: senderId },
+                    message: {
+                      attachment: {
+                        type: "template",
+                        payload: {
+                          template_type: "generic",
+                          elements: elements
+                        }
                       }
                     }
-                  }
-                });
-                imageSent = true;
-              } catch (fbImgErr) {
-                console.error("FB Image Send Error:", fbImgErr);
+                  });
+                  imageSent = true;
+                  await logActivity(bizId, 'IMAGE_SENT_FB', `ফেসবুকে ছবি পাঠানো হয়েছে (Success)`, 'success', ownerId);
+                } catch (fbImgErr: any) {
+                  const errorMsg = fbImgErr.response?.data?.error?.message || fbImgErr.message;
+                  await logActivity(bizId, 'IMAGE_FB_ERROR', `ফেসবুক এপিআই ত্রুটি: ${errorMsg}`, 'error', ownerId);
+                  console.error("FB Image Send Error:", fbImgErr.response?.data || fbImgErr.message);
+                }
+              } else {
+                await logActivity(bizId, 'IMAGE_NOT_AVAILABLE', `পণ্য পাওয়া গেছে কিন্তু ${!hasImages ? 'ছবি নেই' : 'স্টক নেই'}।`, 'error', ownerId);
               }
-            } else if (product && product.stockCount <= 0) {
-              console.log(`[Inventory] Product ${product.name} is out of stock.`);
+            } else {
+              await logActivity(bizId, 'PRODUCT_NOT_FOUND', `পণ্যটি ডাটাবেজে পাওয়া যায়নি: "${searchName}"`, 'error', ownerId);
             }
           }
 
