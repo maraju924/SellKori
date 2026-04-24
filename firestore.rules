@@ -106,13 +106,5 @@ service cloud.firestore {
     match /chat_history/{msgId} {
       allow read, write: if true;
     }
-
-    match /customers/{customerId} {
-      allow create, read, update, write: if true;
-    }
-
-    match /businesses/{businessId} {
-      allow read, write, list: if true;
-    }
   }
 }

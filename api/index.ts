@@ -39,13 +39,16 @@ try {
     
     // Initialize Admin SDK
     try {
+      let adminApp;
       if (!admin.apps.length) {
-        console.log(`[Firebase] Initializing Admin SDK...`);
-        // If SERVICE_ACCOUNT is missing, initializeApp() uses Google Application Default Credentials
-        admin.initializeApp();
+        console.log(`[Firebase] Initializing Admin SDK for: ${firebaseConfig.projectId}`);
+        adminApp = admin.initializeApp({
+          projectId: firebaseConfig.projectId
+        });
+      } else {
+        adminApp = admin.app();
       }
       
-      const adminApp = admin.app();
       const dbId = firebaseConfig.firestoreDatabaseId;
       
       if (dbId && dbId !== '(default)') {
@@ -53,14 +56,9 @@ try {
       } else {
         adminDb = getAdminFirestore(adminApp);
       }
-      console.log(`[Firebase] Admin Firestore instances obtained.`);
+      console.log(`[Firebase] Admin Firestore ready.`);
     } catch (adminErr: any) {
       console.error('[Firebase] Admin Init Error:', adminErr?.message);
-      // Fallback to minimal init
-      if (!admin.apps.length) {
-        admin.initializeApp({ projectId: firebaseConfig.projectId });
-        adminDb = getAdminFirestore(admin.app());
-      }
     }
     
     logActivity('system', 'SERVER_INIT', `সার্ভার রিস্টার্ট হয়েছে। ভার্সন: 1.1.0.`, 'success', 'system').catch(() => {});
