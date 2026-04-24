@@ -48,6 +48,9 @@ export interface BusinessConfig {
   faqs: FAQ[];
   facebookConfig: FacebookConfig;
   features: BusinessFeatures;
+  botPersona?: 'professional' | 'friendly' | 'humorous' | 'minimalist' | 'technical';
+  botTone?: 'formal' | 'casual' | 'enthusiastic' | 'empathetic';
+  aiTemplate?: string;
   customSystemPrompt: string;
   messengerWebhookUrl?: string;
   messengerVerifyToken?: string;
@@ -55,11 +58,17 @@ export interface BusinessConfig {
   facebookPageId?: string;
   pageAccessToken?: string;
   verifyToken?: string;
+  logoUrl?: string;
+  themePreference?: 'light' | 'dark';
   pageName?: string;
   steadfastApiKey?: string;
   steadfastSecretKey?: string;
   zinipayApiKey?: string;
   zinipayMerchantId?: string;
+  walletBalance: number;
+  tokenBalance: number;
+  totalTokensUsed: number;
+  subscriptionExpiry: any; // Timestamp
   status: 'active' | 'suspended';
   plan: 'free' | 'pro' | 'enterprise';
   verificationStatus: 'pending' | 'verified' | 'rejected';
@@ -80,6 +89,9 @@ export interface SystemConfig {
   zinipayMerchantId?: string;
   globalAnnouncement?: string;
   defaultSystemPrompt?: string;
+  tokenPricePerLakh: number;
+  monthlyServerCost: number;
+  freeTrialTokens: number;
   updatedAt: any;
   updatedBy: string;
 }

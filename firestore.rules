@@ -6,18 +6,20 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    // 0.1 Admin Global Access
+    match /{document=**} {
+      allow read, write: if isAdmin();
+    }
+
     // --- Helper Functions ---
     function isSignedIn() { return request.auth != null; }
     
-    function isVerified() { 
-      return isSignedIn() && request.auth.token.email_verified == true; 
-    }
-
     function isAdmin() {
-      return isVerified() && 
-             (request.auth.token.email == 'maraju924@gmail.com' || 
-              (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
-               get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin'));
+      return isSignedIn() && (
+        request.auth.token.email == 'maraju924@gmail.com' || 
+        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin')
+      );
     }
 
     function isOwner(uid) {
@@ -36,58 +38,49 @@ service cloud.firestore {
       );
     }
 
-    function isValidId(id) {
-      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
-    }
-
-    function incoming() { return request.resource.data; }
-    function existing() { return resource.data; }
-
     // --- Collection Routes ---
 
     match /users/{uid} {
       allow read, write: if isOwner(uid) || isAdmin();
+      allow list: if isAdmin();
     }
 
     match /businesses/{businessId} {
-      allow read: if true; // Public for chat & shop
-      allow write: if isAdmin() || (isOwner(incoming().ownerId) && (
+      allow read: if true; 
+      allow write: if isAdmin() || (isSignedIn() && (
         !exists(/databases/$(database)/documents/businesses/$(businessId)) || 
-        isMerchantOf(existing())
+        get(/databases/$(database)/documents/businesses/$(businessId)).data.ownerId == request.auth.uid
       ));
+      allow list: if isAdmin() || (isSignedIn() && resource.data.ownerId == request.auth.uid);
     }
 
     match /orders/{orderId} {
-      allow create: if isValidOrder(incoming());
-      
-      // Merchants can see all orders for their business
-      // Guests can see orders that match THEIR session ID
-      allow list: if isAdmin() || 
-                    (isMerchantByBizId(resource.data.businessId)) ||
-                    (resource.data.sessionId != null); // Client filters by sessionId
-      
-      allow get: if isAdmin() || 
-                   (isMerchantByBizId(resource.data.businessId)) ||
+      allow create: if true;
+      allow read: if isAdmin() || 
+                   (isSignedIn() && (resource.data.ownerId == request.auth.uid || isMerchantByBizId(resource.data.businessId))) ||
                    (resource.data.sessionId != null);
+      allow write: if isAdmin() || (isSignedIn() && (resource.data.ownerId == request.auth.uid || isMerchantByBizId(resource.data.businessId)));
+    }
 
-      allow update: if isAdmin() || (isMerchantByBizId(resource.data.businessId) && isValidOrder(incoming()));
-      allow delete: if isAdmin() || isMerchantByBizId(resource.data.businessId);
+    match /abandoned_carts/{cartId} {
+      allow create: if true;
+      allow read, write: if isAdmin() || isMerchantByBizId(resource.data.businessId);
+    }
+
+    match /broadcasts/{broadcastId} {
+      allow create: if isAdmin() || isMerchantByBizId(incoming().businessId);
+      allow read: if isAdmin() || isMerchantByBizId(resource.data.businessId);
     }
 
     match /customers/{customerId} {
-      allow create: if isMerchantByBizId(incoming().businessId) || (incoming().id != null);
-      
-      // get/update allowed for guest chat or merchant
-      allow get, update: if isAdmin() || (isMerchantByBizId(resource.data.businessId)) || true;
-      
-      // Merchant can list all customers
+      allow create: if true;
+      allow read, update: if isAdmin() || isMerchantByBizId(resource.data.businessId) || true;
       allow list: if isAdmin() || isMerchantByBizId(resource.data.businessId);
     }
 
     match /analytics/{eventId} {
-      allow create: if true; // Tracking events is public
-      allow list: if isAdmin() || isMerchantByBizId(resource.data.businessId);
-      allow get: if isAdmin() || isMerchantByBizId(resource.data.businessId);
+      allow create: if true;
+      allow read: if isAdmin() || isMerchantByBizId(resource.data.businessId);
     }
 
     match /system_config/public {
@@ -104,19 +97,13 @@ service cloud.firestore {
       allow create: if true;
     }
 
-    // --- Entity Validations ---
-
-    function isValidOrder(data) {
-      return data.businessId is string &&
-             data.merchantId is string &&
-             data.customerName is string &&
-             data.status in ['pending', 'processing', 'shipped', 'delivered', 'cancelled'] &&
-             (!('sessionId' in data) || data.sessionId is string);
-    }
-    // Logs functionality - Relaxed for debugging to ensure merchant sees them
     match /system_logs/{logId} {
       allow create: if true; 
       allow read: if isSignedIn(); 
+    }
+
+    match /chat_history/{msgId} {
+      allow read, write: if isAdmin() || isMerchantByBizId(resource.data.businessId);
     }
   }
 }
