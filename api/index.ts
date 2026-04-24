@@ -64,10 +64,58 @@ try {
   console.error('Failed to initialize Firebase:', error);
 }
 
-import { GoogleGenerativeAI } from '@google/generative-ai';
+import { GoogleGenerativeAI, SchemaType } from '@google/generative-ai';
 
 // Initialize AI
 const genAI = process.env.GEMINI_API_KEY ? new GoogleGenerativeAI(process.env.GEMINI_API_KEY) : null;
+
+// Response Schema for AI
+const responseSchema = {
+  type: SchemaType.OBJECT,
+  properties: {
+    intent: {
+      type: SchemaType.STRING,
+      description: "Intent of the user message: product_query, order, delivery_status, general, unknown",
+    },
+    show_product_image: {
+      type: SchemaType.BOOLEAN,
+      description: "Set to true if user asks for pictures.",
+    },
+    product_name: {
+      type: SchemaType.STRING,
+      description: "Identified product name if any",
+    },
+    reply: {
+      type: SchemaType.STRING,
+      description: "The reply in Bengali language",
+    },
+    summary: {
+      type: SchemaType.STRING,
+      description: "Cumulative summary of the conversation",
+    },
+    order_data: {
+      type: SchemaType.OBJECT,
+      properties: {
+        name: { type: SchemaType.STRING },
+        phone: { type: SchemaType.STRING },
+        address: { type: SchemaType.STRING },
+        quantity: { type: SchemaType.STRING },
+      },
+    },
+    conversation_stage: {
+      type: SchemaType.STRING,
+      description: "Stage: new_lead, interested, checkout_started, order_completed",
+    },
+    event_name: {
+      type: SchemaType.STRING,
+      description: "Facebook Event: Lead, ViewContent, InitiateCheckout, AddToCart, Purchase",
+    },
+    confidence: {
+      type: SchemaType.NUMBER,
+    },
+  },
+  required: ["intent", "reply", "conversation_stage", "event_name", "summary"],
+};
 
 // Helper to get system settings
 async function getSystemSettings() {
@@ -109,27 +157,23 @@ async function fireFacebookEvent(bizConfig: any, eventName: string, userData: an
   }
 }
 
-// Helper to log activity
-async function logActivity(bizId: string | null, type: string, detail: string, status: 'info' | 'error' | 'success', ownerId?: string, data?: any) {
-  console.log(`[Activity Log Attempt] ${type}: ${detail}`);
-  if (!adminDb) {
-    console.error('[Logger] Admin DB not initialized. Cannot log yet.');
-    return;
-  }
-  try {
-    await adminDb.collection('system_logs').add({
-      businessId: bizId || 'unknown',
-      ownerId: ownerId || 'system',
-      type,
-      detail,
-      status,
-      timestamp: admin.firestore.FieldValue.serverTimestamp(),
-      data: data ? (typeof data === 'string' ? data.substring(0, 500) : JSON.stringify(data).substring(0, 500)) : null
-    });
-    console.log(`[Logged to DB] ${type}: ${detail}`);
-  } catch (err) {
-    console.error('[Logger Error]', err);
-  }
+// Helper to log activity (Non-blocking)
+function logActivity(bizId: string | null, type: string, detail: string, status: 'info' | 'error' | 'success', ownerId?: string, data?: any) {
+  const bid = bizId || 'unknown';
+  const oid = ownerId || 'system';
+  console.log(`[LOG][${bid}][${type}] ${detail}`);
+  
+  if (!adminDb) return Promise.resolve();
+  
+  return adminDb.collection('system_logs').add({
+    businessId: bid,
+    ownerId: oid,
+    type,
+    detail,
+    status,
+    timestamp: admin.firestore.FieldValue.serverTimestamp(),
+    data: data ? (typeof data === 'string' ? data.substring(0, 500) : JSON.stringify(data).substring(0, 500)) : null
+  }).catch((err: any) => console.error('[Logger Error]', err));
 }
 
 async function saveChatMessage(bizId: string, senderId: string, role: 'user' | 'bot' | 'merchant', text: string) {
@@ -381,12 +425,15 @@ ${existingSummary ? `আগের কথার সারসংক্ষেপ: $
 ${chatHistoryText}
 কাস্টমার: ${messageText}`;
           
-          const model = genAI!.getGenerativeModel({ model: "gemini-1.5-flash" });
-          const result = await model.generateContent({
-            contents: [{ role: 'user', parts: [{ text: systemPrompt }] }],
+          const model = genAI!.getGenerativeModel({ 
+            model: "gemini-1.5-flash",
             generationConfig: {
               responseMimeType: "application/json",
+              responseSchema: responseSchema as any
             }
+          });
+          const result = await model.generateContent({
+            contents: [{ role: 'user', parts: [{ text: systemPrompt }] }]
           });
           
           const aiRaw = result.response.text();

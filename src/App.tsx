@@ -191,8 +191,12 @@ function MessengerLogs({ businessId, ownerId }: { businessId: string, ownerId: s
     );
     const unsubscribe = onSnapshot(q, (snap) => {
       const allLogs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-      // Filter locally for the specific businessId
-      setLogs(allLogs.filter((l: any) => l.businessId === businessId || l.businessId === 'unknown'));
+      // Filter locally for the specific businessId, system logs, or unknown/fallback logs
+      setLogs(allLogs.filter((l: any) => 
+        l.businessId === businessId || 
+        l.businessId === 'unknown' || 
+        l.businessId === 'system'
+      ));
     }, (err) => {
       console.error('Logs Sync Error:', err);
       setError(`ডাটা লোড হতে সমস্যা হচ্ছে: ${err.message}`);
