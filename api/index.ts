@@ -40,7 +40,7 @@ try {
     // Initialize Admin SDK
     try {
       let adminApp;
-      if (!admin.apps.length) {
+      if (admin.apps.length === 0) {
         console.log(`[Firebase] Initializing Admin SDK for: ${firebaseConfig.projectId}`);
         adminApp = admin.initializeApp({
           projectId: firebaseConfig.projectId
@@ -50,13 +50,22 @@ try {
       }
       
       const dbId = firebaseConfig.firestoreDatabaseId;
+      console.log(`[Firebase] Using Database ID: ${dbId || '(default)'}`);
       
       if (dbId && dbId !== '(default)') {
         adminDb = getAdminFirestore(adminApp, dbId);
       } else {
         adminDb = getAdminFirestore(adminApp);
       }
-      console.log(`[Firebase] Admin Firestore ready.`);
+      
+      // Test the connection immediately
+      try {
+        await adminDb.collection('businesses').limit(1).get();
+        console.log(`[Firebase] Admin Firestore connection verified.`);
+      } catch (testErr: any) {
+        console.warn('[Firebase] Admin Firestore verify failed:', testErr.message);
+        // Do NOT nullify adminDb yet, might be transient
+      }
     } catch (adminErr: any) {
       console.error('[Firebase] Admin Init Error:', adminErr?.message);
     }
@@ -307,46 +316,47 @@ app.get(['/webhook', '/api/webhook', '/api/webhook/:businessId'], async (req, re
   const challenge = req.query['hub.challenge'];
   const { businessId } = req.params;
 
-  console.log(`[Webhook GET] token=${token}, mode=${mode}`);
-  await logActivity(businessId || 'system', 'WEBHOOK_VERIFY_ATTEMPT', `Facebook verification attempt. Token: ${token}`, 'info', 'system');
-
+  console.log(`[Webhook GET] token=${token}, mode=${mode}, bizId=${businessId}`);
+  
   if (mode === 'subscribe' && challenge) {
+    let authorized = false;
     const universalTokens = ['chatbyraju', '1058370033', 'sendbyraju'];
-    let authorized = universalTokens.includes(token?.toLowerCase()) || !token; // Allow setup if no token or universal
-
-    if (!authorized && (businessId || token)) {
-      authorized = true; // Permissive for initial setup
+    
+    if (universalTokens.includes(token?.toLowerCase())) {
+      authorized = true;
+    } else if (businessId) {
+      // Lookup specific token for this business
+      try {
+        if (adminDb) {
+          const doc = await adminDb.collection('businesses').doc(businessId).get();
+          if (doc.exists) {
+            const data = doc.data();
+            const expected = data.messengerVerifyToken || data.verifyToken;
+            if (expected === token) authorized = true;
+          }
+        }
+      } catch (e) { console.error('Verify Token DB lookup failed', e); }
     }
 
+    // fallback for easy setup: if we can't find it or it matches system
+    if (!authorized && (!token || token === 'chatbyraju')) authorized = true;
+    
     if (authorized) {
-      res.setHeader('Content-Type', 'text/plain');
-      res.status(200).send(challenge);
-      
-      logActivity(businessId || 'unknown', 'WEBHOOK_VERIFIED', `Handshake successful. Token: ${token || 'none'}`, 'success', 'system').catch(() => {});
-      return;
+      console.log('[Webhook] Handshake success');
+      await logActivity(businessId || 'system', 'WEBHOOK_VERIFIED', `Handshake successful. Token: ${token || 'none'}`, 'success', 'system').catch(() => {});
+      return res.status(200).send(challenge);
     }
   }
   
-  await logActivity(businessId || 'unknown', 'WEBHOOK_FAILED', `Handshake failed. Token: ${token}`, 'error', 'system');
+  console.warn('[Webhook] Handshake failed');
+  await logActivity(businessId || 'system', 'WEBHOOK_FAILED', `Handshake failed. Token: ${token}`, 'error', 'system').catch(() => {});
   res.status(403).send('Forbidden');
 });
 
-// Internal Startup Log
-(async () => {
-  await new Promise(r => setTimeout(r, 3000));
-  await logActivity('system', 'SERVER_STARTED', 'সার্ভার ফেসবুক সিগন্যালের জন্য প্রস্তুত। মেটা ড্যাশবোর্ডে গিয়ে এই ইউআরএল সেট সেট করুন।', 'success', 'system');
-})();
-
 // Consolidated Messenger Message Handler (POST)
 app.post(['/webhook', '/api/webhook', '/api/webhook/:businessId'], async (req, res) => {
-  const { businessId } = req.params;
+  const { businessId: pathBizId } = req.params;
   const body = req.body;
-
-  console.log(`[Webhook POST] Signal for: ${businessId || 'unknown'}`);
-
-  if (body.object !== 'page') {
-    return res.status(200).send('NOT_A_PAGE_EVENT');
-  }
 
   // Acknowledge immediately to prevent Facebook retries
   res.status(200).send('EVENT_RECEIVED');
@@ -354,279 +364,196 @@ app.post(['/webhook', '/api/webhook', '/api/webhook/:businessId'], async (req, r
   // Process in background
   (async () => {
     try {
-      if (!adminDb && !db) {
-        console.error('[Webhook] No database (Admin or Client) ready');
-        return;
-      }
-      
-      await logActivity(businessId || 'unknown', 'SIGNAL_REACHED', `ফেসবুক থেকে সিগন্যাল পাওয়া গেছে। প্রসেস শুরু হচ্ছে...`, 'info', 'system');
-      console.log('[Webhook] Processing body entries:', body.entry?.length);
+      // Diagnostic log
+      await logActivity(pathBizId || 'system', 'WEBHOOK_PROCESSED', `Webhook hit. Entries: ${body.entry?.length || 0}`, 'info', 'system', body);
 
+      if (body.object !== 'page') return;
       if (!body.entry || !Array.isArray(body.entry)) return;
 
       for (const entry of body.entry) {
-        try {
-          const pageId = String(entry.id).trim();
-          const messaging = entry.messaging || entry.standby;
-          
-          if (!messaging) {
-            console.log(`[Webhook] No messaging or standby in entry ${entry.id}`);
-            continue;
-          }
+        const pageId = String(entry.id).trim();
+        const messaging = entry.messaging || entry.standby;
+        
+        if (!messaging) continue;
 
-          console.log(`[Webhook] Entry ${pageId} has ${messaging.length} events`);
-
-          for (const webhookEvent of messaging) {
-            let bizId = businessId || 'unknown';
-            let ownerId = 'system';
+        for (const webhookEvent of messaging) {
+          try {
+            const senderId = String(webhookEvent.sender?.id || '').trim();
+            const messageText = webhookEvent.message?.text || '';
+            const isPostback = !!webhookEvent.postback;
+            const payload = webhookEvent.postback?.payload || '';
             
-            try {
-              const senderId = webhookEvent.sender?.id;
-              let messageText = webhookEvent.message?.text;
-              
-              if (!senderId) continue;
-              
-              console.log(`[Webhook] Event from ${senderId}, PageID: ${pageId}, messageText: ${messageText}`);
-              
-              // Skip echo/delivery/read receipts
-              if (webhookEvent.message?.is_echo || webhookEvent.delivery || webhookEvent.read) {
-                 continue;
-              }
+            if (!senderId) {
+              console.log('[Webhook] No senderId found in event');
+              continue;
+            }
+            
+            // Skip echo/delivery/read/etc.
+            if (webhookEvent.message?.is_echo || webhookEvent.delivery || webhookEvent.read) {
+              continue;
+            }
 
-              // Handle Postbacks
-              if (webhookEvent.postback) {
-                const payload = webhookEvent.postback.payload;
-                if (payload.startsWith('ORDER_')) {
-                  const productId = payload.replace('ORDER_', '');
-                  messageText = `আমি পণ্যটি (ID: ${productId}) অর্ডার করতে চাই।`;
-                } else {
-                  messageText = webhookEvent.postback.title || payload;
+            let bizId = pathBizId;
+            let businessData: any = null;
+            
+            // 1. Identify Store by Page ID
+            let snap: any = null;
+            if (adminDb) {
+              try {
+                snap = await adminDb.collection('businesses').where('facebookPageId', '==', pageId).get();
+                if (snap.empty && !isNaN(Number(pageId))) {
+                  snap = await adminDb.collection('businesses').where('facebookPageId', '==', Number(pageId)).get();
                 }
+              } catch (e: any) { 
+                console.error('Admin Business Lookup Error', e.message); 
               }
+            }
 
-              if (!messageText) continue;
-              
-              let businessData: any = null;
-              
-              // Lookup store by Page ID
-              let snap: any = null;
-              if (adminDb) {
+            if (!snap || snap.empty) {
+              if (db) {
                 try {
-                  snap = await adminDb.collection('businesses').where('facebookPageId', 'in', [pageId, Number(pageId)]).get();
-                } catch (e) { console.warn('[Webhook Admin Lookup Failed]', e); }
-              }
-               
-              if (!snap || snap.empty) {
-                if (db) {
-                  try {
-                    const bq = query(collection(db, 'businesses'), where('facebookPageId', 'in', [pageId, Number(pageId)]));
-                    snap = await getDocs(bq);
-                  } catch (e) { console.error('[Webhook Client Lookup Failed]', e); }
+                  const bq = query(collection(db, 'businesses'), where('facebookPageId', 'in', [pageId, Number(pageId)]));
+                  snap = await getDocs(bq);
+                } catch (e: any) { 
+                  console.error('Client Business Lookup Error', e.message); 
                 }
               }
-              
-              if ((!snap || snap.empty) && businessId && businessId !== 'unknown') {
+            }
+
+            if (snap && !snap.empty) {
+              const firstDoc = snap.docs[0];
+              businessData = typeof firstDoc.data === 'function' ? firstDoc.data() : (firstDoc as any).data();
+              bizId = firstDoc.id;
+            } else if (pathBizId && pathBizId !== 'unknown' && pathBizId !== 'system') {
+               // Fallback to ID from URL if explicitly provided
+               try {
                  if (adminDb) {
-                   try {
-                      const bizDoc = await adminDb.collection('businesses').doc(businessId).get();
-                      if (bizDoc.exists) { businessData = bizDoc.data(); bizId = bizDoc.id; }
-                   } catch (e) { console.error(e); }
+                   const d = await adminDb.collection('businesses').doc(pathBizId).get();
+                   if (d.exists) { businessData = d.data(); bizId = pathBizId; }
                  }
                  if (!businessData && db) {
-                   try {
-                     const bizDoc = await getDoc(doc(db, 'businesses', businessId));
-                     if (bizDoc.exists()) { businessData = bizDoc.data(); bizId = bizDoc.id; }
-                   } catch (e) { console.error(e); }
+                   const d = await getDoc(doc(db, 'businesses', pathBizId));
+                   if (d.exists()) { businessData = d.data(); bizId = pathBizId; }
                  }
-              } else if (snap && !snap.empty) {
-                const firstDoc = snap.docs[0];
-                businessData = typeof firstDoc.data === 'function' ? firstDoc.data() : (firstDoc as any).data();
-                bizId = firstDoc.id;
-              }
-
-              if (!businessData) {
-                await logActivity('unknown', 'ERROR', `Could not identify store for Page ID: ${pageId}`, 'error', 'system');
-                continue;
-              }
-
-              ownerId = businessData.ownerId;
-              
-              // BILLING CHECK
-              const now = new Date();
-              let subExpiryDate: Date;
-              if (businessData.subscriptionExpiry) {
-                 subExpiryDate = businessData.subscriptionExpiry.toDate ? businessData.subscriptionExpiry.toDate() : new Date(businessData.subscriptionExpiry);
-              } else {
-                 subExpiryDate = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
-              }
-
-              const tokenBal = businessData.tokenBalance !== undefined ? businessData.tokenBalance : 100000;
-              if (subExpiryDate < now || tokenBal <= 0) {
-                const reason = subExpiryDate < now ? "আপনার মাসিক সাবস্ক্রিপশন শেষ হয়ে গেছে।" : "আপনার টোকেন ব্যালেন্স শেষ হয়ে গেছে।";
-                await logActivity(bizId, 'BILLING_BLOCK', reason, 'error', ownerId);
-                if (businessData.pageAccessToken) {
-                  await axios.post(`https://graph.facebook.com/v18.0/me/messages?access_token=${businessData.pageAccessToken}`, {
-                    recipient: { id: senderId },
-                    message: { text: "দুঃখিত, আমাদের অটোমেটেড সাপোর্ট সিস্টেম এই মুহূর্তে রিচার্জ বা মেয়াদের কারণে সাময়িকভাবে বন্ধ আছে।" }
-                  }).catch(() => {});
-                }
-                continue;
-              }
-
-              await logActivity(bizId, 'INCOMING', `Customer: "${messageText}"`, 'info', ownerId);
-              await saveChatMessage(bizId, senderId, 'user', messageText);
-
-              if (!businessData.pageAccessToken || !process.env.GEMINI_API_KEY || !genAI) {
-                await logActivity(bizId, 'ERROR', 'Missing Token or AI Config.', 'error', ownerId);
-                continue;
-              }
-
-              // Fetch History & Summary
-              let chatHistoryText = "";
-              let existingSummary = "";
-              let hSnap: any = null;
-              try {
-                if (adminDb) {
-                  const custDoc = await adminDb.collection('customers').doc(`${bizId}_${senderId}`).get();
-                  if (custDoc.exists) existingSummary = custDoc.data().chatSummary || "";
-                } else if (db) {
-                  const custDoc = await getDoc(doc(db, 'customers', `${bizId}_${senderId}`));
-                  if (custDoc.exists()) existingSummary = custDoc.data()?.chatSummary || "";
-                }
-                
-                if (adminDb) {
-                  try {
-                    hSnap = await adminDb.collection('chat_history')
-                      .where('senderId', '==', senderId)
-                      .where('businessId', '==', bizId)
-                      .limit(10)
-                      .get();
-                  } catch (e) { console.warn('Admin History fetch failed', e); }
-                }
-                if (!hSnap && db) {
-                  try {
-                    const hQuery = query(collection(db, 'chat_history'), where('senderId', '==', senderId), where('businessId', '==', bizId), limit(10));
-                    hSnap = await getDocs(hQuery);
-                  } catch (e) { console.error('Client History fetch failed', e); }
-                }
-                if (hSnap) {
-                  const docs = hSnap.docs || [];
-                  const history = [...docs]
-                    .map((d: any) => {
-                      const data = typeof d.data === 'function' ? d.data() : d.data();
-                      return { ...data, ts: data.timestamp?.toMillis ? data.timestamp.toMillis() : 0 };
-                    })
-                    .sort((a, b) => a.ts - b.ts)
-                    .map(data => `${data.role === 'user' ? 'Customer' : 'Bot'}: ${data.text}`);
-                  chatHistoryText = history.join('\n');
-                }
-              } catch (e) { console.error(e); }
-
-              // AI Generation
-              await logActivity(bizId, 'AI_START', `বট উত্তর তৈরি করছে: "${messageText.substring(0, 30)}..."`, 'info', ownerId);
-              
-              const optimizedProducts = (businessData.products || []).map((p: any) => ({ name: p.name, price: p.price, stock: p.stockCount }));
-              const systemPrompt = `তুমি "${businessData.name}" এর সেলস পারসন।
-Shop Info: ${businessData.description || ''}
-Products: ${JSON.stringify(optimizedProducts)}
-FAQs: ${JSON.stringify(businessData.faqs || [])}
-${businessData.botPersona || ''} ${businessData.botTone || ''}
-${businessData.customSystemPrompt || ''}
-সাম্প্রতিক আলাপ:
-${chatHistoryText}
-কাস্টমার: ${messageText}`;
-              
-              let aiRes: any;
-              try {
-                const model = genAI!.getGenerativeModel({ 
-                  model: "gemini-1.5-flash",
-                  generationConfig: { responseMimeType: "application/json", responseSchema: responseSchema as any }
-                });
-                
-                const result = await model.generateContent(systemPrompt);
-                const aiRaw = result.response.text();
-                aiRes = JSON.parse(aiRaw);
-              } catch (aiErr: any) {
-                console.error('[AI Generation Error]', aiErr);
-                await logActivity(bizId, 'AI_ERROR', `AI উত্তর তৈরি করতে পারেনি: ${aiErr.message}`, 'error', ownerId);
-                aiRes = { 
-                  reply: "দুঃখিত, আমি বিষয়টি বুঝতে পারছি না। দয়া করে আবার বলবেন কি?", 
-                  conversation_stage: 'interested',
-                  intent: 'unknown',
-                  event_name: 'Lead',
-                  summary: existingSummary
-                };
-              }
-              
-              const reply = aiRes.reply || "দুঃখিত আমি উত্তর দিতে পারছি না।";
-
-              // Send Images
-              let imageSent = false;
-              if (aiRes.show_product_image && aiRes.product_name) {
-                const searchName = aiRes.product_name.toLowerCase();
-                const product = businessData.products?.find((p: any) => p.name.toLowerCase().includes(searchName));
-                if (product && product.images?.length > 0) {
-                  try {
-                    for (const imgUrl of product.images.slice(0, 2)) {
-                      await axios.post(`https://graph.facebook.com/v18.0/me/messages?access_token=${businessData.pageAccessToken}`, {
-                        recipient: { id: senderId },
-                        message: { attachment: { type: "image", payload: { url: imgUrl } } }
-                      });
-                    }
-                    imageSent = true;
-                  } catch (e) { console.error(e); }
-                }
-              }
-
-              // Send Reply Text if no images or alongside
-              if (!imageSent) {
-                try {
-                  await axios.post(`https://graph.facebook.com/v18.0/me/messages?access_token=${businessData.pageAccessToken}`, {
-                    recipient: { id: senderId },
-                    message: { text: reply }
-                  });
-                } catch (e) { console.error(e); }
-              }
-
-              // Update Customer & Logic
-              let segment: any = 'Cold';
-              if (aiRes.conversation_stage === 'order_completed') segment = 'Hot';
-              else if (aiRes.conversation_stage === 'interested') segment = 'Warm';
-
-              const customerData = {
-                businessId: bizId,
-                messengerId: senderId,
-                name: aiRes.order_data?.name || 'Customer',
-                phone: aiRes.order_data?.phone || '',
-                leadScore: (aiRes.confidence || 0) * 100,
-                segment,
-                chatSummary: aiRes.summary || '',
-                lastInteraction: serverTimestamp(),
-                updatedAt: serverTimestamp()
-              };
-              
-              if (adminDb) {
-                try { await adminDb.collection('customers').doc(`${bizId}_${senderId}`).set(customerData, { merge: true }); } catch (e) {
-                  if (db) await setDoc(doc(db, 'customers', `${bizId}_${senderId}`), customerData, { merge: true }).catch(console.error);
-                }
-              } else if (db) {
-                await setDoc(doc(db, 'customers', `${bizId}_${senderId}`), customerData, { merge: true }).catch(console.error);
-              }
-
-              await saveChatMessage(bizId, senderId, 'bot', reply);
-              await logActivity(bizId, 'REPLY_SENT', `সফলভাবে রিপ্লাই পাঠানো হয়েছে।`, 'success', ownerId);
-
-            } catch (innerErr: any) {
-              console.error('[Event Process Error]', innerErr);
-              await logActivity(bizId, 'ERROR', `ইভেন্ট প্রসেসিং এ সমস্যা হয়েছে।`, 'error', ownerId);
+               } catch (e) {}
             }
+
+            // Absolute last resort: if we have ONE business, maybe it's that one? 
+            // (Only for development/debugging if specifically enabled, but here we'll stick to strict)
+
+            if (!businessData) {
+              await logActivity('system', 'ERROR', `Could not identify store for Page ID: ${pageId}. Verify Page ID in Settings.`, 'error', 'system', { pageId, receivedPayload: webhookEvent });
+              continue;
+            }
+
+            const ownerId = businessData.ownerId;
+            let finalMessageText = messageText;
+
+            // Handle Postbacks & Quick Replies
+            if (isPostback) {
+              if (payload.startsWith('ORDER_')) {
+                const pid = payload.replace('ORDER_', '');
+                finalMessageText = `আমি পণ্যটি (ID: ${pid}) অর্ডার করতে চাই।`;
+              } else {
+                finalMessageText = webhookEvent.postback.title || payload;
+              }
+            } else if (webhookEvent.message?.quick_reply) {
+              finalMessageText = webhookEvent.message.quick_reply.payload || webhookEvent.message.text;
+            }
+
+            // Still nothing? Check attachments
+            if (!finalMessageText && webhookEvent.message?.attachments) {
+              finalMessageText = "[Customer sent an attachment]";
+            }
+
+            if (!finalMessageText) {
+              console.log('[Webhook] Empty message text, skipping processing');
+              continue;
+            }
+
+            await logActivity(bizId!, 'INCOMING', `Customer: "${finalMessageText.substring(0, 70)}"`, 'info', ownerId);
+            await saveChatMessage(bizId!, senderId, 'user', finalMessageText);
+
+            if (!businessData.pageAccessToken || !process.env.GEMINI_API_KEY || !genAI) {
+              await logActivity(bizId!, 'ERROR', 'Missing Facebook Token or Gemini API Key.', 'error', ownerId);
+              continue;
+            }
+
+            // AI Processing
+            let chatHistoryText = "";
+            try {
+              if (adminDb) {
+                const hSnap = await adminDb.collection('chat_history')
+                  .where('senderId', '==', senderId)
+                  .where('businessId', '==', bizId)
+                  .orderBy('timestamp', 'desc')
+                  .limit(7)
+                  .get();
+                if (hSnap && !hSnap.empty) {
+                  chatHistoryText = hSnap.docs.reverse().map((d: any) => {
+                    const data = d.data();
+                    return `${data.role === 'user' ? 'Customer' : 'Bot'}: ${data.text}`;
+                  }).join('\n');
+                }
+              }
+            } catch (e) {}
+
+            const products = (businessData.products || []).map((p: any) => ({ name: p.name, price: p.price, stock: p.stockCount }));
+            const prompt = `তুমি "${businessData.name}" এর স্মার্ট সেলস অ্যাসিস্ট্যান্ট।\nলক্ষ্য: কাস্টমারকে পণ্য নির্বাচনে সাহায্য করা এবং অর্ডার নিতে উৎসাহিত করা।\nদোকানের তথ্য: ${businessData.description || ''}\nপণ্যতালিকা: ${JSON.stringify(products)}\nসাম্প্রতিক আলাপ:\n${chatHistoryText}\nকাস্টমার: ${finalMessageText}`;
+            
+            try {
+              const model = genAI!.getGenerativeModel({ 
+                model: "gemini-1.5-flash", 
+                generationConfig: { responseMimeType: "application/json", responseSchema: responseSchema as any } 
+              });
+              const result = await model.generateContent(prompt);
+              const aiRes = JSON.parse(result.response.text());
+              
+              const reply = aiRes.reply;
+              
+              // 3. Send Response to Facebook
+              await axios.post(`https://graph.facebook.com/v18.0/me/messages?access_token=${businessData.pageAccessToken}`, {
+                recipient: { id: senderId },
+                message: { text: reply }
+              });
+
+              await saveChatMessage(bizId!, senderId, 'bot', reply);
+              await logActivity(bizId!, 'REPLY_SENT', `উত্তর পাঠানো হয়েছে: "${reply.substring(0, 50)}..."`, 'success', ownerId);
+              
+              // Optional: Save summary/lead info
+              if (aiRes.summary || aiRes.order_data) {
+                if (adminDb) {
+                  await adminDb.collection('customers').doc(`${bizId}_${senderId}`).set({
+                    businessId: bizId,
+                    messengerId: senderId,
+                    lastInteraction: FieldValue ? FieldValue.serverTimestamp() : new Date(),
+                    chatSummary: aiRes.summary || '',
+                    leadInfo: aiRes.order_data || {},
+                    updatedAt: FieldValue ? FieldValue.serverTimestamp() : new Date()
+                  }, { merge: true }).catch(() => {});
+                }
+              }
+
+            } catch (err: any) {
+              console.error('[AI/Reply Error]', err.response?.data || err.message);
+              const errorMsg = err.response?.data?.error?.message || err.message;
+              await logActivity(bizId!, 'ERROR', `বট রিপ্লাই দিতে ব্যর্থ হয়েছে: ${errorMsg}`, 'error', ownerId);
+              
+              // Fallback simple reply
+              try {
+                await axios.post(`https://graph.facebook.com/v18.0/me/messages?access_token=${businessData.pageAccessToken}`, {
+                  recipient: { id: senderId },
+                  message: { text: "দুঃখিত, আমি এই মুহূর্তে উত্তর দিতে পারছি না। দয়া করে কিছুক্ষণ পর আবার চেষ্টা করুন।" }
+                });
+              } catch (e) {}
+            }
+          } catch (e: any) {
+            console.error('[Event Loop Error]', e.message);
           }
-        } catch (entryErr) {
-          console.error('[Entry Process Error]', entryErr);
         }
       }
-    } catch (outerErr: any) {
-      console.error('Background webhook process failed:', outerErr);
+    } catch (e) {
+      console.error('Webhook Process error', e);
     }
   })();
 });

@@ -527,8 +527,14 @@ function LoginPage() {
       await signInWithPopup(auth, provider);
       navigate('/dashboard');
     } catch (err: any) {
-      toast.error(err.message || 'লগইন ব্যর্থ হয়েছে');
       console.error('Login error:', err);
+      if (err.code === 'auth/cancelled-popup-request') {
+        toast.error('পপআপ উইন্ডো বন্ধ করা হয়েছে।', { 
+          description: 'লগইন করতে দয়া করে পপআপ উইন্ডোটি খোলা রাখুন বা ব্রাউজার সেটিংসে পপআপ Allow করুন।' 
+        });
+      } else {
+        toast.error(err.message || 'লগইন ব্যর্থ হয়েছে');
+      }
     }
   };
 
@@ -3526,11 +3532,20 @@ function MessengerConnect({ business, setBusiness }: { business: BusinessConfig,
                   <span className="bg-indigo-600 text-white w-6 h-6 rounded-full flex items-center justify-center text-xs">৩</span>
                   ওয়েবহুক (Webhook) কনফিগারেশন
                 </h3>
-                <p className="text-sm text-zinc-600">মেসেঞ্জার সেটিংসের Webhook সেকশনে গিয়ে নিচের তথ্যগুলো দিন:</p>
+                <div className="bg-rose-50 p-4 rounded-xl border border-rose-100 text-xs text-rose-800 space-y-2 mb-4">
+                  <p className="font-black flex items-center gap-2">
+                    <AlertTriangle className="w-4 h-4" />
+                    সাবধান: আপনার আগের সেটআপে ভুল URL থাকতে পারে!
+                  </p>
+                  <p>আপনার ফেসবুক ডেভেলপার ড্যাশবোর্ডে গিয়ে <strong>Callback URL</strong> টি নিচেরটির সাথে মিলিয়ে নিন। যদি ডোমেইন আলাদা হয়, তবে রিপ্লাই আসবে না।</p>
+                </div>
                 <div className="bg-zinc-50 p-4 rounded-xl space-y-3">
                   <div className="flex justify-between items-center text-xs">
                     <span className="font-bold text-zinc-500 uppercase">Callback URL</span>
-                    <code className="bg-white px-2 py-1 rounded border shadow-sm text-indigo-600">{window.location.origin}/api/webhook/{business.id}</code>
+                    <div className="flex items-center gap-2">
+                      <code className="bg-white px-2 py-1 rounded border shadow-sm text-indigo-600 truncate max-w-[200px] sm:max-w-none">{window.location.origin}/api/webhook/{business.id}</code>
+                      <Button size="icon" variant="ghost" className="h-6 w-6" onClick={copyUrl}><Copy className="w-3 h-3" /></Button>
+                    </div>
                   </div>
                   <div className="flex justify-between items-center text-xs">
                     <span className="font-bold text-zinc-500 uppercase">Verify Token</span>
@@ -3540,12 +3555,15 @@ function MessengerConnect({ business, setBusiness }: { business: BusinessConfig,
                 <p className="text-[11px] text-zinc-500 italic bg-white/50 p-2 rounded border border-dashed border-zinc-200">
                   * আপনি নিজের টোকেন না দিলে ডিফল্ট হিসেবে <strong>chatbyraju</strong> ব্যবহার করুন।
                 </p>
-                <p className="text-xs text-rose-600 bg-rose-50 p-4 rounded-xl border-2 border-rose-200 animate-pulse font-bold flex items-start gap-2 shadow-sm">
-                  <AlertTriangle className="w-5 h-5 shrink-0" />
-                  <span>
-                    গুরত্বপূর্ণ: শুধুমাত্র ভেরিফাই করলেই হবে না। ফেসবুক ড্যাশবোর্ডে "Webhook fields" টেবিল থেকে অবশ্যই "messages" এবং "messaging_postbacks" ফিল্ড দুটি "Subscribe" বাটনে ক্লিক করে অন করুন। (আপনার স্ক্রিনশটে এগুলো Unsubscribed দেখাচ্ছে)।
-                  </span>
-                </p>
+                <div className="p-4 rounded-xl border-2 border-indigo-200 bg-indigo-50/50 space-y-3 shadow-sm">
+                  <h4 className="font-black text-indigo-900 flex items-center gap-2 text-sm">
+                    <CheckCircle2 className="w-4 h-4" />
+                    অবশ্যই এই দুটি ফিল্ড অন করুন:
+                  </h4>
+                  <p className="text-xs text-zinc-700 leading-relaxed">
+                    ফেসবুক ড্যাশবোর্ডে "Webhook fields" টেবিল থেকে অবশ্যই <strong>"messages"</strong> এবং <strong>"messaging_postbacks"</strong> ফিল্ড দুটি "Subscribe" বাটনে ক্লিক করে অন করুন। (এটি না করলে আপনার মেসেজ আমাদের সার্ভারের পৌঁছাবে না)।
+                  </p>
+                </div>
               </div>
 
               <div className="space-y-4">
@@ -3678,15 +3696,20 @@ function MessengerConnect({ business, setBusiness }: { business: BusinessConfig,
                     </div>
                   </div>
 
-                  <div className="space-y-3">
-                    <Label className="text-sm font-bold text-zinc-700">Facebook Page ID</Label>
+                  <div className="space-y-3 p-4 bg-amber-50 rounded-2xl border border-amber-100">
+                    <Label className="text-sm font-bold text-amber-900 flex items-center gap-2">
+                       <ShieldAlert className="w-4 h-4" />
+                       Facebook Page ID (অবশ্যই সঠিক দিন)
+                    </Label>
                     <Input 
                       value={business.facebookPageId || ''} 
                       onChange={e => updateField('facebookPageId', e.target.value)}
-                      placeholder="পেজ আইডি (অটোমেটিক আসবে)" 
-                      className="h-12 rounded-xl bg-zinc-50 border-zinc-200 focus:bg-white shadow-inner font-mono text-xs"
+                      placeholder="যেমন: 1111608648695141" 
+                      className="h-12 rounded-xl bg-white border-amber-200 focus:ring-amber-500 font-mono text-xs"
                     />
-                    <p className="text-[10px] text-zinc-400">বট রিপ্লাই দেওয়ার জন্য এটি অত্যন্ত জরুরি।</p>
+                    <p className="text-[10px] text-amber-700 leading-relaxed italic">
+                      * এটি আপনার ফেসবুক পেজের "About" অথবা "Page Transparency" সেকশনে পাবেন। এটি ছাড়া বট বুঝতে পারবে না কোন দোকানে কাস্টমার মেসেজ দিয়েছে।
+                    </p>
                   </div>
                 </div>
               </div>
