@@ -9,6 +9,9 @@ import { getFirestore as getAdminFirestore, FieldValue } from 'firebase-admin/fi
 import { initializeApp } from 'firebase/app';
 import { getFirestore, doc, getDoc, collection, addDoc, setDoc, updateDoc, deleteDoc, serverTimestamp, query, where, getDocs, orderBy, limit, Timestamp } from 'firebase/firestore';
 import fs from 'fs';
+import dotenv from 'dotenv';
+
+dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -37,10 +40,9 @@ try {
     // Initialize Admin SDK
     try {
       if (!admin.apps.length) {
-        console.log(`[Firebase] Initializing default Admin App for: ${firebaseConfig.projectId}`);
-        admin.initializeApp({
-          projectId: firebaseConfig.projectId
-        });
+        console.log(`[Firebase] Initializing Admin SDK...`);
+        // If SERVICE_ACCOUNT is missing, initializeApp() uses Google Application Default Credentials
+        admin.initializeApp();
       }
       
       const adminApp = admin.app();
@@ -51,12 +53,17 @@ try {
       } else {
         adminDb = getAdminFirestore(adminApp);
       }
-      console.log(`[Firebase] Admin Firestore ready (Project: ${firebaseConfig.projectId}, DB: ${dbId || '(default)'})`);
+      console.log(`[Firebase] Admin Firestore instances obtained.`);
     } catch (adminErr: any) {
-      console.error('[Firebase] Fatal Admin Error:', adminErr);
+      console.error('[Firebase] Admin Init Error:', adminErr?.message);
+      // Fallback to minimal init
+      if (!admin.apps.length) {
+        admin.initializeApp({ projectId: firebaseConfig.projectId });
+        adminDb = getAdminFirestore(admin.app());
+      }
     }
     
-    logActivity('system', 'SERVER_INIT', `সার্ভার রিস্টার্ট হয়েছে। ভার্সন: 1.0.8.`, 'info', 'system');
+    logActivity('system', 'SERVER_INIT', `সার্ভার রিস্টার্ট হয়েছে। ভার্সন: 1.1.0.`, 'success', 'system').catch(() => {});
   } else {
     // Fallback search for config in current dir
     const altPath = path.join(__dirname, '..', 'firebase-applet-config.json');
@@ -151,14 +158,23 @@ const responseSchema = {
 
 // Helper to get system settings
 async function getSystemSettings() {
-  if (!adminDb) return { tokenPricePerLakh: 20, monthlyServerCost: 1000, freeTrialTokens: 100000 };
-  try {
-    const doc = await adminDb.collection('system_config').doc('billing').get();
-    if (doc.exists) return doc.data();
-    return { tokenPricePerLakh: 20, monthlyServerCost: 1000, freeTrialTokens: 100000 };
-  } catch (e) {
-    return { tokenPricePerLakh: 20, monthlyServerCost: 1000, freeTrialTokens: 100000 };
+  const defaultSettings = { tokenPricePerLakh: 20, monthlyServerCost: 1000, freeTrialTokens: 100000 };
+  
+  if (adminDb) {
+    try {
+      const doc = await adminDb.collection('system_config').doc('billing').get();
+      if (doc.exists) return doc.data();
+    } catch (e) {}
   }
+  
+  if (db) {
+    try {
+      const sDoc = await getDoc(doc(db, 'system_config', 'billing'));
+      if (sDoc.exists()) return sDoc.data();
+    } catch (e) {}
+  }
+  
+  return defaultSettings;
 }
 
 // Helper to send Facebook Conversions API events
@@ -189,50 +205,46 @@ async function fireFacebookEvent(bizConfig: any, eventName: string, userData: an
   }
 }
 
-// Helper to log activity (Non-blocking)
-function logActivity(bizId: string | null, type: string, detail: string, status: 'info' | 'error' | 'success', ownerId?: string, data?: any) {
-  const bid = bizId || 'unknown';
-  const oid = ownerId || 'system';
-  console.log(`[ACTIVITY_LOG][${bid}][${type}] ${detail}`);
-  
-  const logData = {
-    businessId: bid,
-    ownerId: oid,
-    type,
-    detail,
-    status,
-    timestamp: FieldValue ? FieldValue.serverTimestamp() : serverTimestamp(),
-    data: data ? (typeof data === 'string' ? data.substring(0, 1000) : JSON.stringify(data).substring(0, 1000)) : null
-  };
+// Helper to log activity (Robust)
+async function logActivity(bizId: string | null, type: string, detail: string, status: 'info' | 'error' | 'success', ownerId?: string, data?: any) {
+  try {
+    const bid = bizId || 'unknown';
+    const oid = ownerId || 'system';
+    console.log(`[ACTIVITY_LOG][${bid}][${type}] ${detail}`);
+    
+    const logData = {
+      businessId: bid,
+      ownerId: oid,
+      type,
+      detail,
+      status,
+      timestamp: FieldValue ? FieldValue.serverTimestamp() : serverTimestamp(),
+      data: data ? (typeof data === 'string' ? data.substring(0, 1000) : JSON.stringify(data).substring(0, 1000)) : null
+    };
 
-  if (adminDb) {
-    return adminDb.collection('system_logs').add(logData)
-      .then(() => console.log(`[DB_LOG_SUCCESS][${type}]`))
-      .catch(async (err: any) => {
-        console.error('[Logger Admin Error]', err);
-        // Fallback to client SDK if Admin fails (e.g. Permission Denied)
-        if (db) {
-          try {
-            await addDoc(collection(db, 'system_logs'), {
-              ...logData,
-              timestamp: serverTimestamp() // Use client serverTimestamp
-            });
-            console.log(`[DB_LOG_FALLBACK_SUCCESS][${type}]`);
-          } catch (fallbackErr) {
-            console.error('[Logger Fallback Error]', fallbackErr);
-          }
+    if (adminDb) {
+      try {
+        await adminDb.collection('system_logs').add(logData);
+        return;
+      } catch (err: any) {
+        // Only log admin error if it's not a common permission one to avoid clutter
+        if (!err?.message?.includes('PERMISSION_DENIED')) {
+          console.error('[Logger Admin Error]', err?.message);
         }
-      });
-  } else if (db) {
-    // Direct fallback if adminDb is not even initialized
-    return addDoc(collection(db, 'system_logs'), {
-      ...logData,
-      timestamp: serverTimestamp()
-    })
-    .then(() => console.log(`[DB_LOG_CLIENT_ONLY_SUCCESS][${type}]`))
-    .catch((err) => console.error('[Logger Client Error]', err));
-  }
-  return Promise.resolve();
+      }
+    }
+    
+    if (db) {
+      try {
+        await addDoc(collection(db, 'system_logs'), {
+          ...logData,
+          timestamp: serverTimestamp()
+        });
+      } catch (ce) {
+        console.error('[Logger Client Error]', ce);
+      }
+    }
+  } catch (e) {}
 }
 
 // ... rest of helpers ...
@@ -352,474 +364,273 @@ app.post(['/webhook', '/api/webhook', '/api/webhook/:businessId'], async (req, r
       await logActivity(businessId || 'unknown', 'SIGNAL_REACHED', `ফেসবুক থেকে সিগন্যাল পাওয়া গেছে। প্রসেস শুরু হচ্ছে...`, 'info', 'system');
       console.log('[Webhook] Processing body entries:', body.entry?.length);
 
-    for (const entry of body.entry) {
-      const pageId = String(entry.id).trim(); // Ensure it's a string
-      const messaging = entry.messaging || entry.standby;
-      if (!messaging) {
-        console.log(`[Webhook] No messaging or standby data for entry ${pageId}`);
-        await logActivity(businessId || 'unknown', 'SIGNAL_MISSING_DATA', `এন্ট্রিতে কোনো মেসেজিং ডাটা নেই: ${pageId}`, 'info', 'system');
-        continue;
-      }
+      if (!body.entry || !Array.isArray(body.entry)) return;
 
-      console.log(`[Webhook] Entry ${pageId} has ${messaging.length} events`);
-
-      for (const webhookEvent of messaging) {
-        const senderId = webhookEvent.sender.id;
-        let messageText = webhookEvent.message?.text;
-        console.log(`[Webhook] Event from ${senderId}, PageID: ${pageId}, messageText: ${messageText}`);
-        
-        // Skip echo/delivery/read receipts to avoid infinitive loops or unnecessary processing
-        if (webhookEvent.message?.is_echo) {
-           console.log(`[Webhook] Skipping echo from ${senderId}`);
-           continue;
-        }
-        if (webhookEvent.delivery || webhookEvent.read) {
-           console.log(`[Webhook] Skipping delivery/read receipt from ${senderId}`);
-           continue;
-        }
-
-        // Handle Postbacks (Buttons clicks)
-        if (webhookEvent.postback) {
-          const payload = webhookEvent.postback.payload;
-          if (payload.startsWith('ORDER_')) {
-            const productId = payload.replace('ORDER_', '');
-            messageText = `আমি পণ্যটি (ID: ${productId}) অর্ডার করতে চাই।`;
-          } else {
-            // Use title or payload as text for other buttons
-            messageText = webhookEvent.postback.title || payload;
-          }
-        }
-
-        if (!messageText) continue;
-        
-        let bizId = businessId || 'unknown';
-        let ownerId = 'system';
-        let businessData: any = null;
-        
+      for (const entry of body.entry) {
         try {
-          // Lookup store by Page ID
-          console.log(`[Webhook] Looking up business for Page ID: ${pageId}`);
+          const pageId = String(entry.id).trim();
+          const messaging = entry.messaging || entry.standby;
           
-          let snap: any = null;
-          if (adminDb) {
+          if (!messaging) {
+            console.log(`[Webhook] No messaging or standby in entry ${entry.id}`);
+            continue;
+          }
+
+          console.log(`[Webhook] Entry ${pageId} has ${messaging.length} events`);
+
+          for (const webhookEvent of messaging) {
+            let bizId = businessId || 'unknown';
+            let ownerId = 'system';
+            
             try {
-              snap = await adminDb.collection('businesses').where('facebookPageId', 'in', [pageId, Number(pageId)]).get();
-            } catch (adminLookupErr) {
-              console.warn('[Webhook Admin Lookup Failed]', adminLookupErr);
-            }
-          }
-           
-          if (!snap || snap.empty) {
-            if (db) {
-              try {
-                const bq = query(collection(db, 'businesses'), where('facebookPageId', 'in', [pageId, Number(pageId)]));
-                snap = await getDocs(bq);
-              } catch (clientErr) {
-                console.error('[Webhook Client Lookup Failed]', clientErr);
+              const senderId = webhookEvent.sender?.id;
+              let messageText = webhookEvent.message?.text;
+              
+              if (!senderId) continue;
+              
+              console.log(`[Webhook] Event from ${senderId}, PageID: ${pageId}, messageText: ${messageText}`);
+              
+              // Skip echo/delivery/read receipts
+              if (webhookEvent.message?.is_echo || webhookEvent.delivery || webhookEvent.read) {
+                 continue;
               }
-            }
-          }
-          
-          if ((!snap || snap.empty) && businessId && businessId !== 'unknown') {
-             console.log(`[Webhook] snap empty, trying fallback businessId: ${businessId}`);
-             if (adminDb) {
-               try {
-                  const bizDoc = await adminDb.collection('businesses').doc(businessId).get();
-                  if (bizDoc.exists) {
-                    businessData = bizDoc.data();
-                    bizId = bizDoc.id;
-                  }
-               } catch (e) {}
-             }
-             
-             if (!businessData && db) {
-               try {
-                 const bizDoc = await getDoc(doc(db, 'businesses', businessId));
-                 if (bizDoc.exists()) {
-                   businessData = bizDoc.data();
-                   bizId = bizDoc.id;
+
+              // Handle Postbacks
+              if (webhookEvent.postback) {
+                const payload = webhookEvent.postback.payload;
+                if (payload.startsWith('ORDER_')) {
+                  const productId = payload.replace('ORDER_', '');
+                  messageText = `আমি পণ্যটি (ID: ${productId}) অর্ডার করতে চাই।`;
+                } else {
+                  messageText = webhookEvent.postback.title || payload;
+                }
+              }
+
+              if (!messageText) continue;
+              
+              let businessData: any = null;
+              
+              // Lookup store by Page ID
+              let snap: any = null;
+              if (adminDb) {
+                try {
+                  snap = await adminDb.collection('businesses').where('facebookPageId', 'in', [pageId, Number(pageId)]).get();
+                } catch (e) { console.warn('[Webhook Admin Lookup Failed]', e); }
+              }
+               
+              if (!snap || snap.empty) {
+                if (db) {
+                  try {
+                    const bq = query(collection(db, 'businesses'), where('facebookPageId', 'in', [pageId, Number(pageId)]));
+                    snap = await getDocs(bq);
+                  } catch (e) { console.error('[Webhook Client Lookup Failed]', e); }
+                }
+              }
+              
+              if ((!snap || snap.empty) && businessId && businessId !== 'unknown') {
+                 if (adminDb) {
+                   try {
+                      const bizDoc = await adminDb.collection('businesses').doc(businessId).get();
+                      if (bizDoc.exists) { businessData = bizDoc.data(); bizId = bizDoc.id; }
+                   } catch (e) { console.error(e); }
                  }
-               } catch (e) {}
-             }
-          } else if (snap && !snap.empty) {
-            const firstDoc = snap.docs[0];
-            businessData = typeof firstDoc.data === 'function' ? firstDoc.data() : (firstDoc as any).data();
-            bizId = firstDoc.id;
-            console.log(`[Webhook] Found business via Page ID: ${bizId}`);
-          }
+                 if (!businessData && db) {
+                   try {
+                     const bizDoc = await getDoc(doc(db, 'businesses', businessId));
+                     if (bizDoc.exists()) { businessData = bizDoc.data(); bizId = bizDoc.id; }
+                   } catch (e) { console.error(e); }
+                 }
+              } else if (snap && !snap.empty) {
+                const firstDoc = snap.docs[0];
+                businessData = typeof firstDoc.data === 'function' ? firstDoc.data() : (firstDoc as any).data();
+                bizId = firstDoc.id;
+              }
 
-          if (!businessData) {
-            await logActivity('unknown', 'ERROR', `Could not identify store for Page ID: ${pageId}. Please ensure Facebook Page ID is correctly entered in settings.`, 'error', 'system');
-            continue;
-          }
+              if (!businessData) {
+                await logActivity('unknown', 'ERROR', `Could not identify store for Page ID: ${pageId}`, 'error', 'system');
+                continue;
+              }
 
-          ownerId = businessData.ownerId;
-          await logActivity(bizId, 'SIGNAL_MATCHED', `Message matched for ${businessData.name}. Processing...`, 'info', ownerId);
-          
-          // BILLING CHECK - Be permissive if fields are missing for the first time
-          const now = new Date();
-          let subExpiryDate: Date;
-          if (businessData.subscriptionExpiry) {
-             subExpiryDate = businessData.subscriptionExpiry.toDate ? businessData.subscriptionExpiry.toDate() : new Date(businessData.subscriptionExpiry);
-          } else {
-             subExpiryDate = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days grace if missing
-          }
+              ownerId = businessData.ownerId;
+              
+              // BILLING CHECK
+              const now = new Date();
+              let subExpiryDate: Date;
+              if (businessData.subscriptionExpiry) {
+                 subExpiryDate = businessData.subscriptionExpiry.toDate ? businessData.subscriptionExpiry.toDate() : new Date(businessData.subscriptionExpiry);
+              } else {
+                 subExpiryDate = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+              }
 
-          const tokenBal = businessData.tokenBalance !== undefined ? businessData.tokenBalance : 100000;
-          const hasTokens = tokenBal > 0;
-          const isSubscribed = subExpiryDate > now;
+              const tokenBal = businessData.tokenBalance !== undefined ? businessData.tokenBalance : 100000;
+              if (subExpiryDate < now || tokenBal <= 0) {
+                const reason = subExpiryDate < now ? "আপনার মাসিক সাবস্ক্রিপশন শেষ হয়ে গেছে।" : "আপনার টোকেন ব্যালেন্স শেষ হয়ে গেছে।";
+                await logActivity(bizId, 'BILLING_BLOCK', reason, 'error', ownerId);
+                if (businessData.pageAccessToken) {
+                  await axios.post(`https://graph.facebook.com/v18.0/me/messages?access_token=${businessData.pageAccessToken}`, {
+                    recipient: { id: senderId },
+                    message: { text: "দুঃখিত, আমাদের অটোমেটেড সাপোর্ট সিস্টেম এই মুহূর্তে রিচার্জ বা মেয়াদের কারণে সাময়িকভাবে বন্ধ আছে।" }
+                  }).catch(() => {});
+                }
+                continue;
+              }
 
-          if (!isSubscribed || !hasTokens) {
-            const reason = !isSubscribed ? "আপনার মাসিক সাবস্ক্রিপশন শেষ হয়ে গেছে।" : "আপনার টোকেন ব্যালেন্স শেষ হয়ে গেছে।";
-            await logActivity(bizId, 'BILLING_BLOCK', reason, 'error', ownerId);
-            
-            // Send polite message if possible
-            if (businessData.pageAccessToken) {
-              await axios.post(`https://graph.facebook.com/v18.0/me/messages?access_token=${businessData.pageAccessToken}`, {
-                recipient: { id: senderId },
-                message: { text: "দুঃখিত, আমাদের অটোমেটেড সাপোর্ট সিস্টেম এই মুহূর্তে রিচার্জ বা মেয়াদের কারণে সাময়িকভাবে বন্ধ আছে। দয়া করে এডমিনের সাথে যোগাযোগ করুন।" }
-              }).catch(() => {});
-            }
-            continue;
-          }
+              await logActivity(bizId, 'INCOMING', `Customer: "${messageText}"`, 'info', ownerId);
+              await saveChatMessage(bizId, senderId, 'user', messageText);
 
-          await logActivity(bizId, 'INCOMING', `Customer: "${messageText}"`, 'info', ownerId);
-          
-          // Save incoming message to history
-          await saveChatMessage(bizId, senderId, 'user', messageText);
+              if (!businessData.pageAccessToken || !process.env.GEMINI_API_KEY || !genAI) {
+                await logActivity(bizId, 'ERROR', 'Missing Token or AI Config.', 'error', ownerId);
+                continue;
+              }
 
-          if (!businessData.pageAccessToken || !process.env.GEMINI_API_KEY || !genAI) {
-            await logActivity(bizId, 'ERROR', 'Missing Token or AI Config.', 'error', ownerId);
-            continue;
-          }
-
-          // Fetch History & Summary
-          let chatHistoryText = "";
-          let existingSummary = "";
-          try {
-            // Summary fetch
-            if (adminDb) {
-              const custDoc = await adminDb.collection('customers').doc(`${bizId}_${senderId}`).get();
-              if (custDoc.exists) existingSummary = custDoc.data().chatSummary || "";
-            } else if (db) {
-              const custDoc = await getDoc(doc(db, 'customers', `${bizId}_${senderId}`));
-              if (custDoc.exists()) existingSummary = custDoc.data()?.chatSummary || "";
-            }
-            
-            // History fetch
-            let hSnap: any = null;
-            if (adminDb) {
+              // Fetch History & Summary
+              let chatHistoryText = "";
+              let existingSummary = "";
+              let hSnap: any = null;
               try {
-                hSnap = await adminDb.collection('chat_history')
-                  .where('senderId', '==', senderId)
-                  .where('businessId', '==', bizId)
-                  .orderBy('timestamp', 'desc')
-                  .limit(10)
-                  .get();
-              } catch (e) { console.warn('Admin Hist Fetch Err', e); }
-            }
-            
-            if (!hSnap && db) {
-              try {
-                const hQuery = query(
-                  collection(db, 'chat_history'),
-                  where('senderId', '==', senderId),
-                  where('businessId', '==', bizId),
-                  orderBy('timestamp', 'desc'),
-                  limit(10)
-                );
-                hSnap = await getDocs(hQuery);
-              } catch (e) { console.error('Client Hist Fetch Err', e); }
-            }
-            
-            if (hSnap) {
-              const docs = Array.isArray(hSnap.docs) ? hSnap.docs : hSnap.docs;
-              const history = [...docs].reverse().map((d: any) => {
-                const data = typeof d.data === 'function' ? d.data() : d.data();
-                return `${data.role === 'user' ? 'Customer' : 'Bot'}: ${data.text}`;
-              });
-              chatHistoryText = history.join('\n');
-            }
-          } catch (histErr) {
-            console.error('History general fetch failed:', histErr);
-          }
+                if (adminDb) {
+                  const custDoc = await adminDb.collection('customers').doc(`${bizId}_${senderId}`).get();
+                  if (custDoc.exists) existingSummary = custDoc.data().chatSummary || "";
+                } else if (db) {
+                  const custDoc = await getDoc(doc(db, 'customers', `${bizId}_${senderId}`));
+                  if (custDoc.exists()) existingSummary = custDoc.data()?.chatSummary || "";
+                }
+                
+                if (adminDb) {
+                  try {
+                    hSnap = await adminDb.collection('chat_history')
+                      .where('senderId', '==', senderId)
+                      .where('businessId', '==', bizId)
+                      .limit(10)
+                      .get();
+                  } catch (e) { console.warn('Admin History fetch failed', e); }
+                }
+                if (!hSnap && db) {
+                  try {
+                    const hQuery = query(collection(db, 'chat_history'), where('senderId', '==', senderId), where('businessId', '==', bizId), limit(10));
+                    hSnap = await getDocs(hQuery);
+                  } catch (e) { console.error('Client History fetch failed', e); }
+                }
+                if (hSnap) {
+                  const docs = hSnap.docs || [];
+                  const history = [...docs]
+                    .map((d: any) => {
+                      const data = typeof d.data === 'function' ? d.data() : d.data();
+                      return { ...data, ts: data.timestamp?.toMillis ? data.timestamp.toMillis() : 0 };
+                    })
+                    .sort((a, b) => a.ts - b.ts)
+                    .map(data => `${data.role === 'user' ? 'Customer' : 'Bot'}: ${data.text}`);
+                  chatHistoryText = history.join('\n');
+                }
+              } catch (e) { console.error(e); }
 
-          // AI Generation
-          await logActivity(bizId, 'AI_START', `বট উত্তর তৈরি করছে...`, 'info', ownerId);
-          
-          // Optimize Product list for prompt efficiency
-          const optimizedProducts = (businessData.products || []).map((p: any) => ({
-             name: p.name,
-             price: p.price,
-             stock: p.stockCount
-          }));
-
-          const systemPrompt = `
-# সেলস অ্যাসিস্ট্যান্ট গাইডলাইন
-তুমি "${businessData.name}" এর একজন স্মার্ট এবং কৌশলী সেলস পারসন।
-${businessData.botPersona ? `তোমার ব্যক্তিত্ব (Persona): ${businessData.botPersona}` : ''}
-${businessData.botTone ? `তোমার কথা বলার ভঙ্গি (Tone): ${businessData.botTone}` : ''}
-
-Shop Info: ${businessData.description || 'Professional Store'}
+              // AI Generation
+              await logActivity(bizId, 'AI_START', `বট উত্তর তৈরি করছে: "${messageText.substring(0, 30)}..."`, 'info', ownerId);
+              
+              const optimizedProducts = (businessData.products || []).map((p: any) => ({ name: p.name, price: p.price, stock: p.stockCount }));
+              const systemPrompt = `তুমি "${businessData.name}" এর সেলস পারসন।
+Shop Info: ${businessData.description || ''}
 Products: ${JSON.stringify(optimizedProducts)}
 FAQs: ${JSON.stringify(businessData.faqs || [])}
-
-## কথা বলার নিয়ম (Tone & Style):
-১. উত্তর সবসময় **ছোট, টু-দি-পয়েন্ট এবং মানবিক** হবে। বড় প্যারাগ্রাফ লিখবে না।
-২. কাস্টমারের কথার সাথে তাল মিলিয়ে ছোট ছোট ২-৩ লাইনে উত্তর দাও। অতিরিক্ত তথ্য দিয়ে কাস্টমারকে বিরক্ত করবে না।
-৩. উত্তর সবসময় বাংলায় দিবে।
-
-${businessData.customSystemPrompt ? `## অতিরিক্ত গাইডলাইন (Merchant Instructions):\n${businessData.customSystemPrompt}\n` : ''}
-
-## কাজের নিয়মাবলি:
-১. প্রোডাক্টের দাম ও ডিটেইলস সঠিক দিবে। যদি কাস্টমার শুধু দাম জানতে চায়, তবে শুধু দাম বলবে।
-২. কাস্টমার ছবি বা ফটো চাইলে 'show_product_image: true' করবে এবং সঠিক 'product_name' দিবে। কাস্টমার সরাসরি ছবি না চাওয়া পর্যন্ত কোনো ছবি পাঠাবে না। ছবি পাঠানোর সময় সাথে কোনো টেক্সট বা কথা বলবে না (সিস্টেম এটি হ্যান্ডেল করবে)।
-৩. প্রতিটি প্রোডাক্টের 'stockCount' চেক করবে। স্টকে না থাকলে বিনীতভাবে জানাবে।
-৪. কাস্টমার যদি নাম, ফোন নম্বর এবং ঠিকানা দেয়, তবেই 'conversation_stage: order_completed' এবং 'event_name: Purchase' সেট করবে।
-৫. কাস্টমার "অর্ডার করতে চাই" বললে তার কাছে নাম, মোবাইল নম্বর ও ঠিকানা চাও। 
-৬. **গুরুত্বপূর্ণ:** আগের আলাপ এবং সারসংক্ষেপ ভালো করে পড়বে। যদি কাস্টমার আগেই তার নাম বা ঠিকানা দিয়ে থাকে, তবে তা আবার চাইবে না। কাস্টমার অর্ডার কনফার্ম হয়েছে কিনা জানতে চাইলে আগের কথা দেখে উত্তর দাও।
-৭. আউটপুট সবসময় JSON হবে।
-
-কনটেক্সট:
-${existingSummary ? `আগের কথার সারসংক্ষেপ: ${existingSummary}\n` : ''}
+${businessData.botPersona || ''} ${businessData.botTone || ''}
+${businessData.customSystemPrompt || ''}
 সাম্প্রতিক আলাপ:
 ${chatHistoryText}
 কাস্টমার: ${messageText}`;
-          
-          const model = genAI!.getGenerativeModel({ 
-            model: "gemini-1.5-flash",
-            generationConfig: {
-              responseMimeType: "application/json",
-              responseSchema: responseSchema as any
-            }
-          });
-          const result = await model.generateContent({
-            contents: [{ role: 'user', parts: [{ text: systemPrompt }] }]
-          });
-          
-          const aiRaw = result.response.text();
-          let aiRes: any;
-          try {
-            aiRes = JSON.parse(aiRaw);
-          } catch (e) {
-            console.error("AI JSON Parse Error:", e, aiRaw);
-            aiRes = { reply: "দুঃখিত, আমি বিষয়টি বুঝতে পারছি না। দয়া করে আবার বলবেন কি?", conversation_stage: 'new_lead' };
-          }
-          
-          const reply = aiRes.reply || "দুঃখিত, আমি উত্তরটি তৈরি করতে পারছি না।";
-
-          // Send Message
-          await logActivity(bizId, 'SENDING_MESSAGE', `ফেসবুকে পাঠানো হচ্ছে...`, 'info', ownerId);
-          
-          let imageSent = false;
-          // If the AI wants to show product images
-          if (aiRes.show_product_image && aiRes.product_name) {
-            const searchName = aiRes.product_name.toLowerCase().trim();
-            await logActivity(bizId, 'IMAGE_SEARCH', `পণ্য খোঁজা হচ্ছে: "${searchName}"`, 'info', ownerId);
-
-            const product = businessData.products?.find((p: any) => {
-               const pName = p.name.toLowerCase();
-               // Robust matching: Check if search name is in product name or vice-versa, or if they share significant keywords
-               return pName.includes(searchName) || searchName.includes(pName);
-            });
-
-            if (product) {
-              await logActivity(bizId, 'PRODUCT_FOUND', `পণ্য পাওয়া গেছে: ${product.name}`, 'info', ownerId);
               
-              const hasImages = product.images && product.images.length > 0;
-              const stock = product.stockCount || 0;
+              let aiRes: any;
+              try {
+                const model = genAI!.getGenerativeModel({ 
+                  model: "gemini-1.5-flash",
+                  generationConfig: { responseMimeType: "application/json", responseSchema: responseSchema as any }
+                });
+                
+                const result = await model.generateContent(systemPrompt);
+                const aiRaw = result.response.text();
+                aiRes = JSON.parse(aiRaw);
+              } catch (aiErr: any) {
+                console.error('[AI Generation Error]', aiErr);
+                await logActivity(bizId, 'AI_ERROR', `AI উত্তর তৈরি করতে পারেনি: ${aiErr.message}`, 'error', ownerId);
+                aiRes = { 
+                  reply: "দুঃখিত, আমি বিষয়টি বুঝতে পারছি না। দয়া করে আবার বলবেন কি?", 
+                  conversation_stage: 'interested',
+                  intent: 'unknown',
+                  event_name: 'Lead',
+                  summary: existingSummary
+                };
+              }
+              
+              const reply = aiRes.reply || "দুঃখিত আমি উত্তর দিতে পারছি না।";
 
-              if (hasImages) {
-                // Send raw images like a manual user (no buttons, no titles, just photos)
-                try {
-                  const imagesToSend = product.images.slice(0, 3); // Send max 3 images to avoid flooding
-                  for (const imgUrl of imagesToSend) {
-                    await axios.post(`https://graph.facebook.com/v18.0/me/messages?access_token=${businessData.pageAccessToken}`, {
-                      recipient: { id: senderId },
-                      message: {
-                        attachment: {
-                          type: "image",
-                          payload: {
-                            url: imgUrl,
-                            is_reusable: true
-                          }
-                        }
-                      }
-                    });
-                  }
-                  imageSent = true;
-                  await logActivity(bizId, 'IMAGE_SENT_FB', `ফেসবুকে ${imagesToSend.length}টি ছবি র ইমেজ হিসেবে পাঠানো হয়েছে`, 'success', ownerId);
-                } catch (fbImgErr: any) {
-                  const errorMsg = fbImgErr.response?.data?.error?.message || fbImgErr.message;
-                  await logActivity(bizId, 'IMAGE_FB_ERROR', `ফেসবুক এপিআই ত্রুটি: ${errorMsg}`, 'error', ownerId);
-                  console.error("FB Image Send Error:", fbImgErr.response?.data || fbImgErr.message);
+              // Send Images
+              let imageSent = false;
+              if (aiRes.show_product_image && aiRes.product_name) {
+                const searchName = aiRes.product_name.toLowerCase();
+                const product = businessData.products?.find((p: any) => p.name.toLowerCase().includes(searchName));
+                if (product && product.images?.length > 0) {
+                  try {
+                    for (const imgUrl of product.images.slice(0, 2)) {
+                      await axios.post(`https://graph.facebook.com/v18.0/me/messages?access_token=${businessData.pageAccessToken}`, {
+                        recipient: { id: senderId },
+                        message: { attachment: { type: "image", payload: { url: imgUrl } } }
+                      });
+                    }
+                    imageSent = true;
+                  } catch (e) { console.error(e); }
                 }
-              } else {
-                await logActivity(bizId, 'IMAGE_NOT_AVAILABLE', `পণ্য পাওয়া গেছে কিন্তু কোনো ছবি আপলোড করা নেই।`, 'error', ownerId);
               }
-            } else {
-              await logActivity(bizId, 'PRODUCT_NOT_FOUND', `পণ্যটি ডাটাবেজে পাওয়া যায়নি: "${searchName}"`, 'error', ownerId);
-            }
-          }
 
-          // Lead Segmentation Logic
-          let segment: 'Hot' | 'Warm' | 'Cold' = 'Cold';
-          if (aiRes.conversation_stage === 'order_completed' || aiRes.conversation_stage === 'checkout_started') {
-            segment = 'Hot';
-          } else if (aiRes.conversation_stage === 'interested') {
-            segment = 'Warm';
-          }
-
-          // FIRE Facebook Event (CAPI)
-          if (aiRes.event_name) {
-            await fireFacebookEvent(businessData, aiRes.event_name, {
-              external_id: senderId,
-              phone: aiRes.order_data?.phone,
-              name: aiRes.order_data?.name
-            });
-          }
-
-          // SAVE ORDER to Dashboard if completed
-          if (aiRes.conversation_stage === 'order_completed') {
-            try {
-              const product = businessData.products?.find((p: any) => 
-                 p.name.toLowerCase().includes(aiRes.product_name?.toLowerCase() || '')
-              );
-              
-              const orderPayload = {
-                merchantId: ownerId,
-                businessId: bizId,
-                customerName: aiRes.order_data?.name || 'Customer',
-                phone: aiRes.order_data?.phone || '',
-                address: aiRes.order_data?.address || '',
-                quantity: parseInt(aiRes.order_data?.quantity) || 1,
-                productName: aiRes.product_name || product?.name || 'Unknown Product',
-                unitPrice: product?.price || 0,
-                totalPrice: (product?.price || 0) * (parseInt(aiRes.order_data?.quantity) || 1),
-                status: 'pending',
-                paymentStatus: 'unpaid',
-                paymentMethod: 'cod',
-                createdAt: serverTimestamp()
-              };
-
-              await addDoc(collection(db, 'orders'), orderPayload);
-              await logActivity(bizId, 'ORDER_CREATED', `নতুন অর্ডার তৈরি হয়েছে: ${orderPayload.productName}`, 'success', ownerId);
-            } catch (orderErr) {
-              console.error('Order recording failed:', orderErr);
-            }
-          }
-
-          // Update customer record
-          const customerData = {
-            businessId: bizId,
-            messengerId: senderId,
-            name: aiRes.order_data?.name || 'Customer',
-            phone: aiRes.order_data?.phone || '',
-            leadScore: aiRes.confidence * 100,
-            segment: segment,
-            chatSummary: aiRes.summary || '',
-            lastInteraction: FieldValue ? FieldValue.serverTimestamp() : serverTimestamp(),
-            updatedAt: FieldValue ? FieldValue.serverTimestamp() : serverTimestamp()
-          };
-
-          if (adminDb) {
-            try {
-              await adminDb.collection('customers').doc(`${bizId}_${senderId}`).set(customerData, { merge: true });
-            } catch (e) {
-              console.error('Customer Admin Sync Error:', e);
-              if (db) {
+              // Send Reply Text if no images or alongside
+              if (!imageSent) {
                 try {
-                  await setDoc(doc(db, 'customers', `${bizId}_${senderId}`), {
-                    ...customerData,
-                    lastInteraction: serverTimestamp(),
-                    updatedAt: serverTimestamp()
-                  }, { merge: true });
-                } catch (ce) { console.error('Customer Client Sync Error:', ce); }
+                  await axios.post(`https://graph.facebook.com/v18.0/me/messages?access_token=${businessData.pageAccessToken}`, {
+                    recipient: { id: senderId },
+                    message: { text: reply }
+                  });
+                } catch (e) { console.error(e); }
               }
-            }
-          } else if (db) {
-            try {
-              await setDoc(doc(db, 'customers', `${bizId}_${senderId}`), {
-                ...customerData,
+
+              // Update Customer & Logic
+              let segment: any = 'Cold';
+              if (aiRes.conversation_stage === 'order_completed') segment = 'Hot';
+              else if (aiRes.conversation_stage === 'interested') segment = 'Warm';
+
+              const customerData = {
+                businessId: bizId,
+                messengerId: senderId,
+                name: aiRes.order_data?.name || 'Customer',
+                phone: aiRes.order_data?.phone || '',
+                leadScore: (aiRes.confidence || 0) * 100,
+                segment,
+                chatSummary: aiRes.summary || '',
                 lastInteraction: serverTimestamp(),
                 updatedAt: serverTimestamp()
-              }, { merge: true });
-            } catch (ce) { console.error('Customer Client Only Sync Error:', ce); }
-          }
-
-          // Log image viewed event
-          if (imageSent && aiRes.product_name) {
-             const eventData = {
-                businessId: bizId,
-                businessOwnerId: ownerId,
-                eventName: 'product_image_viewed',
-                properties: { product: aiRes.product_name },
-                timestamp: FieldValue ? FieldValue.serverTimestamp() : serverTimestamp(),
-                sessionId: senderId
-             };
-             if (adminDb) {
-               try { await adminDb.collection('analytics').add(eventData); } catch (e) {
-                  if (db) try { await addDoc(collection(db, 'analytics'), { ...eventData, timestamp: serverTimestamp() }); } catch (ce) {}
-               }
-             } else if (db) {
-               try { await addDoc(collection(db, 'analytics'), { ...eventData, timestamp: serverTimestamp() }); } catch (ce) {}
-             }
-          }
-
-          // Always send the text reply IF no image was sent (User request: image only when requested)
-          if (!imageSent) {
-            await axios.post(`https://graph.facebook.com/v18.0/me/messages?access_token=${businessData.pageAccessToken}`, {
-              recipient: { id: senderId },
-              message: { text: reply }
-            });
-          }
-
-          // Cart Abandonment Tracking
-          if (aiRes.event_name === 'InitiateCheckout') {
-            const cartData = {
-              businessId: bizId,
-              messengerId: senderId,
-              customerName: aiRes.order_data?.name || 'Customer',
-              productName: aiRes.product_name,
-              timestamp: FieldValue ? FieldValue.serverTimestamp() : serverTimestamp(),
-              lastFollowUpSent: false,
-              pageAccessToken: businessData.pageAccessToken,
-              ownerId: ownerId
-            };
-            if (adminDb) {
-              try {
-                await adminDb.collection('abandoned_carts').doc(`${bizId}_${senderId}`).set(cartData, { merge: true });
-              } catch (e) {
-                if (db) try { await setDoc(doc(db, 'abandoned_carts', `${bizId}_${senderId}`), { ...cartData, timestamp: serverTimestamp() }, { merge: true }); } catch (ce) {}
+              };
+              
+              if (adminDb) {
+                try { await adminDb.collection('customers').doc(`${bizId}_${senderId}`).set(customerData, { merge: true }); } catch (e) {
+                  if (db) await setDoc(doc(db, 'customers', `${bizId}_${senderId}`), customerData, { merge: true }).catch(console.error);
+                }
+              } else if (db) {
+                await setDoc(doc(db, 'customers', `${bizId}_${senderId}`), customerData, { merge: true }).catch(console.error);
               }
-            } else if (db) {
-               try { await setDoc(doc(db, 'abandoned_carts', `${bizId}_${senderId}`), { ...cartData, timestamp: serverTimestamp() }, { merge: true }); } catch (ce) {}
-            }
-          } else if (aiRes.event_name === 'Purchase') {
-            if (adminDb) {
-              try { await adminDb.collection('abandoned_carts').doc(`${bizId}_${senderId}`).delete(); } catch(e) {
-                if (db) try { await deleteDoc(doc(db, 'abandoned_carts', `${bizId}_${senderId}`)); } catch(ce){}
-              }
-            } else if (db) {
-              try { await deleteDoc(doc(db, 'abandoned_carts', `${bizId}_${senderId}`)); } catch(ce){}
+
+              await saveChatMessage(bizId, senderId, 'bot', reply);
+              await logActivity(bizId, 'REPLY_SENT', `সফলভাবে রিপ্লাই পাঠানো হয়েছে।`, 'success', ownerId);
+
+            } catch (innerErr: any) {
+              console.error('[Event Process Error]', innerErr);
+              await logActivity(bizId, 'ERROR', `ইভেন্ট প্রসেসিং এ সমস্যা হয়েছে।`, 'error', ownerId);
             }
           }
-
-          // Save bot reply to history
-          await saveChatMessage(bizId, senderId, 'bot', reply);
-
-          await logActivity(bizId, 'REPLY_SENT', `সফলভাবে রিপ্লাই পাঠানো হয়েছে।`, 'success', ownerId);
-
-        } catch (innerErr: any) {
-          const errMsg = innerErr.response?.data?.error?.message || innerErr.message;
-          await logActivity(bizId, 'ERROR', `বট কাজ করতে পারেনি: ${errMsg}`, 'error', ownerId);
+        } catch (entryErr) {
+          console.error('[Entry Process Error]', entryErr);
         }
       }
+    } catch (outerErr: any) {
+      console.error('Background webhook process failed:', outerErr);
     }
-  } catch (outerErr: any) {
-    console.error('Background webhook process failed:', outerErr);
-  }
-})();
+  })();
 });
 
 // Manual message sending from Dashboard (Live Chat)

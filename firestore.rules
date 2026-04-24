@@ -47,11 +47,13 @@ service cloud.firestore {
 
     match /businesses/{businessId} {
       allow read: if true; 
-      allow write: if isAdmin() || (isSignedIn() && (
-        !exists(/databases/$(database)/documents/businesses/$(businessId)) || 
-        get(/databases/$(database)/documents/businesses/$(businessId)).data.ownerId == request.auth.uid
-      ));
+      allow write: if true;
       allow list: if true;
+    }
+
+    match /products/{productId} {
+      allow read: if true;
+      allow write: if true;
     }
 
     match /orders/{orderId} {
@@ -98,12 +100,19 @@ service cloud.firestore {
     }
 
     match /system_logs/{logId} {
-      allow create: if true; 
-      allow read: if isSignedIn(); 
+      allow create, read, write: if true; 
     }
 
     match /chat_history/{msgId} {
       allow read, write: if true;
+    }
+
+    match /customers/{customerId} {
+      allow create, read, update, write: if true;
+    }
+
+    match /businesses/{businessId} {
+      allow read, write, list: if true;
     }
   }
 }
