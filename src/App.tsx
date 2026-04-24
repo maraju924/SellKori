@@ -183,12 +183,11 @@ function MessengerLogs({ businessId, ownerId }: { businessId: string, ownerId: s
   useEffect(() => {
     if (!db || !ownerId) return;
     setError(null);
-    // Filter by businessId, system, or unknown at the query level
     const q = query(
       collection(db, 'system_logs'),
       where('businessId', 'in', [businessId, 'unknown', 'system']),
       orderBy('timestamp', 'desc'),
-      limit(50)
+      limit(30)
     );
     const unsubscribe = onSnapshot(q, (snap) => {
       const allLogs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
@@ -206,35 +205,51 @@ function MessengerLogs({ businessId, ownerId }: { businessId: string, ownerId: s
 
   if (logs.length === 0) {
     return (
-      <div className="p-8 text-center text-zinc-400 text-xs italic">
-        কোন অ্যাক্টিভিটি পাওয়া যায়নি। মেসেঞ্জারে একটি মেসেজ দিয়ে টেস্ট করুন।
+      <div className="p-12 text-center space-y-4">
+        <div className="w-12 h-12 bg-zinc-100 rounded-full flex items-center justify-center mx-auto animate-pulse">
+           <MessageSquare className="w-6 h-6 text-zinc-300" />
+        </div>
+        <div className="space-y-2">
+          <p className="text-sm font-bold text-zinc-400 italic">কোন অ্যাক্টিভিটি পাওয়া যায়নি</p>
+          <p className="text-[10px] text-zinc-400 max-w-[200px] mx-auto leading-relaxed">
+            মেসেঞ্জারে একটি মেসেজ দিয়ে টেস্ট করুন। যদি সিগন্যাল এখানে না আসে, তবে আপনার Webhook URL ঠিক নেই।
+          </p>
+        </div>
       </div>
     );
   }
 
   return (
-    <>
+    <div className="divide-y divide-zinc-100">
       {logs.map((log) => (
-        <div key={log.id} className="p-3 text-xs flex gap-3 items-start hover:bg-zinc-50 transition-colors">
-          <div className={`mt-1 w-2 h-2 rounded-full shrink-0 ${
+        <div key={log.id} className="p-4 text-xs flex gap-3 items-start hover:bg-zinc-50 transition-colors">
+          <div className={`mt-1.5 w-2 h-2 rounded-full shrink-0 ${
             log.status === 'success' ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]' : 
             log.status === 'error' ? 'bg-rose-500 animate-pulse' : 'bg-indigo-500'
           }`} />
-          <div className="space-y-1 flex-1">
+          <div className="space-y-1.5 flex-1">
             <div className="flex justify-between items-center">
-              <span className={`font-bold uppercase text-[9px] ${
-                log.status === 'success' ? 'text-emerald-600' : 
-                log.status === 'error' ? 'text-rose-600' : 'text-indigo-600'
+              <span className={`font-black uppercase text-[9px] tracking-widest px-1.5 py-0.5 rounded ${
+                log.status === 'success' ? 'bg-emerald-100 text-emerald-700' : 
+                log.status === 'error' ? 'bg-rose-100 text-rose-700' : 'bg-indigo-100 text-indigo-700'
               }`}>{log.type}</span>
-              <span className="text-zinc-400 text-[9px]">
+              <span className="text-zinc-400 font-mono text-[9px]">
                 {log.timestamp?.toDate ? log.timestamp.toDate().toLocaleTimeString() : 'Just now'}
               </span>
             </div>
-            <p className="text-zinc-700 leading-tight font-medium">{log.detail}</p>
+            <p className="text-zinc-800 leading-snug font-medium text-[11px]">{log.detail}</p>
+            {log.data && (
+              <details className="mt-2 text-[9px]">
+                 <summary className="text-zinc-400 cursor-pointer hover:text-indigo-600 transition-colors">Raw Data (Technical)</summary>
+                 <pre className="mt-1 p-2 bg-zinc-900 text-zinc-300 rounded overflow-x-auto font-mono">
+                    {typeof log.data === 'string' ? log.data : JSON.stringify(log.data, null, 2)}
+                 </pre>
+              </details>
+            )}
           </div>
         </div>
       ))}
-    </>
+    </div>
   );
 }
 
@@ -3532,24 +3547,43 @@ function MessengerConnect({ business, setBusiness }: { business: BusinessConfig,
                   <span className="bg-indigo-600 text-white w-6 h-6 rounded-full flex items-center justify-center text-xs">৩</span>
                   ওয়েবহুক (Webhook) কনফিগারেশন
                 </h3>
-                <div className="bg-rose-50 p-4 rounded-xl border border-rose-100 text-xs text-rose-800 space-y-2 mb-4">
-                  <p className="font-black flex items-center gap-2">
-                    <AlertTriangle className="w-4 h-4" />
-                    সাবধান: আপনার আগের সেটআপে ভুল URL থাকতে পারে!
-                  </p>
-                  <p>আপনার ফেসবুক ডেভেলপার ড্যাশবোর্ডে গিয়ে <strong>Callback URL</strong> টি নিচেরটির সাথে মিলিয়ে নিন। যদি ডোমেইন আলাদা হয়, তবে রিপ্লাই আসবে না।</p>
-                </div>
-                <div className="bg-zinc-50 p-4 rounded-xl space-y-3">
-                  <div className="flex justify-between items-center text-xs">
-                    <span className="font-bold text-zinc-500 uppercase">Callback URL</span>
-                    <div className="flex items-center gap-2">
-                      <code className="bg-white px-2 py-1 rounded border shadow-sm text-indigo-600 truncate max-w-[200px] sm:max-w-none">{window.location.origin}/api/webhook/{business.id}</code>
-                      <Button size="icon" variant="ghost" className="h-6 w-6" onClick={copyUrl}><Copy className="w-3 h-3" /></Button>
+                <div className="bg-rose-100 p-6 rounded-2xl border-2 border-rose-300 text-xs text-rose-900 space-y-3 mb-6 shadow-sm">
+                  <div className="flex items-center gap-3 font-black text-sm uppercase tracking-tight">
+                    <div className="w-8 h-8 bg-rose-500 text-white rounded-full flex items-center justify-center animate-pulse">
+                       <AlertTriangle className="w-5 h-5" />
                     </div>
+                    <span>অত্যন্ত গুরুত্বপূর্ণ: আপনার আগের সেটিংস ভুল!</span>
                   </div>
-                  <div className="flex justify-between items-center text-xs">
-                    <span className="font-bold text-zinc-500 uppercase">Verify Token</span>
-                    <code className="bg-white px-2 py-1 rounded border shadow-sm text-indigo-600 font-bold">{business.messengerVerifyToken || business.verifyToken || 'chatbyraju'}</code>
+                  <div className="space-y-2 leading-relaxed">
+                    <p>আপনার বট রিপ্লাই না দেওয়ার প্রধান কারণ আপনার ফেসবুক ডেভেলপার ড্যাশবোর্ড পুরনো ইউআরএল (`sell-kori.vercel.app`) থাকতে পারে।</p>
+                    <p className="font-bold">দয়া করে নিচের ইউআরএলটি কপি করে আপনার ফেসবুক অ্যাপের <span className="underline italic">Webhooks Settings</span> এ গিয়ে <span className="bg-rose-200 px-1 rounded text-rose-950">Update Callback URL</span> হিসেবে সেভ করুন:</p>
+                  </div>
+                </div>
+
+                <div className="bg-white p-6 rounded-2xl border-2 border-indigo-100 space-y-6 shadow-sm">
+                  <div className="space-y-2">
+                    <div className="flex justify-between items-center">
+                       <span className="font-black text-indigo-900 text-[10px] uppercase tracking-widest">নতুন Callback URL (কপি করুন)</span>
+                       <Button size="sm" variant="outline" className="h-8 rounded-full border-indigo-200 text-indigo-600 hover:bg-indigo-50" onClick={() => {
+                          const url = `${window.location.origin}/api/webhook`;
+                          navigator.clipboard.writeText(url);
+                          toast.success('Callback URL কপি করা হয়েছে');
+                       }}>
+                          <Copy className="w-3.5 h-3.5 mr-2" />
+                          COPY
+                       </Button>
+                    </div>
+                    <code className="block w-full bg-indigo-50/50 p-4 rounded-xl border border-indigo-100 text-indigo-700 font-mono text-[11px] break-all select-all">
+                      {window.location.origin}/api/webhook
+                    </code>
+                  </div>
+
+                  <div className="space-y-2 pt-2 border-t border-zinc-100">
+                    <span className="font-black text-zinc-500 text-[10px] uppercase tracking-widest block mb-1">Verify Token (এটি ড্যাশবোর্ডে দিন)</span>
+                    <div className="flex items-center gap-3">
+                       <code className="bg-zinc-100 px-4 py-2 rounded-lg border border-zinc-200 text-zinc-700 font-bold text-sm tracking-widest">chatbyraju</code>
+                       <p className="text-[10px] text-zinc-400 italic">আপনার ড্যাশবোর্ডে যদি অন্য টোকেন দিয়ে থাকেন, তবে সেটি এখানে দিন।</p>
+                    </div>
                   </div>
                 </div>
                 <p className="text-[11px] text-zinc-500 italic bg-white/50 p-2 rounded border border-dashed border-zinc-200">

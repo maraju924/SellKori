@@ -41,16 +41,18 @@ try {
     try {
       let adminApp;
       if (admin.apps.length === 0) {
-        console.log(`[Firebase] Initializing Admin SDK for: ${firebaseConfig.projectId}`);
+        console.log(`[Firebase] Initializing Admin SDK with Project ID: ${firebaseConfig.projectId}`);
         adminApp = admin.initializeApp({
-          projectId: firebaseConfig.projectId
+          projectId: firebaseConfig.projectId,
+          // Explicitly use applicationDefault if available
+          credential: admin.credential.applicationDefault ? admin.credential.applicationDefault() : undefined
         });
       } else {
         adminApp = admin.app();
       }
       
       const dbId = firebaseConfig.firestoreDatabaseId;
-      console.log(`[Firebase] Using Database ID: ${dbId || '(default)'}`);
+      console.log(`[Firebase] Configuring Admin Firestore for Database: ${dbId || '(default)'}`);
       
       if (dbId && dbId !== '(default)') {
         adminDb = getAdminFirestore(adminApp, dbId);
@@ -58,16 +60,19 @@ try {
         adminDb = getAdminFirestore(adminApp);
       }
       
-      // Test the connection immediately
+      // Test the connection immediately and set a working flag
       try {
         await adminDb.collection('businesses').limit(1).get();
-        console.log(`[Firebase] Admin Firestore connection verified.`);
+        console.log(`[Firebase] Admin Firestore connection successfully verified.`);
       } catch (testErr: any) {
-        console.warn('[Firebase] Admin Firestore verify failed:', testErr.message);
-        // Do NOT nullify adminDb yet, might be transient
+        console.warn(`[Firebase] Admin Firestore verification FAILED: ${testErr.message}`);
+        // If it's a permission denied error, we might want to log it specifically
+        if (testErr.code === 7 || testErr.message.includes('PERMISSION_DENIED')) {
+          console.error('[Firebase] PERMISSION_DENIED: Please ensure the service account has "Cloud Datastore User" role.');
+        }
       }
     } catch (adminErr: any) {
-      console.error('[Firebase] Admin Init Error:', adminErr?.message);
+      console.error('[Firebase] Admin Initialization Error:', adminErr?.message);
     }
     
     logActivity('system', 'SERVER_INIT', `সার্ভার রিস্টার্ট হয়েছে। ভার্সন: 1.1.0.`, 'success', 'system').catch(() => {});
@@ -384,12 +389,13 @@ app.post(['/webhook', '/api/webhook', '/api/webhook/:businessId'], async (req, r
             const payload = webhookEvent.postback?.payload || '';
             
             if (!senderId) {
-              console.log('[Webhook] No senderId found in event');
+              await logActivity(pathBizId || 'system', 'ERROR', '[Webhook] No senderId found in event payload.', 'error', 'system', webhookEvent);
               continue;
             }
             
             // Skip echo/delivery/read/etc.
             if (webhookEvent.message?.is_echo || webhookEvent.delivery || webhookEvent.read) {
+              console.log('[Webhook] Skipping non-message event');
               continue;
             }
 
@@ -400,9 +406,11 @@ app.post(['/webhook', '/api/webhook', '/api/webhook/:businessId'], async (req, r
             let snap: any = null;
             if (adminDb) {
               try {
-                snap = await adminDb.collection('businesses').where('facebookPageId', '==', pageId).get();
-                if (snap.empty && !isNaN(Number(pageId))) {
-                  snap = await adminDb.collection('businesses').where('facebookPageId', '==', Number(pageId)).get();
+                // Ensure we compare without extra spaces
+                const cleanPageId = pageId.trim();
+                snap = await adminDb.collection('businesses').where('facebookPageId', '==', cleanPageId).get();
+                if (snap.empty && !isNaN(Number(cleanPageId))) {
+                  snap = await adminDb.collection('businesses').where('facebookPageId', '==', Number(cleanPageId)).get();
                 }
               } catch (e: any) { 
                 console.error('Admin Business Lookup Error', e.message); 
@@ -663,39 +671,57 @@ app.post('/api/broadcast', async (req, res) => {
 cron.schedule('*/15 * * * *', async () => {
   console.log('[Cron] Checking for abandoned carts...');
   if (!adminDb) {
-    console.error('[Cron] Admin DB not initialized');
+    console.error('[Cron] Admin DB not initialized, skipping check.');
     return;
   }
   
   try {
+    // Debug: log the database we're talking to (internal check)
+    // adminDb.databaseId might not be public, but we can log the config value
+    const dbIdUsed = adminDb._databaseId || 'default?';
+    console.log(`[Cron] Database ID in use: ${dbIdUsed}`);
+
     const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
+    // Querying abandoned_carts
     const snap = await adminDb.collection('abandoned_carts')
       .where('lastFollowUpSent', '==', false)
       .get();
     
+    console.log(`[Cron] Found ${snap.size} potential abandoned carts.`);
+    
     for (const docSnap of snap.docs) {
       const cart = docSnap.data();
-      const cartTime = cart.timestamp?.toDate() || new Date(0);
+      // Ensure cart has necessary data
+      if (!cart.pageAccessToken || !cart.messengerId) continue;
+
+      const cartTime = cart.timestamp?.toDate ? cart.timestamp.toDate() : new Date(cart.timestamp || 0);
       
       if (cartTime < oneHourAgo) {
         try {
-          const followUp = `হ্যালো ${cart.customerName}! আপনি কি ${cart.productName} অর্ডারটি সম্পন্ন করতে চান? আমরা আপনার জন্য পণ্যটি স্টক এ রেখেছি। কোনো সাহায্য লাগলে আমাদের জানান।`;
+          const followUp = `হ্যালো ${cart.customerName || 'কাস্টমার'}! আপনি কি "${cart.productName}" অর্ডারটি সম্পন্ন করতে চান? আমরা আপনার জন্য এটি বুকড করে রেখেছি। কোনো সাহায্য লাগলে আমাদের মেসেজ দিন।`;
           
           await axios.post(`https://graph.facebook.com/v18.0/me/messages?access_token=${cart.pageAccessToken}`, {
             recipient: { id: cart.messengerId },
             message: { text: followUp }
           });
 
-          await docSnap.ref.update({ lastFollowUpSent: true });
+          await docSnap.ref.update({ 
+            lastFollowUpSent: true,
+            updatedAt: FieldValue.serverTimestamp()
+          });
+
           await saveChatMessage(cart.businessId, cart.messengerId, 'bot', `[RECOVERY] ${followUp}`);
           await logActivity(cart.businessId, 'CART_RECOVERY', `${cart.customerName} এর জন্য রিকভারি মেসেজ পাঠানো হয়েছে।`, 'info', cart.ownerId);
-        } catch (e) {
-          console.error(`Recovery failed for ${cart.messengerId}`);
+        } catch (e: any) {
+          console.error(`[Cron] Recovery failed for ${cart.messengerId}:`, e.response?.data || e.message);
         }
       }
     }
-  } catch (error) {
-    console.error('[Cron Error]', error);
+  } catch (error: any) {
+    console.error('[Cron Error] Firestore Access Failed:', error.message);
+    if (error.code === 7 || error.message.includes('PERMISSION_DENIED')) {
+      console.warn('[Cron Fix] Access Denied. Check if abandoned_carts collection exists and has proper permissions.');
+    }
   }
 });
 
