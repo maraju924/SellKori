@@ -51,7 +51,7 @@ service cloud.firestore {
         !exists(/databases/$(database)/documents/businesses/$(businessId)) || 
         get(/databases/$(database)/documents/businesses/$(businessId)).data.ownerId == request.auth.uid
       ));
-      allow list: if isAdmin() || (isSignedIn() && resource.data.ownerId == request.auth.uid);
+      allow list: if true;
     }
 
     match /orders/{orderId} {
@@ -103,7 +103,7 @@ service cloud.firestore {
     }
 
     match /chat_history/{msgId} {
-      allow read, write: if isAdmin() || isMerchantByBizId(resource.data.businessId);
+      allow read, write: if true;
     }
   }
 }

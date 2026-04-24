@@ -34,27 +34,29 @@ try {
       ? getFirestore(firebaseApp, firebaseConfig.firestoreDatabaseId) 
       : getFirestore(firebaseApp);
     
-    // Initialize Admin SDK bypassing security rules
-    let adminApp;
-    if (!admin.apps.length) {
-      adminApp = admin.initializeApp({
-        credential: admin.credential.applicationDefault(),
-        projectId: firebaseConfig.projectId
-      });
-    } else {
-      adminApp = admin.app();
+    // Initialize Admin SDK
+    try {
+      if (!admin.apps.length) {
+        console.log(`[Firebase] Initializing default Admin App for: ${firebaseConfig.projectId}`);
+        admin.initializeApp({
+          projectId: firebaseConfig.projectId
+        });
+      }
+      
+      const adminApp = admin.app();
+      const dbId = firebaseConfig.firestoreDatabaseId;
+      
+      if (dbId && dbId !== '(default)') {
+        adminDb = getAdminFirestore(adminApp, dbId);
+      } else {
+        adminDb = getAdminFirestore(adminApp);
+      }
+      console.log(`[Firebase] Admin Firestore ready (Project: ${firebaseConfig.projectId}, DB: ${dbId || '(default)'})`);
+    } catch (adminErr: any) {
+      console.error('[Firebase] Fatal Admin Error:', adminErr);
     }
     
-    const dbInstance = firebaseConfig.firestoreDatabaseId;
-    // In firebase-admin, getFirestore can take (app, databaseId)
-    if (dbInstance && dbInstance !== '(default)') {
-      adminDb = getAdminFirestore(adminApp, dbInstance);
-    } else {
-      adminDb = getAdminFirestore(adminApp);
-    }
-    
-    console.log(`[Firebase] Client & Admin initialized. Project: ${firebaseConfig.projectId}, DB: ${dbInstance}`);
-    logActivity('system', 'SERVER_INIT', `সার্ভার রিস্টার্ট হয়েছে। ভার্সন: 1.0.6. DB: ${dbInstance}`, 'info', 'system');
+    logActivity('system', 'SERVER_INIT', `সার্ভার রিস্টার্ট হয়েছে। ভার্সন: 1.0.8.`, 'info', 'system');
   } else {
     // Fallback search for config in current dir
     const altPath = path.join(__dirname, '..', 'firebase-applet-config.json');
@@ -65,24 +67,29 @@ try {
          ? getFirestore(firebaseApp, firebaseConfig.firestoreDatabaseId) 
          : getFirestore(firebaseApp);
 
-    let adminApp;
-    if (!admin.apps.length) {
-      adminApp = admin.initializeApp({
-        credential: admin.credential.applicationDefault(),
-        projectId: firebaseConfig.projectId
-      });
-    } else {
-      adminApp = admin.app();
+    // Initialize Admin SDK (fallback)
+    try {
+      if (!admin.apps.length) {
+        console.log(`[Firebase] Initializing Admin (fallback) for: ${firebaseConfig.projectId}`);
+        admin.initializeApp({
+          projectId: firebaseConfig.projectId
+        });
+      }
+      
+      const adminApp = admin.app();
+      const dbId = firebaseConfig.firestoreDatabaseId;
+      
+      if (dbId && dbId !== '(default)') {
+        adminDb = getAdminFirestore(adminApp, dbId);
+      } else {
+        adminDb = getAdminFirestore(adminApp);
+      }
+      console.log(`[Firebase] Admin Firestore ready (fallback)`);
+    } catch (e) {
+      console.error('[Firebase] Fallback Admin Error:', e);
     }
-    const dbInstance = firebaseConfig.firestoreDatabaseId;
-    if (dbInstance && dbInstance !== '(default)') {
-      adminDb = getAdminFirestore(adminApp, dbInstance);
-    } else {
-      adminDb = getAdminFirestore(adminApp);
-    }
-    
-    console.log(`[Firebase] Client & Admin initialized (fallback). DB: ${dbInstance}`);
-    logActivity('system', 'SERVER_INIT', `সার্ভার (ফালব্যাক) রিস্টার্ট হয়েছে। DB: ${dbInstance}`, 'info', 'system');
+     
+     logActivity('system', 'SERVER_INIT', `সার্ভার (ফালব্যাক) রিস্টার্ট হয়েছে।`, 'info', 'system');
     }
   }
 } catch (error) {
@@ -188,18 +195,13 @@ function logActivity(bizId: string | null, type: string, detail: string, status:
   const oid = ownerId || 'system';
   console.log(`[ACTIVITY_LOG][${bid}][${type}] ${detail}`);
   
-  if (!adminDb) {
-    console.warn('[Logger] adminDb not ready yet');
-    return Promise.resolve();
-  }
-  
   const logData = {
     businessId: bid,
     ownerId: oid,
     type,
     detail,
     status,
-    timestamp: FieldValue.serverTimestamp(),
+    timestamp: FieldValue ? FieldValue.serverTimestamp() : serverTimestamp(),
     data: data ? (typeof data === 'string' ? data.substring(0, 1000) : JSON.stringify(data).substring(0, 1000)) : null
   };
 
@@ -221,6 +223,14 @@ function logActivity(bizId: string | null, type: string, detail: string, status:
           }
         }
       });
+  } else if (db) {
+    // Direct fallback if adminDb is not even initialized
+    return addDoc(collection(db, 'system_logs'), {
+      ...logData,
+      timestamp: serverTimestamp()
+    })
+    .then(() => console.log(`[DB_LOG_CLIENT_ONLY_SUCCESS][${type}]`))
+    .catch((err) => console.error('[Logger Client Error]', err));
   }
   return Promise.resolve();
 }
@@ -228,17 +238,32 @@ function logActivity(bizId: string | null, type: string, detail: string, status:
 // ... rest of helpers ...
 
 async function saveChatMessage(bizId: string, senderId: string, role: 'user' | 'bot' | 'merchant', text: string) {
-  if (!adminDb) return;
-  try {
-    await adminDb.collection('chat_history').add({
-      businessId: bizId,
-      senderId: senderId,
-      role: role,
-      text: text,
-      timestamp: FieldValue.serverTimestamp()
-    });
-  } catch (err) {
-    console.error('[History Error]', err);
+  const msgData = {
+    businessId: bizId,
+    senderId: senderId,
+    role: role,
+    text: text,
+    timestamp: FieldValue ? FieldValue.serverTimestamp() : serverTimestamp()
+  };
+
+  if (adminDb) {
+    try {
+      await adminDb.collection('chat_history').add(msgData);
+      return;
+    } catch (err) {
+      console.error('[History Admin Save Error]', err);
+    }
+  }
+  
+  if (db) {
+    try {
+      await addDoc(collection(db, 'chat_history'), {
+        ...msgData,
+        timestamp: serverTimestamp()
+      });
+    } catch (err) {
+      console.error('[History Client Save Error]', err);
+    }
   }
 }
 
@@ -319,13 +344,13 @@ app.post(['/webhook', '/api/webhook', '/api/webhook/:businessId'], async (req, r
   // Process in background
   (async () => {
     try {
-      if (!adminDb) {
-        console.error('[Webhook] adminDb not ready');
+      if (!adminDb && !db) {
+        console.error('[Webhook] No database (Admin or Client) ready');
         return;
       }
       
       await logActivity(businessId || 'unknown', 'SIGNAL_REACHED', `ফেসবুক থেকে সিগন্যাল পাওয়া গেছে। প্রসেস শুরু হচ্ছে...`, 'info', 'system');
-    console.log('[Webhook] Processing body entries:', body.entry?.length);
+      console.log('[Webhook] Processing body entries:', body.entry?.length);
 
     for (const entry of body.entry) {
       const pageId = String(entry.id).trim(); // Ensure it's a string
@@ -376,37 +401,51 @@ app.post(['/webhook', '/api/webhook', '/api/webhook/:businessId'], async (req, r
           console.log(`[Webhook] Looking up business for Page ID: ${pageId}`);
           
           let snap: any = null;
-          try {
-            snap = await adminDb.collection('businesses').where('facebookPageId', 'in', [pageId, Number(pageId)]).get();
-          } catch (adminLookupErr) {
-            console.warn('[Webhook Admin Lookup Failed, trying client SDK]', adminLookupErr);
+          if (adminDb) {
+            try {
+              snap = await adminDb.collection('businesses').where('facebookPageId', 'in', [pageId, Number(pageId)]).get();
+            } catch (adminLookupErr) {
+              console.warn('[Webhook Admin Lookup Failed]', adminLookupErr);
+            }
+          }
+           
+          if (!snap || snap.empty) {
             if (db) {
-              const bq = query(collection(db, 'businesses'), where('facebookPageId', 'in', [pageId, Number(pageId)]));
-              snap = await getDocs(bq);
+              try {
+                const bq = query(collection(db, 'businesses'), where('facebookPageId', 'in', [pageId, Number(pageId)]));
+                snap = await getDocs(bq);
+              } catch (clientErr) {
+                console.error('[Webhook Client Lookup Failed]', clientErr);
+              }
             }
           }
           
           if ((!snap || snap.empty) && businessId && businessId !== 'unknown') {
              console.log(`[Webhook] snap empty, trying fallback businessId: ${businessId}`);
-             try {
-                const bizDoc = await adminDb.collection('businesses').doc(businessId).get();
-                if (bizDoc.exists) {
-                  businessData = bizDoc.data();
-                  bizId = bizDoc.id;
-                }
-             } catch (e) {
-               if (db) {
+             if (adminDb) {
+               try {
+                  const bizDoc = await adminDb.collection('businesses').doc(businessId).get();
+                  if (bizDoc.exists) {
+                    businessData = bizDoc.data();
+                    bizId = bizDoc.id;
+                  }
+               } catch (e) {}
+             }
+             
+             if (!businessData && db) {
+               try {
                  const bizDoc = await getDoc(doc(db, 'businesses', businessId));
                  if (bizDoc.exists()) {
                    businessData = bizDoc.data();
                    bizId = bizDoc.id;
                  }
-               }
+               } catch (e) {}
              }
           } else if (snap && !snap.empty) {
-            console.log(`[Webhook] Found business via Page ID: ${snap.docs[0].id}`);
-            businessData = snap.docs[0].data();
-            bizId = snap.docs[0].id;
+            const firstDoc = snap.docs[0];
+            businessData = typeof firstDoc.data === 'function' ? firstDoc.data() : (firstDoc as any).data();
+            bizId = firstDoc.id;
+            console.log(`[Webhook] Found business via Page ID: ${bizId}`);
           }
 
           if (!businessData) {
@@ -454,30 +493,55 @@ app.post(['/webhook', '/api/webhook', '/api/webhook/:businessId'], async (req, r
             continue;
           }
 
-          // Fetch History (using Admin SDK)
+          // Fetch History & Summary
           let chatHistoryText = "";
           let existingSummary = "";
           try {
-            // Fetch summary first
-            const custDoc = await adminDb.collection('customers').doc(`${bizId}_${senderId}`).get();
-            if (custDoc.exists) {
-              existingSummary = custDoc.data().chatSummary || "";
+            // Summary fetch
+            if (adminDb) {
+              const custDoc = await adminDb.collection('customers').doc(`${bizId}_${senderId}`).get();
+              if (custDoc.exists) existingSummary = custDoc.data().chatSummary || "";
+            } else if (db) {
+              const custDoc = await getDoc(doc(db, 'customers', `${bizId}_${senderId}`));
+              if (custDoc.exists()) existingSummary = custDoc.data()?.chatSummary || "";
             }
-
-            const histSnap = await adminDb.collection('chat_history')
-              .where('senderId', '==', senderId)
-              .where('businessId', '==', bizId)
-              .orderBy('timestamp', 'desc')
-              .limit(10)
-              .get();
-              
-            const history = histSnap.docs.reverse().map((d: any) => {
-              const data = d.data();
-              return `${data.role === 'user' ? 'Customer' : 'Bot'}: ${data.text}`;
-            });
-            chatHistoryText = history.join('\n');
+            
+            // History fetch
+            let hSnap: any = null;
+            if (adminDb) {
+              try {
+                hSnap = await adminDb.collection('chat_history')
+                  .where('senderId', '==', senderId)
+                  .where('businessId', '==', bizId)
+                  .orderBy('timestamp', 'desc')
+                  .limit(10)
+                  .get();
+              } catch (e) { console.warn('Admin Hist Fetch Err', e); }
+            }
+            
+            if (!hSnap && db) {
+              try {
+                const hQuery = query(
+                  collection(db, 'chat_history'),
+                  where('senderId', '==', senderId),
+                  where('businessId', '==', bizId),
+                  orderBy('timestamp', 'desc'),
+                  limit(10)
+                );
+                hSnap = await getDocs(hQuery);
+              } catch (e) { console.error('Client Hist Fetch Err', e); }
+            }
+            
+            if (hSnap) {
+              const docs = Array.isArray(hSnap.docs) ? hSnap.docs : hSnap.docs;
+              const history = [...docs].reverse().map((d: any) => {
+                const data = typeof d.data === 'function' ? d.data() : d.data();
+                return `${data.role === 'user' ? 'Customer' : 'Bot'}: ${data.text}`;
+              });
+              chatHistoryText = history.join('\n');
+            }
           } catch (histErr) {
-            console.error('History/Summary fetch failed:', histErr);
+            console.error('History general fetch failed:', histErr);
           }
 
           // AI Generation
@@ -645,35 +709,61 @@ ${chatHistoryText}
             }
           }
 
-          // Update customer record in background - Use setDoc with merge to PERSIST summary
-          try {
-            await adminDb.collection('customers').doc(`${bizId}_${senderId}`).set({
-              businessId: bizId,
-              messengerId: senderId,
-              name: aiRes.order_data?.name || 'Customer',
-              phone: aiRes.order_data?.phone || '',
-              leadScore: aiRes.confidence * 100,
-              segment: segment,
-              chatSummary: aiRes.summary || '',
-              lastInteraction: FieldValue.serverTimestamp(),
-              updatedAt: FieldValue.serverTimestamp()
-            }, { merge: true });
-          } catch (e) {
-            console.error('Customer Summary sync failed:', e);
+          // Update customer record
+          const customerData = {
+            businessId: bizId,
+            messengerId: senderId,
+            name: aiRes.order_data?.name || 'Customer',
+            phone: aiRes.order_data?.phone || '',
+            leadScore: aiRes.confidence * 100,
+            segment: segment,
+            chatSummary: aiRes.summary || '',
+            lastInteraction: FieldValue ? FieldValue.serverTimestamp() : serverTimestamp(),
+            updatedAt: FieldValue ? FieldValue.serverTimestamp() : serverTimestamp()
+          };
+
+          if (adminDb) {
+            try {
+              await adminDb.collection('customers').doc(`${bizId}_${senderId}`).set(customerData, { merge: true });
+            } catch (e) {
+              console.error('Customer Admin Sync Error:', e);
+              if (db) {
+                try {
+                  await setDoc(doc(db, 'customers', `${bizId}_${senderId}`), {
+                    ...customerData,
+                    lastInteraction: serverTimestamp(),
+                    updatedAt: serverTimestamp()
+                  }, { merge: true });
+                } catch (ce) { console.error('Customer Client Sync Error:', ce); }
+              }
+            }
+          } else if (db) {
+            try {
+              await setDoc(doc(db, 'customers', `${bizId}_${senderId}`), {
+                ...customerData,
+                lastInteraction: serverTimestamp(),
+                updatedAt: serverTimestamp()
+              }, { merge: true });
+            } catch (ce) { console.error('Customer Client Only Sync Error:', ce); }
           }
 
-          // Log image viewed event for conversion tracking
+          // Log image viewed event
           if (imageSent && aiRes.product_name) {
-             try {
-                await adminDb.collection('analytics').add({
-                   businessId: bizId,
-                   businessOwnerId: ownerId,
-                   eventName: 'product_image_viewed',
-                   properties: { product: aiRes.product_name },
-                   timestamp: FieldValue.serverTimestamp(),
-                   sessionId: senderId
-                });
-             } catch (e) {}
+             const eventData = {
+                businessId: bizId,
+                businessOwnerId: ownerId,
+                eventName: 'product_image_viewed',
+                properties: { product: aiRes.product_name },
+                timestamp: FieldValue ? FieldValue.serverTimestamp() : serverTimestamp(),
+                sessionId: senderId
+             };
+             if (adminDb) {
+               try { await adminDb.collection('analytics').add(eventData); } catch (e) {
+                  if (db) try { await addDoc(collection(db, 'analytics'), { ...eventData, timestamp: serverTimestamp() }); } catch (ce) {}
+               }
+             } else if (db) {
+               try { await addDoc(collection(db, 'analytics'), { ...eventData, timestamp: serverTimestamp() }); } catch (ce) {}
+             }
           }
 
           // Always send the text reply IF no image was sent (User request: image only when requested)
@@ -686,18 +776,33 @@ ${chatHistoryText}
 
           // Cart Abandonment Tracking
           if (aiRes.event_name === 'InitiateCheckout') {
-            await adminDb.collection('abandoned_carts').doc(`${bizId}_${senderId}`).set({
+            const cartData = {
               businessId: bizId,
               messengerId: senderId,
               customerName: aiRes.order_data?.name || 'Customer',
               productName: aiRes.product_name,
-              timestamp: FieldValue.serverTimestamp(),
+              timestamp: FieldValue ? FieldValue.serverTimestamp() : serverTimestamp(),
               lastFollowUpSent: false,
               pageAccessToken: businessData.pageAccessToken,
               ownerId: ownerId
-            }, { merge: true });
+            };
+            if (adminDb) {
+              try {
+                await adminDb.collection('abandoned_carts').doc(`${bizId}_${senderId}`).set(cartData, { merge: true });
+              } catch (e) {
+                if (db) try { await setDoc(doc(db, 'abandoned_carts', `${bizId}_${senderId}`), { ...cartData, timestamp: serverTimestamp() }, { merge: true }); } catch (ce) {}
+              }
+            } else if (db) {
+               try { await setDoc(doc(db, 'abandoned_carts', `${bizId}_${senderId}`), { ...cartData, timestamp: serverTimestamp() }, { merge: true }); } catch (ce) {}
+            }
           } else if (aiRes.event_name === 'Purchase') {
-            await adminDb.collection('abandoned_carts').doc(`${bizId}_${senderId}`).delete();
+            if (adminDb) {
+              try { await adminDb.collection('abandoned_carts').doc(`${bizId}_${senderId}`).delete(); } catch(e) {
+                if (db) try { await deleteDoc(doc(db, 'abandoned_carts', `${bizId}_${senderId}`)); } catch(ce){}
+              }
+            } else if (db) {
+              try { await deleteDoc(doc(db, 'abandoned_carts', `${bizId}_${senderId}`)); } catch(ce){}
+            }
           }
 
           // Save bot reply to history
