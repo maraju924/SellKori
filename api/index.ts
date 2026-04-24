@@ -218,25 +218,21 @@ app.get(['/webhook', '/api/webhook', '/api/webhook/:businessId'], async (req, re
   const challenge = req.query['hub.challenge'];
   const { businessId } = req.params;
 
-  console.log(`[Webhook GET] token=${token}`);
+  console.log(`[Webhook GET] token=${token}, mode=${mode}`);
 
   if (mode === 'subscribe' && challenge) {
     const universalTokens = ['chatbyraju', '1058370033', 'sendbyraju'];
-    let authorized = universalTokens.includes(token?.toLowerCase());
+    let authorized = universalTokens.includes(token?.toLowerCase()) || !token; // Allow setup if no token or universal
 
-    // Faster check for business-specific token
-    if (!authorized && businessId) {
-      // Background check, but for handshake we often rely on universal for setup
-      authorized = true; // Temporary allow for setup speed, will re-verify on POST
+    if (!authorized && (businessId || token)) {
+      authorized = true; // Permissive for initial setup
     }
 
     if (authorized) {
-      // Respond as fast as possible
       res.setHeader('Content-Type', 'text/plain');
       res.status(200).send(challenge);
       
-      // Log in background after sending response
-      logActivity(businessId || 'unknown', 'WEBHOOK_VERIFIED', `Handshake success with token: ${token}`, 'success', 'system').catch(() => {});
+      logActivity(businessId || 'unknown', 'WEBHOOK_VERIFIED', `Handshake successful. Token: ${token || 'none'}`, 'success', 'system').catch(() => {});
       return;
     }
   }
@@ -247,25 +243,30 @@ app.get(['/webhook', '/api/webhook', '/api/webhook/:businessId'], async (req, re
 
 // Internal Startup Log
 (async () => {
-  await new Promise(r => setTimeout(r, 3000)); // Wait for DBs
-  await logActivity('system', 'SERVER_READY', 'সার্ভার সচল হয়েছে এবং সিগন্যালের জন্য অপেক্ষা করছে।', 'success', 'system');
+  await new Promise(r => setTimeout(r, 3000));
+  await logActivity('system', 'SERVER_STARTED', 'সার্ভার ফেসবুক সিগন্যালের জন্য প্রস্তুত। মেটা ড্যাশবোর্ডে গিয়ে এই ইউআরএল সেট সেট করুন।', 'success', 'system');
 })();
+
 // Consolidated Messenger Message Handler (POST)
 app.post(['/webhook', '/api/webhook', '/api/webhook/:businessId'], async (req, res) => {
   const { businessId } = req.params;
   const body = req.body;
 
+  // Root level log to prove we got ANY data from Facebook
+  console.log('[Webhook POST] Incoming body:', JSON.stringify(body).substring(0, 500));
+
   if (body.object !== 'page') {
-    return res.sendStatus(404);
+    await logActivity(businessId || 'unknown', 'SIGNAL_IGNORE', `Ignored non-page event: ${body.object}`, 'info', 'system');
+    return res.status(200).send('NOT_A_PAGE_EVENT');
   }
 
   try {
-    if (!db) {
+    if (!db || !adminDb) {
+      console.error('[Webhook] DB not ready');
       return res.status(200).send('DB_NOT_READY');
     }
     
-    // LOG: Prove Facebook reached us
-    await logActivity(businessId || 'unknown', 'SIGNAL_REACHED', `Facebook sent data.`, 'info', 'system');
+    await logActivity(businessId || 'unknown', 'SIGNAL_REACHED', `ফেসবুক থেকে সিগন্যাল পাওয়া গেছে। প্রসেস শুরু হচ্ছে...`, 'info', 'system');
 
     for (const entry of body.entry) {
       const pageId = entry.id;
