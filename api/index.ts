@@ -64,62 +64,10 @@ try {
   console.error('Failed to initialize Firebase:', error);
 }
 
-import { GoogleGenAI, Type } from '@google/genai';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 
 // Initialize AI
-const ai = process.env.GEMINI_API_KEY ? new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY }) : null;
-
-// Response Schema for AI
-const responseSchema = {
-  type: Type.OBJECT,
-  properties: {
-    intent: {
-      type: Type.STRING,
-      description: "Intent of the user message: product_query, order, delivery_status, general, unknown",
-    },
-    show_product_image: {
-      type: Type.BOOLEAN,
-      description: "Set to true ONLY if the customer EXPLICITLY asks to see a picture, photo, or image (e.g., 'ছবি দিন', 'ফটো পাঠান'). Set to false for price queries or general information unless they specifically ask for a visual.",
-    },
-    product_name: {
-      type: Type.STRING,
-      description: "Identified product name if any",
-    },
-    reply: {
-      type: Type.STRING,
-      description: "The reply in Bengali language",
-    },
-    summary: {
-      type: Type.STRING,
-      description: "Concise updated summary of the entire conversation until now in Bengali",
-    },
-    order_data: {
-      type: Type.OBJECT,
-      properties: {
-        name: { type: Type.STRING },
-        phone: { type: Type.STRING },
-        address: { type: Type.STRING },
-        quantity: { type: Type.STRING },
-        negotiated_price: { type: Type.STRING, description: "The final agreed unit price after bargaining" },
-      },
-    },
-    conversation_stage: {
-      type: Type.STRING,
-      description: "Stage: new_lead, interested, checkout_started, order_completed",
-    },
-    event_name: {
-      type: Type.STRING,
-      description: "Facebook Event: Lead, ViewContent, InitiateCheckout, AddToCart, Purchase",
-    },
-    need_more_info: {
-      type: Type.BOOLEAN,
-    },
-    confidence: {
-      type: Type.NUMBER,
-    },
-  },
-  required: ["intent", "reply", "conversation_stage", "event_name", "need_more_info", "confidence", "summary"],
-};
+const genAI = process.env.GEMINI_API_KEY ? new GoogleGenerativeAI(process.env.GEMINI_API_KEY) : null;
 
 // Helper to get system settings
 async function getSystemSettings() {
@@ -163,8 +111,9 @@ async function fireFacebookEvent(bizConfig: any, eventName: string, userData: an
 
 // Helper to log activity
 async function logActivity(bizId: string | null, type: string, detail: string, status: 'info' | 'error' | 'success', ownerId?: string, data?: any) {
+  console.log(`[Activity Log Attempt] ${type}: ${detail}`);
   if (!adminDb) {
-    console.error('[Logger] Admin DB not initialized. Cannot log:', type);
+    console.error('[Logger] Admin DB not initialized. Cannot log yet.');
     return;
   }
   try {
@@ -175,9 +124,9 @@ async function logActivity(bizId: string | null, type: string, detail: string, s
       detail,
       status,
       timestamp: admin.firestore.FieldValue.serverTimestamp(),
-      data: data ? JSON.stringify(data).substring(0, 500) : null
+      data: data ? (typeof data === 'string' ? data.substring(0, 500) : JSON.stringify(data).substring(0, 500)) : null
     });
-    console.log(`[Logged] ${type}: ${detail}`);
+    console.log(`[Logged to DB] ${type}: ${detail}`);
   } catch (err) {
     console.error('[Logger Error]', err);
   }
@@ -269,66 +218,88 @@ app.post(['/webhook', '/api/webhook', '/api/webhook/:businessId'], async (req, r
     await logActivity(businessId || 'unknown', 'SIGNAL_REACHED', `ফেসবুক থেকে সিগন্যাল পাওয়া গেছে। প্রসেস শুরু হচ্ছে...`, 'info', 'system');
 
     for (const entry of body.entry) {
-      const pageId = entry.id;
+      const pageId = String(entry.id).trim(); // Ensure it's a string
       const messaging = entry.messaging || entry.standby;
-      if (!messaging) continue;
+      if (!messaging) {
+        console.log(`[Webhook] No messaging or standby data for entry ${pageId}`);
+        continue;
+      }
 
       for (const webhookEvent of messaging) {
         const senderId = webhookEvent.sender.id;
         let messageText = webhookEvent.message?.text;
         
+        // Skip echo/delivery/read receipts to avoid infinitive loops or unnecessary processing
+        if (webhookEvent.message?.is_echo) continue;
+        if (webhookEvent.delivery || webhookEvent.read) continue;
+
         // Handle Postbacks (Buttons clicks)
         if (webhookEvent.postback) {
           const payload = webhookEvent.postback.payload;
           if (payload.startsWith('ORDER_')) {
             const productId = payload.replace('ORDER_', '');
             messageText = `আমি পণ্যটি (ID: ${productId}) অর্ডার করতে চাই।`;
+          } else {
+            // Use title or payload as text for other buttons
+            messageText = webhookEvent.postback.title || payload;
           }
         }
 
-        if (!messageText || webhookEvent.message?.is_echo) continue;
+        if (!messageText) continue;
         
         let bizId = businessId || 'unknown';
         let ownerId = 'system';
         let businessData: any = null;
         
         try {
-          const cleanPageId = String(pageId).trim();
-
           // Lookup store by Page ID using Admin SDK to bypass rules
-          let snap = await adminDb.collection('businesses').where('facebookPageId', '==', cleanPageId).get();
+          // We check both string and number versions to be safe
+          let snap = await adminDb.collection('businesses').where('facebookPageId', 'in', [pageId, Number(pageId)]).get();
           
-          if (snap.empty) {
-            snap = await adminDb.collection('businesses').where('facebookPageId', '==', Number(cleanPageId)).get();
-          }
-          
-          if (!snap.empty) {
+          if (snap.empty && businessId && businessId !== 'unknown') {
+             // Fallback to explicit businessId from URL if provided
+             const bizDoc = await adminDb.collection('businesses').doc(businessId).get();
+             if (bizDoc.exists) {
+                businessData = bizDoc.data();
+                bizId = bizDoc.id;
+             }
+          } else if (!snap.empty) {
             businessData = snap.docs[0].data();
             bizId = snap.docs[0].id;
           }
 
           if (!businessData) {
-            await logActivity('unknown', 'ERROR', `Could not identify store for Page ID: ${pageId}`, 'error', 'system');
+            await logActivity('unknown', 'ERROR', `Could not identify store for Page ID: ${pageId}. Please ensure Facebook Page ID is correctly entered in settings.`, 'error', 'system');
             continue;
           }
 
           ownerId = businessData.ownerId;
+          await logActivity(bizId, 'SIGNAL_MATCHED', `Message matched for ${businessData.name}. Processing...`, 'info', ownerId);
           
-          // BILLING CHECK
+          // BILLING CHECK - Be permissive if fields are missing for the first time
           const now = new Date();
-          const subExpiry = businessData.subscriptionExpiry?.toDate() || new Date(0);
-          const hasTokens = (businessData.tokenBalance || 0) > 0;
-          const isSubscribed = subExpiry > now;
+          let subExpiryDate: Date;
+          if (businessData.subscriptionExpiry) {
+             subExpiryDate = businessData.subscriptionExpiry.toDate ? businessData.subscriptionExpiry.toDate() : new Date(businessData.subscriptionExpiry);
+          } else {
+             subExpiryDate = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days grace if missing
+          }
+
+          const tokenBal = businessData.tokenBalance !== undefined ? businessData.tokenBalance : 100000;
+          const hasTokens = tokenBal > 0;
+          const isSubscribed = subExpiryDate > now;
 
           if (!isSubscribed || !hasTokens) {
             const reason = !isSubscribed ? "আপনার মাসিক সাবস্ক্রিপশন শেষ হয়ে গেছে।" : "আপনার টোকেন ব্যালেন্স শেষ হয়ে গেছে।";
             await logActivity(bizId, 'BILLING_BLOCK', reason, 'error', ownerId);
             
-            // Send polite message to customer
-            await axios.post(`https://graph.facebook.com/v18.0/me/messages?access_token=${businessData.pageAccessToken}`, {
-              recipient: { id: senderId },
-              message: { text: "দুঃখিত, আমাদের সাপোর্ট সিস্টেম এই মুহূর্তে রক্ষণাবেক্ষণ কাজের জন্য সাময়িকভাবে বন্ধ আছে। দয়া করে পরে যোগাযোগ করুন।" }
-            });
+            // Send polite message if possible
+            if (businessData.pageAccessToken) {
+              await axios.post(`https://graph.facebook.com/v18.0/me/messages?access_token=${businessData.pageAccessToken}`, {
+                recipient: { id: senderId },
+                message: { text: "দুঃখিত, আমাদের অটোমেটেড সাপোর্ট সিস্টেম এই মুহূর্তে রিচার্জ বা মেয়াদের কারণে সাময়িকভাবে বন্ধ আছে। দয়া করে এডমিনের সাথে যোগাযোগ করুন।" }
+              }).catch(() => {});
+            }
             continue;
           }
 
@@ -337,7 +308,7 @@ app.post(['/webhook', '/api/webhook', '/api/webhook/:businessId'], async (req, r
           // Save incoming message to history
           await saveChatMessage(bizId, senderId, 'user', messageText);
 
-          if (!businessData.pageAccessToken || !process.env.GEMINI_API_KEY || !ai) {
+          if (!businessData.pageAccessToken || !process.env.GEMINI_API_KEY || !genAI) {
             await logActivity(bizId, 'ERROR', 'Missing Token or AI Config.', 'error', ownerId);
             continue;
           }
@@ -410,16 +381,15 @@ ${existingSummary ? `আগের কথার সারসংক্ষেপ: $
 ${chatHistoryText}
 কাস্টমার: ${messageText}`;
           
-          const response = await ai.models.generateContent({
-            model: "gemini-flash-latest",
+          const model = genAI!.getGenerativeModel({ model: "gemini-1.5-flash" });
+          const result = await model.generateContent({
             contents: [{ role: 'user', parts: [{ text: systemPrompt }] }],
-            config: {
+            generationConfig: {
               responseMimeType: "application/json",
-              responseSchema: responseSchema
             }
           });
           
-          const aiRaw = response.text || "";
+          const aiRaw = result.response.text();
           let aiRes: any;
           try {
             aiRes = JSON.parse(aiRaw);
