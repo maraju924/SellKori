@@ -5,6 +5,7 @@ import axios from 'axios';
 import cors from 'cors';
 import cron from 'node-cron';
 import admin from 'firebase-admin';
+import { getFirestore as getAdminFirestore, FieldValue } from 'firebase-admin/firestore';
 import { initializeApp } from 'firebase/app';
 import { getFirestore, doc, getDoc, collection, addDoc, setDoc, updateDoc, deleteDoc, serverTimestamp, query, where, getDocs, orderBy, limit, Timestamp } from 'firebase/firestore';
 import fs from 'fs';
@@ -34,14 +35,26 @@ try {
       : getFirestore(firebaseApp);
     
     // Initialize Admin SDK bypassing security rules
+    let adminApp;
     if (!admin.apps.length) {
-      admin.initializeApp();
+      adminApp = admin.initializeApp({
+        credential: admin.credential.applicationDefault(),
+        projectId: firebaseConfig.projectId
+      });
+    } else {
+      adminApp = admin.app();
     }
-    adminDb = firebaseConfig.firestoreDatabaseId 
-      ? admin.firestore(firebaseConfig.firestoreDatabaseId) 
-      : admin.firestore();
     
-    console.log('[Firebase] Client & Admin initialized successfully');
+    const dbInstance = firebaseConfig.firestoreDatabaseId;
+    // In firebase-admin, getFirestore can take (app, databaseId)
+    if (dbInstance && dbInstance !== '(default)') {
+      adminDb = getAdminFirestore(adminApp, dbInstance);
+    } else {
+      adminDb = getAdminFirestore(adminApp);
+    }
+    
+    console.log(`[Firebase] Client & Admin initialized. Project: ${firebaseConfig.projectId}, DB: ${dbInstance}`);
+    logActivity('system', 'SERVER_INIT', `সার্ভার রিস্টার্ট হয়েছে। ভার্সন: 1.0.6. DB: ${dbInstance}`, 'info', 'system');
   } else {
     // Fallback search for config in current dir
     const altPath = path.join(__dirname, '..', 'firebase-applet-config.json');
@@ -52,12 +65,24 @@ try {
          ? getFirestore(firebaseApp, firebaseConfig.firestoreDatabaseId) 
          : getFirestore(firebaseApp);
 
-       if (!admin.apps.length) {
-         admin.initializeApp();
-       }
-       adminDb = firebaseConfig.firestoreDatabaseId 
-         ? admin.firestore(firebaseConfig.firestoreDatabaseId) 
-         : admin.firestore();
+    let adminApp;
+    if (!admin.apps.length) {
+      adminApp = admin.initializeApp({
+        credential: admin.credential.applicationDefault(),
+        projectId: firebaseConfig.projectId
+      });
+    } else {
+      adminApp = admin.app();
+    }
+    const dbInstance = firebaseConfig.firestoreDatabaseId;
+    if (dbInstance && dbInstance !== '(default)') {
+      adminDb = getAdminFirestore(adminApp, dbInstance);
+    } else {
+      adminDb = getAdminFirestore(adminApp);
+    }
+    
+    console.log(`[Firebase] Client & Admin initialized (fallback). DB: ${dbInstance}`);
+    logActivity('system', 'SERVER_INIT', `সার্ভার (ফালব্যাক) রিস্টার্ট হয়েছে। DB: ${dbInstance}`, 'info', 'system');
     }
   }
 } catch (error) {
@@ -161,20 +186,46 @@ async function fireFacebookEvent(bizConfig: any, eventName: string, userData: an
 function logActivity(bizId: string | null, type: string, detail: string, status: 'info' | 'error' | 'success', ownerId?: string, data?: any) {
   const bid = bizId || 'unknown';
   const oid = ownerId || 'system';
-  console.log(`[LOG][${bid}][${type}] ${detail}`);
+  console.log(`[ACTIVITY_LOG][${bid}][${type}] ${detail}`);
   
-  if (!adminDb) return Promise.resolve();
+  if (!adminDb) {
+    console.warn('[Logger] adminDb not ready yet');
+    return Promise.resolve();
+  }
   
-  return adminDb.collection('system_logs').add({
+  const logData = {
     businessId: bid,
     ownerId: oid,
     type,
     detail,
     status,
-    timestamp: admin.firestore.FieldValue.serverTimestamp(),
-    data: data ? (typeof data === 'string' ? data.substring(0, 500) : JSON.stringify(data).substring(0, 500)) : null
-  }).catch((err: any) => console.error('[Logger Error]', err));
+    timestamp: FieldValue.serverTimestamp(),
+    data: data ? (typeof data === 'string' ? data.substring(0, 1000) : JSON.stringify(data).substring(0, 1000)) : null
+  };
+
+  if (adminDb) {
+    return adminDb.collection('system_logs').add(logData)
+      .then(() => console.log(`[DB_LOG_SUCCESS][${type}]`))
+      .catch(async (err: any) => {
+        console.error('[Logger Admin Error]', err);
+        // Fallback to client SDK if Admin fails (e.g. Permission Denied)
+        if (db) {
+          try {
+            await addDoc(collection(db, 'system_logs'), {
+              ...logData,
+              timestamp: serverTimestamp() // Use client serverTimestamp
+            });
+            console.log(`[DB_LOG_FALLBACK_SUCCESS][${type}]`);
+          } catch (fallbackErr) {
+            console.error('[Logger Fallback Error]', fallbackErr);
+          }
+        }
+      });
+  }
+  return Promise.resolve();
 }
+
+// ... rest of helpers ...
 
 async function saveChatMessage(bizId: string, senderId: string, role: 'user' | 'bot' | 'merchant', text: string) {
   if (!adminDb) return;
@@ -184,7 +235,7 @@ async function saveChatMessage(bizId: string, senderId: string, role: 'user' | '
       senderId: senderId,
       role: role,
       text: text,
-      timestamp: admin.firestore.FieldValue.serverTimestamp()
+      timestamp: FieldValue.serverTimestamp()
     });
   } catch (err) {
     console.error('[History Error]', err);
@@ -200,8 +251,18 @@ app.use(express.json());
 // Test Connection Endpoint
 app.post('/api/test-connection', async (req, res) => {
   const { businessId, ownerId } = req.body;
-  await logActivity(businessId, 'TEST_CONNECTION', 'সিস্টেম টেস্ট সফল! আপনার লগিং সিস্টেম ঠিকঠাক কাজ করছে। এবার ফেসবুক চেক করুন।', 'success', ownerId);
-  res.json({ success: true });
+  console.log(`[TestConnection] Request received for biz: ${businessId}`);
+  try {
+    await logActivity(businessId, 'TEST_CONNECTION', 'সিস্টেম টেস্ট সফল! আপনার লগিং সিস্টেম ঠিকঠাক কাজ করছে। এবার ফেসবুক চেক করুন।', 'success', ownerId);
+    res.json({ success: true, message: 'Log sent' });
+  } catch (err) {
+    console.error('[TestConnection Error]', err);
+    res.status(500).json({ success: false, error: String(err) });
+  }
+});
+
+app.get('/api/ping', (req, res) => {
+  res.json({ status: 'ok', timestamp: new Date().toISOString(), adminDbReady: !!adminDb });
 });
 
 // Consolidated Webhook Verification (GET)
@@ -212,6 +273,7 @@ app.get(['/webhook', '/api/webhook', '/api/webhook/:businessId'], async (req, re
   const { businessId } = req.params;
 
   console.log(`[Webhook GET] token=${token}, mode=${mode}`);
+  await logActivity(businessId || 'system', 'WEBHOOK_VERIFY_ATTEMPT', `Facebook verification attempt. Token: ${token}`, 'info', 'system');
 
   if (mode === 'subscribe' && challenge) {
     const universalTokens = ['chatbyraju', '1058370033', 'sendbyraju'];
@@ -245,37 +307,51 @@ app.post(['/webhook', '/api/webhook', '/api/webhook/:businessId'], async (req, r
   const { businessId } = req.params;
   const body = req.body;
 
-  // Root level log to prove we got ANY data from Facebook
-  console.log('[Webhook POST] Incoming body:', JSON.stringify(body).substring(0, 500));
+  console.log(`[Webhook POST] Signal for: ${businessId || 'unknown'}`);
 
   if (body.object !== 'page') {
-    await logActivity(businessId || 'unknown', 'SIGNAL_IGNORE', `Ignored non-page event: ${body.object}`, 'info', 'system');
     return res.status(200).send('NOT_A_PAGE_EVENT');
   }
 
-  try {
-    if (!db || !adminDb) {
-      console.error('[Webhook] DB not ready');
-      return res.status(200).send('DB_NOT_READY');
-    }
-    
-    await logActivity(businessId || 'unknown', 'SIGNAL_REACHED', `ফেসবুক থেকে সিগন্যাল পাওয়া গেছে। প্রসেস শুরু হচ্ছে...`, 'info', 'system');
+  // Acknowledge immediately to prevent Facebook retries
+  res.status(200).send('EVENT_RECEIVED');
+
+  // Process in background
+  (async () => {
+    try {
+      if (!adminDb) {
+        console.error('[Webhook] adminDb not ready');
+        return;
+      }
+      
+      await logActivity(businessId || 'unknown', 'SIGNAL_REACHED', `ফেসবুক থেকে সিগন্যাল পাওয়া গেছে। প্রসেস শুরু হচ্ছে...`, 'info', 'system');
+    console.log('[Webhook] Processing body entries:', body.entry?.length);
 
     for (const entry of body.entry) {
       const pageId = String(entry.id).trim(); // Ensure it's a string
       const messaging = entry.messaging || entry.standby;
       if (!messaging) {
         console.log(`[Webhook] No messaging or standby data for entry ${pageId}`);
+        await logActivity(businessId || 'unknown', 'SIGNAL_MISSING_DATA', `এন্ট্রিতে কোনো মেসেজিং ডাটা নেই: ${pageId}`, 'info', 'system');
         continue;
       }
+
+      console.log(`[Webhook] Entry ${pageId} has ${messaging.length} events`);
 
       for (const webhookEvent of messaging) {
         const senderId = webhookEvent.sender.id;
         let messageText = webhookEvent.message?.text;
+        console.log(`[Webhook] Event from ${senderId}, PageID: ${pageId}, messageText: ${messageText}`);
         
         // Skip echo/delivery/read receipts to avoid infinitive loops or unnecessary processing
-        if (webhookEvent.message?.is_echo) continue;
-        if (webhookEvent.delivery || webhookEvent.read) continue;
+        if (webhookEvent.message?.is_echo) {
+           console.log(`[Webhook] Skipping echo from ${senderId}`);
+           continue;
+        }
+        if (webhookEvent.delivery || webhookEvent.read) {
+           console.log(`[Webhook] Skipping delivery/read receipt from ${senderId}`);
+           continue;
+        }
 
         // Handle Postbacks (Buttons clicks)
         if (webhookEvent.postback) {
@@ -296,18 +372,39 @@ app.post(['/webhook', '/api/webhook', '/api/webhook/:businessId'], async (req, r
         let businessData: any = null;
         
         try {
-          // Lookup store by Page ID using Admin SDK to bypass rules
-          // We check both string and number versions to be safe
-          let snap = await adminDb.collection('businesses').where('facebookPageId', 'in', [pageId, Number(pageId)]).get();
+          // Lookup store by Page ID
+          console.log(`[Webhook] Looking up business for Page ID: ${pageId}`);
           
-          if (snap.empty && businessId && businessId !== 'unknown') {
-             // Fallback to explicit businessId from URL if provided
-             const bizDoc = await adminDb.collection('businesses').doc(businessId).get();
-             if (bizDoc.exists) {
-                businessData = bizDoc.data();
-                bizId = bizDoc.id;
+          let snap: any = null;
+          try {
+            snap = await adminDb.collection('businesses').where('facebookPageId', 'in', [pageId, Number(pageId)]).get();
+          } catch (adminLookupErr) {
+            console.warn('[Webhook Admin Lookup Failed, trying client SDK]', adminLookupErr);
+            if (db) {
+              const bq = query(collection(db, 'businesses'), where('facebookPageId', 'in', [pageId, Number(pageId)]));
+              snap = await getDocs(bq);
+            }
+          }
+          
+          if ((!snap || snap.empty) && businessId && businessId !== 'unknown') {
+             console.log(`[Webhook] snap empty, trying fallback businessId: ${businessId}`);
+             try {
+                const bizDoc = await adminDb.collection('businesses').doc(businessId).get();
+                if (bizDoc.exists) {
+                  businessData = bizDoc.data();
+                  bizId = bizDoc.id;
+                }
+             } catch (e) {
+               if (db) {
+                 const bizDoc = await getDoc(doc(db, 'businesses', businessId));
+                 if (bizDoc.exists()) {
+                   businessData = bizDoc.data();
+                   bizId = bizDoc.id;
+                 }
+               }
              }
-          } else if (!snap.empty) {
+          } else if (snap && !snap.empty) {
+            console.log(`[Webhook] Found business via Page ID: ${snap.docs[0].id}`);
             businessData = snap.docs[0].data();
             bizId = snap.docs[0].id;
           }
@@ -558,8 +655,8 @@ ${chatHistoryText}
               leadScore: aiRes.confidence * 100,
               segment: segment,
               chatSummary: aiRes.summary || '',
-              lastInteraction: admin.firestore.FieldValue.serverTimestamp(),
-              updatedAt: admin.firestore.FieldValue.serverTimestamp()
+              lastInteraction: FieldValue.serverTimestamp(),
+              updatedAt: FieldValue.serverTimestamp()
             }, { merge: true });
           } catch (e) {
             console.error('Customer Summary sync failed:', e);
@@ -573,7 +670,7 @@ ${chatHistoryText}
                    businessOwnerId: ownerId,
                    eventName: 'product_image_viewed',
                    properties: { product: aiRes.product_name },
-                   timestamp: admin.firestore.FieldValue.serverTimestamp(),
+                   timestamp: FieldValue.serverTimestamp(),
                    sessionId: senderId
                 });
              } catch (e) {}
@@ -594,7 +691,7 @@ ${chatHistoryText}
               messengerId: senderId,
               customerName: aiRes.order_data?.name || 'Customer',
               productName: aiRes.product_name,
-              timestamp: admin.firestore.FieldValue.serverTimestamp(),
+              timestamp: FieldValue.serverTimestamp(),
               lastFollowUpSent: false,
               pageAccessToken: businessData.pageAccessToken,
               ownerId: ownerId
@@ -611,27 +708,13 @@ ${chatHistoryText}
         } catch (innerErr: any) {
           const errMsg = innerErr.response?.data?.error?.message || innerErr.message;
           await logActivity(bizId, 'ERROR', `বট কাজ করতে পারেনি: ${errMsg}`, 'error', ownerId);
-          
-          // Send polite fallback to customer instead of silent failure
-          try {
-             if (businessData && businessData.pageAccessToken) {
-               await axios.post(`https://graph.facebook.com/v18.0/me/messages?access_token=${businessData.pageAccessToken}`, {
-                  recipient: { id: senderId },
-                  message: { text: "দুঃখিত, আমাদের সিস্টেমে সাময়িক চাপের কারণে উত্তর দিতে দেরি হচ্ছে। অনুগ্রহ করে এক মিনিট পর আবার চেষ্টা করুন।" }
-               });
-             }
-          } catch (fbErr) {}
         }
       }
     }
-    
-    // Send response ONLY after processing is done
-    res.status(200).send('EVENT_RECEIVED');
-
   } catch (outerErr: any) {
-    console.error('Outer webhook error:', outerErr);
-    res.status(200).send('EVENT_FAILED_BUT_ACKNOWLEDGED');
+    console.error('Background webhook process failed:', outerErr);
   }
+})();
 });
 
 // Manual message sending from Dashboard (Live Chat)

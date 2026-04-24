@@ -183,20 +183,16 @@ function MessengerLogs({ businessId, ownerId }: { businessId: string, ownerId: s
   useEffect(() => {
     if (!db || !ownerId) return;
     setError(null);
-    // Simple query - security rules handle the rest
+    // Filter by businessId, system, or unknown at the query level
     const q = query(
       collection(db, 'system_logs'),
+      where('businessId', 'in', [businessId, 'unknown', 'system']),
       orderBy('timestamp', 'desc'),
-      limit(20)
+      limit(50)
     );
     const unsubscribe = onSnapshot(q, (snap) => {
       const allLogs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-      // Filter locally for the specific businessId, system logs, or unknown/fallback logs
-      setLogs(allLogs.filter((l: any) => 
-        l.businessId === businessId || 
-        l.businessId === 'unknown' || 
-        l.businessId === 'system'
-      ));
+      setLogs(allLogs);
     }, (err) => {
       console.error('Logs Sync Error:', err);
       setError(`ডাটা লোড হতে সমস্যা হচ্ছে: ${err.message}`);
@@ -3772,15 +3768,20 @@ function MessengerConnect({ business, setBusiness }: { business: BusinessConfig,
                   className="w-full bg-white text-rose-600 border-rose-200 hover:bg-rose-100 text-[10px] font-bold h-8"
                   onClick={async () => {
                     if (!business) return;
+                    const toastId = toast.loading('টেস্ট সিগন্যাল পাঠানো হচ্ছে...');
                     try {
                       const res = await fetch('/api/test-connection', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ businessId: business.id, ownerId: business.ownerId })
                       });
-                      if (res.ok) alert('Test signal sent! Check Activity Log.');
+                      if (res.ok) {
+                        toast.success('টেস্ট সিগন্যাল সফলভাবে পাঠানো হয়েছে! নিচের লগ চেক করুন।', { id: toastId });
+                      } else {
+                        toast.error('সার্ভার রেসপন্স করছে না।', { id: toastId });
+                      }
                     } catch (e) {
-                      alert('Failed to send test signal.');
+                      toast.error('কানেকশন ফেল করেছে। আপনার ইন্টারনেট চেক করুন।', { id: toastId });
                     }
                   }}
                 >
