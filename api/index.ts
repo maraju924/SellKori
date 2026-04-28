@@ -37,15 +37,14 @@ try {
       ? getFirestore(firebaseApp, firebaseConfig.firestoreDatabaseId) 
       : getFirestore(firebaseApp);
     
-    // Initialize Admin SDK
+      // Initialize Admin SDK
     try {
       let adminApp;
       if (admin.apps.length === 0) {
         console.log(`[Firebase] Initializing Admin SDK with Project ID: ${firebaseConfig.projectId}`);
+        // In this environment, initializeApp() with no args or just projectId often works best
         adminApp = admin.initializeApp({
-          projectId: firebaseConfig.projectId,
-          // Explicitly use applicationDefault if available
-          credential: admin.credential.applicationDefault ? admin.credential.applicationDefault() : undefined
+          projectId: firebaseConfig.projectId
         });
       } else {
         adminApp = admin.app();
@@ -55,20 +54,20 @@ try {
       console.log(`[Firebase] Configuring Admin Firestore for Database: ${dbId || '(default)'}`);
       
       if (dbId && dbId !== '(default)') {
+        // Standard v13 way: databaseId as second arg
         adminDb = getAdminFirestore(adminApp, dbId);
       } else {
         adminDb = getAdminFirestore(adminApp);
       }
       
-      // Test the connection immediately and set a working flag
+      // Test the connection immediately
       try {
-        await adminDb.collection('businesses').limit(1).get();
-        console.log(`[Firebase] Admin Firestore connection successfully verified.`);
+        const testSnap = await adminDb.collection('businesses').limit(1).get();
+        console.log(`[Firebase] Admin Firestore connection verified. Found ${testSnap.size} businesses.`);
       } catch (testErr: any) {
-        console.warn(`[Firebase] Admin Firestore verification FAILED: ${testErr.message}`);
-        // If it's a permission denied error, we might want to log it specifically
+        console.warn(`[Firebase] Admin Firestore verification FAILED: ${testErr.message} (Code: ${testErr.code})`);
         if (testErr.code === 7 || testErr.message.includes('PERMISSION_DENIED')) {
-          console.error('[Firebase] PERMISSION_DENIED: Please ensure the service account has "Cloud Datastore User" role.');
+          console.error('[Firebase] Check if the Service Account has permission for this specific Database ID.');
         }
       }
     } catch (adminErr: any) {
@@ -314,6 +313,16 @@ app.get('/api/ping', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString(), adminDbReady: !!adminDb });
 });
 
+app.get('/api/status', (req, res) => {
+  res.json({
+    geminiConfigured: !!process.env.GEMINI_API_KEY,
+    firebaseConfigured: !!process.env.FIREBASE_PROJECT_ID || !!process.env.FIREBASE_SERVICE_ACCOUNT,
+    adminDbReady: !!adminDb,
+    serverVersion: '1.2.0',
+    timestamp: new Date().toISOString()
+  });
+});
+
 // Consolidated Webhook Verification (GET)
 app.get(['/webhook', '/api/webhook', '/api/webhook/:businessId'], async (req, res) => {
   const mode = req.query['hub.mode'];
@@ -399,60 +408,63 @@ app.post(['/webhook', '/api/webhook', '/api/webhook/:businessId'], async (req, r
               continue;
             }
 
-            let bizId = pathBizId;
+            // Identify Store by Page ID
             let businessData: any = null;
-            
-            // 1. Identify Store by Page ID
-            let snap: any = null;
-            if (adminDb) {
-              try {
-                // Ensure we compare without extra spaces
-                const cleanPageId = pageId.trim();
-                snap = await adminDb.collection('businesses').where('facebookPageId', '==', cleanPageId).get();
-                if (snap.empty && !isNaN(Number(cleanPageId))) {
-                  snap = await adminDb.collection('businesses').where('facebookPageId', '==', Number(cleanPageId)).get();
-                }
-              } catch (e: any) { 
-                console.error('Admin Business Lookup Error', e.message); 
-              }
-            }
+            let bizId: string | null = pathBizId;
+            const cleanPageId = String(pageId).trim();
 
-            if (!snap || snap.empty) {
-              if (db) {
-                try {
-                  const bq = query(collection(db, 'businesses'), where('facebookPageId', 'in', [pageId, Number(pageId)]));
-                  snap = await getDocs(bq);
-                } catch (e: any) { 
-                  console.error('Client Business Lookup Error', e.message); 
-                }
-              }
-            }
+      // Attempt 1: Admin SDK (Try string and number)
+      if (adminDb) {
+        try {
+          console.log(`[Webhook] Looking up business for Page ID: ${cleanPageId} (Admin)`);
+          let snap = await adminDb.collection('businesses').where('facebookPageId', '==', cleanPageId).get();
+          if (snap.empty && !isNaN(Number(cleanPageId))) {
+            snap = await adminDb.collection('businesses').where('facebookPageId', '==', Number(cleanPageId)).get();
+          }
+          if (!snap.empty) {
+            const doc = snap.docs[0];
+            businessData = doc.data();
+            bizId = doc.id;
+          }
+        } catch (e: any) {
+          console.warn('[Webhook] Admin Lookup Failed (Permissions?):', e.message);
+        }
+      }
 
-            if (snap && !snap.empty) {
-              const firstDoc = snap.docs[0];
-              businessData = typeof firstDoc.data === 'function' ? firstDoc.data() : (firstDoc as any).data();
-              bizId = firstDoc.id;
-            } else if (pathBizId && pathBizId !== 'unknown' && pathBizId !== 'system') {
-               // Fallback to ID from URL if explicitly provided
-               try {
-                 if (adminDb) {
-                   const d = await adminDb.collection('businesses').doc(pathBizId).get();
-                   if (d.exists) { businessData = d.data(); bizId = pathBizId; }
-                 }
-                 if (!businessData && db) {
-                   const d = await getDoc(doc(db, 'businesses', pathBizId));
-                   if (d.exists()) { businessData = d.data(); bizId = pathBizId; }
-                 }
-               } catch (e) {}
-            }
+      // Attempt 2: Client SDK (if Admin failed)
+      if (!businessData && db) {
+        try {
+          console.log(`[Webhook] Looking up business for Page ID: ${cleanPageId} (Client SDK Fallback)`);
+          const bq = query(collection(db, 'businesses'), where('facebookPageId', 'in', [cleanPageId, Number(cleanPageId)]));
+          const snap = await getDocs(bq);
+          if (!snap.empty) {
+            const doc = snap.docs[0];
+            businessData = doc.data();
+            bizId = doc.id;
+          }
+        } catch (e: any) {
+          console.error('[Webhook] Client Lookup Failed:', e.message);
+        }
+      }
 
-            // Absolute last resort: if we have ONE business, maybe it's that one? 
-            // (Only for development/debugging if specifically enabled, but here we'll stick to strict)
+      // Attempt 3: If still not found and we have a bizId in the URL, use that
+      if (!businessData && pathBizId && pathBizId !== 'unknown' && pathBizId !== 'system') {
+        try {
+          if (adminDb) {
+            const d = await adminDb.collection('businesses').doc(pathBizId).get();
+            if (d.exists) { businessData = d.data(); bizId = pathBizId; }
+          }
+          if (!businessData && db) {
+            const d = await getDoc(doc(db, 'businesses', pathBizId));
+            if (d.exists()) { businessData = d.data(); bizId = pathBizId; }
+          }
+        } catch (e) {}
+      }
 
-            if (!businessData) {
-              await logActivity('system', 'ERROR', `Could not identify store for Page ID: ${pageId}. Verify Page ID in Settings.`, 'error', 'system', { pageId, receivedPayload: webhookEvent });
-              continue;
-            }
+      if (!businessData) {
+        await logActivity('system', 'ERROR', `Could not identify store for Page ID: ${cleanPageId}. Ensure your Page ID is correct in Settings.`, 'error', 'system', { pageId: cleanPageId });
+        continue;
+      }
 
             const ownerId = businessData.ownerId;
             let finalMessageText = messageText;
@@ -506,27 +518,41 @@ app.post(['/webhook', '/api/webhook', '/api/webhook/:businessId'], async (req, r
               }
             } catch (e) {}
 
-            const products = (businessData.products || []).map((p: any) => ({ name: p.name, price: p.price, stock: p.stockCount }));
-            const prompt = `তুমি "${businessData.name}" এর স্মার্ট সেলস অ্যাসিস্ট্যান্ট।\nলক্ষ্য: কাস্টমারকে পণ্য নির্বাচনে সাহায্য করা এবং অর্ডার নিতে উৎসাহিত করা।\nদোকানের তথ্য: ${businessData.description || ''}\nপণ্যতালিকা: ${JSON.stringify(products)}\nসাম্প্রতিক আলাপ:\n${chatHistoryText}\nকাস্টমার: ${finalMessageText}`;
-            
-            try {
-              const model = genAI!.getGenerativeModel({ 
-                model: "gemini-1.5-flash", 
-                generationConfig: { responseMimeType: "application/json", responseSchema: responseSchema as any } 
-              });
-              const result = await model.generateContent(prompt);
-              const aiRes = JSON.parse(result.response.text());
-              
-              const reply = aiRes.reply;
-              
-              // 3. Send Response to Facebook
-              await axios.post(`https://graph.facebook.com/v18.0/me/messages?access_token=${businessData.pageAccessToken}`, {
-                recipient: { id: senderId },
-                message: { text: reply }
-              });
+            const products = (businessData.products || []).map((p: any) => ({ 
+              name: p.name, 
+              price: p.price, 
+              stock: p.stockCount 
+            }));
 
-              await saveChatMessage(bizId!, senderId, 'bot', reply);
-              await logActivity(bizId!, 'REPLY_SENT', `উত্তর পাঠানো হয়েছে: "${reply.substring(0, 50)}..."`, 'success', ownerId);
+            const prompt = `তুমি "${businessData.name}" এর স্মার্ট সেলস অ্যাসিস্ট্যান্ট। কাস্টমারকে পণ্য নির্বাচনে সাহায্য করো।
+দোকানের তথ্য: ${businessData.description || ''}
+পণ্যতালিকা: ${JSON.stringify(products)}
+অতিরিক্ত তথ্য: ${businessData.botPersona || ''}
+সাম্প্রতিক আলাপ:
+${chatHistoryText}
+কাস্টমার: ${finalMessageText}`;
+              
+              try {
+                const model = genAI!.getGenerativeModel({ 
+                  model: "gemini-1.5-flash", 
+                  generationConfig: { 
+                    responseMimeType: "application/json", 
+                    responseSchema: responseSchema as any 
+                  } 
+                });
+                
+                const result = await model.generateContent(prompt);
+                const aiRes = JSON.parse(result.response.text());
+                const reply = aiRes.reply;
+                
+                // Send Response to Facebook
+                await axios.post(`https://graph.facebook.com/v18.0/me/messages?access_token=${businessData.pageAccessToken}`, {
+                  recipient: { id: senderId },
+                  message: { text: reply }
+                });
+
+                await saveChatMessage(bizId!, senderId, 'bot', reply);
+                await logActivity(bizId!, 'REPLY_SENT', `সফলভাবে উত্তর পাঠানো হয়েছে: "${reply.substring(0, 50)}..."`, 'success', ownerId);
               
               // Optional: Save summary/lead info
               if (aiRes.summary || aiRes.order_data) {
@@ -678,8 +704,8 @@ cron.schedule('*/15 * * * *', async () => {
   try {
     // Debug: log the database we're talking to (internal check)
     // adminDb.databaseId might not be public, but we can log the config value
-    const dbIdUsed = adminDb._databaseId || 'default?';
-    console.log(`[Cron] Database ID in use: ${dbIdUsed}`);
+    const dbIdUsed = (adminDb as any)._databaseId || 'default?';
+    console.log(`[Cron] Using Admin DB: ${dbIdUsed}`);
 
     const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
     // Querying abandoned_carts
@@ -687,7 +713,7 @@ cron.schedule('*/15 * * * *', async () => {
       .where('lastFollowUpSent', '==', false)
       .get();
     
-    console.log(`[Cron] Found ${snap.size} potential abandoned carts.`);
+    console.log(`[Cron] Query success. Found ${snap.size} potential abandoned carts.`);
     
     for (const docSnap of snap.docs) {
       const cart = docSnap.data();
