@@ -545,20 +545,26 @@ app.post(['/webhook', '/api/webhook', '/api/webhook/:businessId'], async (req, r
               continue;
             }
 
+            console.log(`[Webhook] Message from ${senderId}: ${finalMessageText}`);
             await logActivity(bizId!, 'INCOMING', `Customer: "${finalMessageText.substring(0, 70)}"`, 'info', ownerId);
-            await saveChatMessage(bizId!, senderId, 'user', finalMessageText);
+            await saveChatMessage(bizId!, senderId, 'user', finalMessageText).catch(e => console.error('Save chat error:', e));
 
             const pageAccessToken = businessData.pageAccessToken || businessData.facebookConfig?.accessToken;
 
-            if (!pageAccessToken || !process.env.GEMINI_API_KEY || !genAI) {
-              console.error(`[Webhook] Missing Credentials for biz ${bizId}: token=${!!pageAccessToken}, key=${!!process.env.GEMINI_API_KEY}, ai=${!!genAI}`);
-              await logActivity(bizId!, 'ERROR', 'Missing Facebook Token or Gemini API Key.', 'error', ownerId);
+            if (!pageAccessToken) {
+              console.error(`[Webhook] No access token for biz: ${bizId}`);
+              await logActivity(bizId!, 'ERROR', 'Facebook Access Token পাওয়া যায়নি। আপনার সেটিংস চেক করুন।', 'error', ownerId);
+              continue;
+            }
+
+            if (!process.env.GEMINI_API_KEY || !genAI) {
+              await logActivity(bizId!, 'ERROR', 'Gemini AI Key কনফিগার করা নেই।', 'error', ownerId);
               continue;
             }
 
             // AI Processing
-            console.log(`[Webhook] Starting AI processing for Sender: ${senderId}`);
-            await logActivity(bizId!, 'AI_START', 'এআই প্রসেসিং শুরু হয়েছে...', 'info', ownerId);
+            console.log(`[Webhook] Starting AI processing...`);
+            await logActivity(bizId!, 'AI_START', 'বট উত্তর তৈরি করছে...', 'info', ownerId);
             let chatHistoryText = "";
             try {
               if (adminDb) {
@@ -609,57 +615,68 @@ ${chatHistoryText}
               
               try {
                 console.log(`[Webhook] Calling Gemini AI for biz: ${bizId}`);
-                const model = genAI!.getGenerativeModel({ 
-                  model: "gemini-1.5-flash", 
-                  generationConfig: { 
-                    responseMimeType: "application/json", 
-                    responseSchema: responseSchema as any 
-                  } 
-                });
-                
+                const model = genAI!.getGenerativeModel({ model: "gemini-1.5-flash" });
                 const result = await model.generateContent(prompt);
-                const aiRes = JSON.parse(result.response.text());
-                const reply = aiRes.reply;
+                const responseText = result.response.text();
+                
+                let reply = "";
+                let aiRes: any = null;
+                try {
+                  if (responseText.includes('{')) {
+                    const cleaned = responseText.substring(responseText.indexOf('{'), responseText.lastIndexOf('}') + 1);
+                    aiRes = JSON.parse(cleaned);
+                    reply = aiRes.reply || aiRes.message || responseText;
+                  } else {
+                    reply = responseText;
+                  }
+                } catch (e) {
+                  reply = responseText;
+                }
+
+                if (!reply || reply.trim().length === 0) {
+                  throw new Error("AI generated an empty reply.");
+                }
+
                 console.log(`[Webhook] AI Reply: ${reply.substring(0, 30)}...`);
                 
                 // Send Response to Facebook
                 console.log(`[Webhook] Sending response to Facebook: ${senderId}`);
                 await axios.post(`https://graph.facebook.com/v18.0/me/messages?access_token=${pageAccessToken}`, {
                   recipient: { id: senderId },
-                  message: { text: reply }
-                });
+                  message: { text: reply.trim() }
+                }, { timeout: 10000 });
 
-                await saveChatMessage(bizId!, senderId, 'bot', reply);
+                await saveChatMessage(bizId!, senderId, 'bot', reply.trim()).catch(e => console.error('Save chat error:', e));
                 console.log('[Webhook] Reply sequence finished successfully');
-                await logActivity(bizId!, 'REPLY_SENT', `সফলভাবে উত্তর পাঠানো হয়েছে: "${reply.substring(0, 50)}..."`, 'success', ownerId);
-              
-              // Optional: Save summary/lead info
-              if (aiRes.summary || aiRes.order_data) {
-                if (adminDb) {
-                  await adminDb.collection('customers').doc(`${bizId}_${senderId}`).set({
-                    businessId: bizId,
-                    messengerId: senderId,
-                    lastInteraction: FieldValue ? FieldValue.serverTimestamp() : new Date(),
-                    chatSummary: aiRes.summary || '',
-                    leadInfo: aiRes.order_data || {},
-                    updatedAt: FieldValue ? FieldValue.serverTimestamp() : new Date()
-                  }, { merge: true }).catch(() => {});
+                await logActivity(bizId!, 'REPLY_SENT', `উত্তর পাঠানো হয়েছে: "${reply.substring(0, 50)}..."`, 'success', ownerId);
+
+                // Update lead info if AI provided it
+                if (aiRes && (aiRes.summary || aiRes.order_data)) {
+                  if (adminDb) {
+                    await adminDb.collection('customers').doc(`${bizId}_${senderId}`).set({
+                      businessId: bizId,
+                      messengerId: senderId,
+                      lastInteraction: admin.firestore.FieldValue.serverTimestamp(),
+                      chatSummary: aiRes.summary || '',
+                      leadInfo: aiRes.order_data || {},
+                      updatedAt: admin.firestore.FieldValue.serverTimestamp()
+                    }, { merge: true }).catch(() => {});
+                  }
                 }
+              } catch (err: any) {
+                console.error('[AI/Reply Error]', err.response?.data || err.message);
+                const errorMsg = err.response?.data?.error?.message || err.message;
+                await logActivity(bizId!, 'ERROR', `বট রিপ্লাই দিতে ব্যর্থ হয়েছে: ${errorMsg}`, 'error', ownerId);
+                
+                // Fallback messaging
+                try {
+                  await axios.post(`https://graph.facebook.com/v18.0/me/messages?access_token=${pageAccessToken}`, {
+                    recipient: { id: senderId },
+                    message: { text: "দুঃখিত, আমি এই মুহূর্তে উত্তর দিতে পারছি না। দয়া করে কিছুক্ষণ পর আবার চেষ্টা করুন।" }
+                  });
+                } catch (e) {}
               }
 
-            } catch (err: any) {
-              console.error('[AI/Reply Error]', err.response?.data || err.message);
-              const errorMsg = err.response?.data?.error?.message || err.message;
-              await logActivity(bizId!, 'ERROR', `বট রিপ্লাই দিতে ব্যর্থ হয়েছে: ${errorMsg}`, 'error', ownerId);
-              
-              // Fallback simple reply
-              try {
-                await axios.post(`https://graph.facebook.com/v18.0/me/messages?access_token=${pageAccessToken}`, {
-                  recipient: { id: senderId },
-                  message: { text: "দুঃখিত, আমি এই মুহূর্তে উত্তর দিতে পারছি না। দয়া করে কিছুক্ষণ পর আবার চেষ্টা করুন।" }
-                });
-              } catch (e) {}
-            }
           } catch (e: any) {
             console.error('[Event Loop Error]', e.message);
           }
