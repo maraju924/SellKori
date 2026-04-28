@@ -37,52 +37,43 @@ try {
       ? getFirestore(firebaseApp, firebaseConfig.firestoreDatabaseId) 
       : getFirestore(firebaseApp);
     
-      // Initialize Admin SDK
+    // Initialize Admin SDK
     try {
       if (admin.apps.length === 0) {
-        console.log(`[Firebase] Initializing Admin SDK for: ${firebaseConfig.projectId}`);
-        // Let it pick up credentials automatically from the environment
+        console.log(`[Firebase] Initializing Admin SDK for Project: ${firebaseConfig.projectId}`);
         admin.initializeApp({
           projectId: firebaseConfig.projectId
         });
       }
       const adminApp = admin.app();
-      
       const dbId = firebaseConfig.firestoreDatabaseId;
-      console.log(`[Firebase] Configuring Admin Firestore for Database: ${dbId || '(default)'}`);
       
-      // Standard v13 way: databaseId as second arg
+      // Try to get Admin Firestore for the specific database ID
       adminDb = getAdminFirestore(adminApp, dbId && dbId !== '(default)' ? dbId : undefined);
       
-      // Test the connection immediately
+      // Verification test
       try {
-        const testSnap = await adminDb.collection('businesses').limit(1).get();
-        console.log(`[Firebase] Admin Firestore verified. Found ${testSnap.size} docs.`);
+        await adminDb.collection('businesses').limit(1).get();
+        console.log(`[Firebase] Admin SDK Verified on Database: ${dbId || '(default)'}`);
       } catch (testErr: any) {
-        console.warn(`[Firebase] Admin verification failed: ${testErr.message} (Code: ${testErr.code})`);
-        
-        // If we have a custom DB ID and it failed with Permission Denied, it's likely IAM or DB ID specific
-        if (dbId && dbId !== '(default)' && (testErr.code === 7 || testErr.message.includes('permission'))) {
-          console.log('[Firebase] Attempting fallback to (default) database for Admin SDK...');
+        if (dbId && dbId !== '(default)') {
+          console.log(`[Firebase] Admin DB "${dbId}" access denied. Falling back to (default) database...`);
           try {
-            const fallbackAdminDb = getAdminFirestore(adminApp);
-            await fallbackAdminDb.collection('businesses').limit(1).get();
-            adminDb = fallbackAdminDb;
-            console.log('[Firebase] Successfully fell back to (default) Admin DB.');
-          } catch (e2: any) {
-            console.error('[Firebase] All Admin DB attempts failed. Relying on Client SDK for system tasks.');
+            const fallbackDb = getAdminFirestore(adminApp);
+            await fallbackDb.collection('businesses').limit(1).get();
+            adminDb = fallbackDb;
+            console.log('[Firebase] Admin SDK switched to (default) database.');
+          } catch (e2) {
+            console.warn('[Firebase] Admin SDK unusable on any database. Falling back to Client SDK only.');
             adminDb = null;
           }
         } else {
-          // It's a general permission error or other issue
+          console.warn('[Firebase] Admin SDK permission denied on (default) DB. Falling back to Client SDK.');
           adminDb = null;
-          if (testErr.code === 7) {
-            console.warn('[Firebase] Admin SDK lacks permissions. Ensure "Cloud Datastore User" role is assigned.');
-          }
         }
       }
     } catch (adminErr: any) {
-      console.error('[Firebase] Admin Initialization Error:', adminErr?.message);
+      console.error('[Firebase] Admin Setup Error:', adminErr?.message);
       adminDb = null;
     }
     
@@ -515,12 +506,18 @@ app.post(['/webhook', '/api/webhook', '/api/webhook/:businessId'], async (req, r
             }
 
             if (!businessData) {
-              console.error(`[Webhook] Error: Business not found for Page ID: ${cleanPageId}`);
-              await logActivity('system', 'ERROR', `Could not identify store for Page ID: ${cleanPageId}. Ensure your Page ID is correct in Settings.`, 'error', 'system', { pageId: cleanPageId });
+              console.error(`[Webhook] Business not found for Page ID: "${cleanPageId}"`);
+              
+              // Diagnostic: What was received?
+              await logActivity('system', 'ERROR', `বট রিপ্লাই দিতে পারেনি: আপনার ফেসবুক পেজ আইডি (${cleanPageId}) ডাটাবেজের কোনো দোকানের সাথে মেলেনি। দোকানের সেটিংস চেক করুন।`, 'error', 'system', { 
+                receivedPageId: cleanPageId,
+                pathBizId: pathBizId || 'none'
+              });
               continue;
             }
 
             const ownerId = businessData.ownerId;
+            const shopName = businessData.name || "আমাদের দোকান";
             let finalMessageText = messageText;
 
             // Handle Postbacks & Quick Replies
@@ -549,16 +546,19 @@ app.post(['/webhook', '/api/webhook', '/api/webhook/:businessId'], async (req, r
             await logActivity(bizId!, 'INCOMING', `Customer: "${finalMessageText.substring(0, 70)}"`, 'info', ownerId);
             await saveChatMessage(bizId!, senderId, 'user', finalMessageText).catch(e => console.error('Save chat error:', e));
 
-            const pageAccessToken = businessData.pageAccessToken || businessData.facebookConfig?.accessToken;
+            const pageAccessToken = businessData.pageAccessToken || 
+                                   businessData.facebookConfig?.accessToken || 
+                                   businessData.accessToken;
 
             if (!pageAccessToken) {
-              console.error(`[Webhook] No access token for biz: ${bizId}`);
-              await logActivity(bizId!, 'ERROR', 'Facebook Access Token পাওয়া যায়নি। আপনার সেটিংস চেক করুন।', 'error', ownerId);
+              console.error(`[Webhook] No access token for biz: ${bizId}. Data:`, JSON.stringify(businessData));
+              await logActivity(bizId!, 'ERROR', 'ফেসবুক অ্যাক্সেস টোকেন পাওয়া যায়নি। আপনার সেটিংস থেকে ফেসবুক পেজ কানেক্ট করুন।', 'error', ownerId);
               continue;
             }
 
             if (!process.env.GEMINI_API_KEY || !genAI) {
-              await logActivity(bizId!, 'ERROR', 'Gemini AI Key কনফিগার করা নেই।', 'error', ownerId);
+              console.error('[Webhook] Gemini AI not configured');
+              await logActivity(bizId!, 'ERROR', 'Gemini AI Key কনফিগার করা নেই। অ্যাডমিন প্যানেলে চেক করুন।', 'error', ownerId);
               continue;
             }
 
