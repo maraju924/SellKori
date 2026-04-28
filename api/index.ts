@@ -39,39 +39,51 @@ try {
     
       // Initialize Admin SDK
     try {
-      let adminApp;
       if (admin.apps.length === 0) {
-        console.log(`[Firebase] Initializing Admin SDK with Project ID: ${firebaseConfig.projectId}`);
-        // In this environment, initializeApp() with no args or just projectId often works best
-        adminApp = admin.initializeApp({
+        console.log(`[Firebase] Initializing Admin SDK for: ${firebaseConfig.projectId}`);
+        // Let it pick up credentials automatically from the environment
+        admin.initializeApp({
           projectId: firebaseConfig.projectId
         });
-      } else {
-        adminApp = admin.app();
       }
+      const adminApp = admin.app();
       
       const dbId = firebaseConfig.firestoreDatabaseId;
       console.log(`[Firebase] Configuring Admin Firestore for Database: ${dbId || '(default)'}`);
       
-      if (dbId && dbId !== '(default)') {
-        // Standard v13 way: databaseId as second arg
-        adminDb = getAdminFirestore(adminApp, dbId);
-      } else {
-        adminDb = getAdminFirestore(adminApp);
-      }
+      // Standard v13 way: databaseId as second arg
+      adminDb = getAdminFirestore(adminApp, dbId && dbId !== '(default)' ? dbId : undefined);
       
       // Test the connection immediately
       try {
         const testSnap = await adminDb.collection('businesses').limit(1).get();
-        console.log(`[Firebase] Admin Firestore connection verified. Found ${testSnap.size} businesses.`);
+        console.log(`[Firebase] Admin Firestore verified. Found ${testSnap.size} docs.`);
       } catch (testErr: any) {
-        console.warn(`[Firebase] Admin Firestore verification FAILED: ${testErr.message} (Code: ${testErr.code})`);
-        if (testErr.code === 7 || testErr.message.includes('PERMISSION_DENIED')) {
-          console.error('[Firebase] Check if the Service Account has permission for this specific Database ID.');
+        console.warn(`[Firebase] Admin verification failed: ${testErr.message} (Code: ${testErr.code})`);
+        
+        // If we have a custom DB ID and it failed with Permission Denied, it's likely IAM or DB ID specific
+        if (dbId && dbId !== '(default)' && (testErr.code === 7 || testErr.message.includes('permission'))) {
+          console.log('[Firebase] Attempting fallback to (default) database for Admin SDK...');
+          try {
+            const fallbackAdminDb = getAdminFirestore(adminApp);
+            await fallbackAdminDb.collection('businesses').limit(1).get();
+            adminDb = fallbackAdminDb;
+            console.log('[Firebase] Successfully fell back to (default) Admin DB.');
+          } catch (e2: any) {
+            console.error('[Firebase] All Admin DB attempts failed. Relying on Client SDK for system tasks.');
+            adminDb = null;
+          }
+        } else {
+          // It's a general permission error or other issue
+          adminDb = null;
+          if (testErr.code === 7) {
+            console.warn('[Firebase] Admin SDK lacks permissions. Ensure "Cloud Datastore User" role is assigned.');
+          }
         }
       }
     } catch (adminErr: any) {
       console.error('[Firebase] Admin Initialization Error:', adminErr?.message);
+      adminDb = null;
     }
     
     logActivity('system', 'SERVER_INIT', `সার্ভার রিস্টার্ট হয়েছে। ভার্সন: 1.1.0.`, 'success', 'system').catch(() => {});
@@ -658,18 +670,27 @@ app.post('/api/broadcast', async (req, res) => {
     return res.status(400).json({ error: 'Missing parameters' });
   }
 
-  if (!adminDb) {
-    return res.status(500).json({ error: 'Firestore Admin not initialized' });
+  if (!adminDb && !db) {
+    return res.status(500).json({ error: 'Firestore not initialized' });
   }
 
   try {
-    let queryRef = adminDb.collection('customers').where('businessId', '==', businessId);
-    if (segment && segment !== 'All') {
-      queryRef = queryRef.where('segment', '==', segment);
+    let customers: any[] = [];
+    if (adminDb) {
+      let queryRef = adminDb.collection('customers').where('businessId', '==', businessId);
+      if (segment && segment !== 'All') {
+        queryRef = queryRef.where('segment', '==', segment);
+      }
+      const snap = await queryRef.get();
+      customers = snap.docs.map((d: any) => d.data());
+    } else {
+      let q = query(collection(db, 'customers'), where('businessId', '==', businessId));
+      if (segment && segment !== 'All') {
+        q = query(q, where('segment', '==', segment));
+      }
+      const snap = await getDocs(q);
+      customers = snap.docs.map(d => d.data());
     }
-    
-    const snap = await queryRef.get();
-    const customers = snap.docs.map((d: any) => d.data());
 
     let successCount = 0;
     for (const customer of customers) {
@@ -696,28 +717,41 @@ app.post('/api/broadcast', async (req, res) => {
 // Abandoned Cart Recovery Cron (Runs every 15 minutes)
 cron.schedule('*/15 * * * *', async () => {
   console.log('[Cron] Checking for abandoned carts...');
-  if (!adminDb) {
-    console.error('[Cron] Admin DB not initialized, skipping check.');
-    return;
-  }
   
   try {
-    // Debug: log the database we're talking to (internal check)
-    // adminDb.databaseId might not be public, but we can log the config value
-    const dbIdUsed = (adminDb as any)._databaseId || 'default?';
-    console.log(`[Cron] Using Admin DB: ${dbIdUsed}`);
+    let carts: any[] = [];
+    
+    // Attempt Admin SDK query first
+    if (adminDb) {
+      try {
+        const snap = await adminDb.collection('abandoned_carts')
+          .where('lastFollowUpSent', '==', false)
+          .get();
+        carts = snap.docs.map((d: any) => ({ id: d.id, ref: d.ref, ...d.data() }));
+      } catch (adminErr: any) {
+        console.warn('[Cron] Admin fetch failed, falling back to Client SDK:', adminErr.message);
+      }
+    }
+    
+    // Fallback to Client SDK if Admin failed or was unavailable
+    if (carts.length === 0 && db) {
+      try {
+        const q = query(collection(db, 'abandoned_carts'), where('lastFollowUpSent', '==', false));
+        const snap = await getDocs(q);
+        carts = snap.docs.map((d: any) => ({ id: d.id, ...d.data(), isClientRef: true }));
+      } catch (clientErr: any) {
+        // Only log if it's not a common "no collection" error
+        console.error('[Cron] Client fetch failed:', clientErr.message);
+      }
+    }
+
+    if (carts.length === 0) {
+      return;
+    }
 
     const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
-    // Querying abandoned_carts
-    const snap = await adminDb.collection('abandoned_carts')
-      .where('lastFollowUpSent', '==', false)
-      .get();
     
-    console.log(`[Cron] Query success. Found ${snap.size} potential abandoned carts.`);
-    
-    for (const docSnap of snap.docs) {
-      const cart = docSnap.data();
-      // Ensure cart has necessary data
+    for (const cart of carts) {
       if (!cart.pageAccessToken || !cart.messengerId) continue;
 
       const cartTime = cart.timestamp?.toDate ? cart.timestamp.toDate() : new Date(cart.timestamp || 0);
@@ -731,23 +765,28 @@ cron.schedule('*/15 * * * *', async () => {
             message: { text: followUp }
           });
 
-          await docSnap.ref.update({ 
-            lastFollowUpSent: true,
-            updatedAt: FieldValue.serverTimestamp()
-          });
+          // Update record
+          if (cart.ref) {
+            await cart.ref.update({ 
+               lastFollowUpSent: true,
+               updatedAt: FieldValue.serverTimestamp()
+            });
+          } else if (cart.isClientRef && db) {
+             await updateDoc(doc(db, 'abandoned_carts', cart.id), {
+               lastFollowUpSent: true,
+               updatedAt: serverTimestamp()
+             });
+          }
 
           await saveChatMessage(cart.businessId, cart.messengerId, 'bot', `[RECOVERY] ${followUp}`);
           await logActivity(cart.businessId, 'CART_RECOVERY', `${cart.customerName} এর জন্য রিকভারি মেসেজ পাঠানো হয়েছে।`, 'info', cart.ownerId);
         } catch (e: any) {
-          console.error(`[Cron] Recovery failed for ${cart.messengerId}:`, e.response?.data || e.message);
+          console.error(`[Cron] Recovery failed for ${cart.messengerId}:`, e.message);
         }
       }
     }
   } catch (error: any) {
-    console.error('[Cron Error] Firestore Access Failed:', error.message);
-    if (error.code === 7 || error.message.includes('PERMISSION_DENIED')) {
-      console.warn('[Cron Fix] Access Denied. Check if abandoned_carts collection exists and has proper permissions.');
-    }
+    console.error('[Cron Critical Error]', error.message);
   }
 });
 
