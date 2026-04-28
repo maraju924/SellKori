@@ -235,22 +235,24 @@ async function logActivity(bizId: string | null, type: string, detail: string, s
     const oid = ownerId || 'system';
     console.log(`[ACTIVITY_LOG][${bid}][${type}] ${detail}`);
     
-    const logData = {
+    // Prepare log data WITHOUT timestamp initially
+    const logBase = {
       businessId: bid,
       ownerId: oid,
       type,
       detail,
       status,
-      timestamp: FieldValue ? FieldValue.serverTimestamp() : serverTimestamp(),
       data: data ? (typeof data === 'string' ? data.substring(0, 1000) : JSON.stringify(data).substring(0, 1000)) : null
     };
 
     if (adminDb) {
       try {
-        await adminDb.collection('system_logs').add(logData);
+        await adminDb.collection('system_logs').add({
+          ...logBase,
+          timestamp: admin.firestore.FieldValue.serverTimestamp()
+        });
         return;
       } catch (err: any) {
-        // Only log admin error if it's not a common permission one to avoid clutter
         if (!err?.message?.includes('PERMISSION_DENIED')) {
           console.error('[Logger Admin Error]', err?.message);
         }
@@ -260,36 +262,37 @@ async function logActivity(bizId: string | null, type: string, detail: string, s
     if (db) {
       try {
         await addDoc(collection(db, 'system_logs'), {
-          ...logData,
+          ...logBase,
           timestamp: serverTimestamp()
         });
       } catch (ce) {
         console.error('[Logger Client Error]', ce);
       }
     }
-  } catch (e) {}
+  } catch (e) {
+    console.error('[Activity Log Global Error]', e);
+  }
 }
 
-// ... rest of helpers ...
-
 async function saveChatMessage(bizId: string, senderId: string, role: 'user' | 'bot' | 'merchant', text: string) {
-  const msgData = {
+  const logBase = {
     businessId: bizId,
     senderId: senderId,
     role: role,
-    text: text,
-    timestamp: FieldValue ? FieldValue.serverTimestamp() : serverTimestamp()
+    text: text
   };
 
   if (adminDb) {
     try {
-      await adminDb.collection('chat_history').add(msgData);
-      // Also update the summary doc for dashboard
+      const ts = admin.firestore.FieldValue.serverTimestamp();
+      await adminDb.collection('chat_history').add({ ...logBase, timestamp: ts });
+      
+      // Update summary doc
       await adminDb.collection('chats').doc(`${bizId}_${senderId}`).set({
         businessId: bizId,
         senderId: senderId,
         lastMessage: text.substring(0, 200),
-        timestamp: msgData.timestamp,
+        timestamp: ts,
         messages: admin.firestore.FieldValue.arrayUnion({
           role,
           text,
@@ -304,16 +307,15 @@ async function saveChatMessage(bizId: string, senderId: string, role: 'user' | '
   
   if (db) {
     try {
-      await addDoc(collection(db, 'chat_history'), {
-        ...msgData,
-        timestamp: serverTimestamp()
-      });
-      // Also update summary
+      const ts = serverTimestamp();
+      await addDoc(collection(db, 'chat_history'), { ...logBase, timestamp: ts });
+      
+      // Update summary
       await setDoc(doc(db, 'chats', `${bizId}_${senderId}`), {
         businessId: bizId,
         senderId: senderId,
         lastMessage: text.substring(0, 200),
-        timestamp: serverTimestamp(),
+        timestamp: ts,
         messages: FieldValue ? (FieldValue as any).arrayUnion({
           role,
           text,
@@ -546,13 +548,17 @@ app.post(['/webhook', '/api/webhook', '/api/webhook/:businessId'], async (req, r
             await logActivity(bizId!, 'INCOMING', `Customer: "${finalMessageText.substring(0, 70)}"`, 'info', ownerId);
             await saveChatMessage(bizId!, senderId, 'user', finalMessageText);
 
-            if (!businessData.pageAccessToken || !process.env.GEMINI_API_KEY || !genAI) {
+            const pageAccessToken = businessData.pageAccessToken || businessData.facebookConfig?.accessToken;
+
+            if (!pageAccessToken || !process.env.GEMINI_API_KEY || !genAI) {
+              console.error(`[Webhook] Missing Credentials for biz ${bizId}: token=${!!pageAccessToken}, key=${!!process.env.GEMINI_API_KEY}, ai=${!!genAI}`);
               await logActivity(bizId!, 'ERROR', 'Missing Facebook Token or Gemini API Key.', 'error', ownerId);
               continue;
             }
 
             // AI Processing
             console.log(`[Webhook] Starting AI processing for Sender: ${senderId}`);
+            await logActivity(bizId!, 'AI_START', 'এআই প্রসেসিং শুরু হয়েছে...', 'info', ownerId);
             let chatHistoryText = "";
             try {
               if (adminDb) {
@@ -579,12 +585,26 @@ app.post(['/webhook', '/api/webhook', '/api/webhook/:businessId'], async (req, r
               stock: p.stockCount 
             }));
 
-            const prompt = `তুমি "${businessData.name}" এর স্মার্ট সেলস অ্যাসিস্ট্যান্ট। কাস্টমারকে পণ্য নির্বাচনে সাহায্য করো।
-দোকানের তথ্য: ${businessData.description || ''}
+            const faqs = (businessData.faqs || []).map((f: any) => `${f.question}: ${f.answer}`).join('\n');
+
+            const prompt = `তুমি "${businessData.name}" এর জন্য একজন দক্ষ সেলস অ্যাসিস্ট্যান্ট। তোমার কাজ হলো কাস্টমারের সাথে বন্ধুত্বপূর্ণ আচরণ করা এবং তাদের কেনাকাটায় সাহায্য করা।
+
+দোকানের বর্ণনা: ${businessData.description || ''}
 পণ্যতালিকা: ${JSON.stringify(products)}
-অতিরিক্ত তথ্য: ${businessData.botPersona || ''}
+সচরাচর জিজ্ঞাসা (FAQs):
+${faqs}
+
+অতিরিক্ত নিয়ম ও ব্যক্তিত্ব: ${businessData.botPersona || ''}
+
+নির্দেশনা:
+১. সবসময় নম্রভাবে কথা বলবে এবং বাংলা ভাষা ব্যবহার করবে।
+২. কাস্টমার যদি পণ্য সম্পর্কে জানতে চায়, তবে পণ্যতালিকা থেকে তথ্য দিবে। স্টক না থাকলে বিনীতভাবে জানাবে।
+৩. যদি কাস্টমার অর্ডার করতে চায়, তবে তাদের নাম, ফোন নম্বর এবং ঠিকানা জানতে চাইবে।
+৪. কথা সংক্ষেপে কিন্তু কার্যকরভাবে বলবে।
+
 সাম্প্রতিক আলাপ:
 ${chatHistoryText}
+
 কাস্টমার: ${finalMessageText}`;
               
               try {
@@ -604,7 +624,7 @@ ${chatHistoryText}
                 
                 // Send Response to Facebook
                 console.log(`[Webhook] Sending response to Facebook: ${senderId}`);
-                await axios.post(`https://graph.facebook.com/v18.0/me/messages?access_token=${businessData.pageAccessToken}`, {
+                await axios.post(`https://graph.facebook.com/v18.0/me/messages?access_token=${pageAccessToken}`, {
                   recipient: { id: senderId },
                   message: { text: reply }
                 });
@@ -634,7 +654,7 @@ ${chatHistoryText}
               
               // Fallback simple reply
               try {
-                await axios.post(`https://graph.facebook.com/v18.0/me/messages?access_token=${businessData.pageAccessToken}`, {
+                await axios.post(`https://graph.facebook.com/v18.0/me/messages?access_token=${pageAccessToken}`, {
                   recipient: { id: senderId },
                   message: { text: "দুঃখিত, আমি এই মুহূর্তে উত্তর দিতে পারছি না। দয়া করে কিছুক্ষণ পর আবার চেষ্টা করুন।" }
                 });
