@@ -284,6 +284,18 @@ async function saveChatMessage(bizId: string, senderId: string, role: 'user' | '
   if (adminDb) {
     try {
       await adminDb.collection('chat_history').add(msgData);
+      // Also update the summary doc for dashboard
+      await adminDb.collection('chats').doc(`${bizId}_${senderId}`).set({
+        businessId: bizId,
+        senderId: senderId,
+        lastMessage: text.substring(0, 200),
+        timestamp: msgData.timestamp,
+        messages: admin.firestore.FieldValue.arrayUnion({
+          role,
+          text,
+          timestamp: new Date().toISOString()
+        })
+      }, { merge: true });
       return;
     } catch (err) {
       console.error('[History Admin Save Error]', err);
@@ -296,6 +308,18 @@ async function saveChatMessage(bizId: string, senderId: string, role: 'user' | '
         ...msgData,
         timestamp: serverTimestamp()
       });
+      // Also update summary
+      await setDoc(doc(db, 'chats', `${bizId}_${senderId}`), {
+        businessId: bizId,
+        senderId: senderId,
+        lastMessage: text.substring(0, 200),
+        timestamp: serverTimestamp(),
+        messages: FieldValue ? (FieldValue as any).arrayUnion({
+          role,
+          text,
+          timestamp: new Date().toISOString()
+        }) : []
+      }, { merge: true });
     } catch (err) {
       console.error('[History Client Save Error]', err);
     }
@@ -425,58 +449,74 @@ app.post(['/webhook', '/api/webhook', '/api/webhook/:businessId'], async (req, r
             let bizId: string | null = pathBizId;
             const cleanPageId = String(pageId).trim();
 
-      // Attempt 1: Admin SDK (Try string and number)
-      if (adminDb) {
-        try {
-          console.log(`[Webhook] Looking up business for Page ID: ${cleanPageId} (Admin)`);
-          let snap = await adminDb.collection('businesses').where('facebookPageId', '==', cleanPageId).get();
-          if (snap.empty && !isNaN(Number(cleanPageId))) {
-            snap = await adminDb.collection('businesses').where('facebookPageId', '==', Number(cleanPageId)).get();
-          }
-          if (!snap.empty) {
-            const doc = snap.docs[0];
-            businessData = doc.data();
-            bizId = doc.id;
-          }
-        } catch (e: any) {
-          console.warn('[Webhook] Admin Lookup Failed (Permissions?):', e.message);
-        }
-      }
+            console.log(`[Webhook] Processing Page ID: ${cleanPageId}`);
 
-      // Attempt 2: Client SDK (if Admin failed)
-      if (!businessData && db) {
-        try {
-          console.log(`[Webhook] Looking up business for Page ID: ${cleanPageId} (Client SDK Fallback)`);
-          const bq = query(collection(db, 'businesses'), where('facebookPageId', 'in', [cleanPageId, Number(cleanPageId)]));
-          const snap = await getDocs(bq);
-          if (!snap.empty) {
-            const doc = snap.docs[0];
-            businessData = doc.data();
-            bizId = doc.id;
-          }
-        } catch (e: any) {
-          console.error('[Webhook] Client Lookup Failed:', e.message);
-        }
-      }
+            // Attempt 1: Admin SDK (Try string and number)
+            if (adminDb) {
+              try {
+                console.log(`[Webhook] Admin Lookup for: ${cleanPageId}`);
+                let snap = await adminDb.collection('businesses').where('facebookPageId', '==', cleanPageId).get();
+                if (snap.empty) {
+                  snap = await adminDb.collection('businesses').where('pageId', '==', cleanPageId).get();
+                }
+                if (snap.empty && !isNaN(Number(cleanPageId))) {
+                  snap = await adminDb.collection('businesses').where('facebookPageId', '==', Number(cleanPageId)).get();
+                  if (snap.empty) {
+                    snap = await adminDb.collection('businesses').where('pageId', '==', Number(cleanPageId)).get();
+                  }
+                }
+                if (!snap.empty) {
+                  const doc = snap.docs[0];
+                  businessData = doc.data();
+                  bizId = doc.id;
+                  console.log(`[Webhook] Admin Lookup Success: ${bizId}`);
+                }
+              } catch (e: any) {
+                console.warn('[Webhook] Admin Lookup Failed:', e.message);
+              }
+            }
 
-      // Attempt 3: If still not found and we have a bizId in the URL, use that
-      if (!businessData && pathBizId && pathBizId !== 'unknown' && pathBizId !== 'system') {
-        try {
-          if (adminDb) {
-            const d = await adminDb.collection('businesses').doc(pathBizId).get();
-            if (d.exists) { businessData = d.data(); bizId = pathBizId; }
-          }
-          if (!businessData && db) {
-            const d = await getDoc(doc(db, 'businesses', pathBizId));
-            if (d.exists()) { businessData = d.data(); bizId = pathBizId; }
-          }
-        } catch (e) {}
-      }
+            // Attempt 2: Client SDK (if Admin failed)
+            if (!businessData && db) {
+              try {
+                console.log(`[Webhook] Client Lookup for: ${cleanPageId}`);
+                const q1 = query(collection(db, 'businesses'), where('facebookPageId', 'in', [cleanPageId, Number(cleanPageId)]));
+                let snap = await getDocs(q1);
+                if (snap.empty) {
+                  const q2 = query(collection(db, 'businesses'), where('pageId', 'in', [cleanPageId, Number(cleanPageId)]));
+                  snap = await getDocs(q2);
+                }
+                if (!snap.empty) {
+                  const doc = snap.docs[0];
+                  businessData = doc.data();
+                  bizId = doc.id;
+                  console.log(`[Webhook] Client Lookup Success: ${bizId}`);
+                }
+              } catch (e: any) {
+                console.error('[Webhook] Client Lookup Failed:', e.message);
+              }
+            }
 
-      if (!businessData) {
-        await logActivity('system', 'ERROR', `Could not identify store for Page ID: ${cleanPageId}. Ensure your Page ID is correct in Settings.`, 'error', 'system', { pageId: cleanPageId });
-        continue;
-      }
+            // Attempt 3: If still not found and we have a bizId in the URL, use that
+            if (!businessData && pathBizId && pathBizId !== 'unknown' && pathBizId !== 'system') {
+              console.log(`[Webhook] ID Fallback: ${pathBizId}`);
+              try {
+                if (adminDb) {
+                  const d = await adminDb.collection('businesses').doc(pathBizId).get();
+                  if (d.exists) { businessData = d.data(); bizId = pathBizId; }
+                }
+                if (!businessData && db) {
+                  const d = await getDoc(doc(db, 'businesses', pathBizId));
+                  if (d.exists()) { businessData = d.data(); bizId = pathBizId; }
+                }
+              } catch (e) {}
+            }
+
+            if (!businessData) {
+              console.error(`[Webhook] Error: Business not found for Page ID: ${cleanPageId}`);
+              await logActivity('system', 'ERROR', `Could not identify store for Page ID: ${cleanPageId}. Ensure your Page ID is correct in Settings.`, 'error', 'system', { pageId: cleanPageId });
+              continue;
+            }
 
             const ownerId = businessData.ownerId;
             let finalMessageText = messageText;
@@ -512,6 +552,7 @@ app.post(['/webhook', '/api/webhook', '/api/webhook/:businessId'], async (req, r
             }
 
             // AI Processing
+            console.log(`[Webhook] Starting AI processing for Sender: ${senderId}`);
             let chatHistoryText = "";
             try {
               if (adminDb) {
@@ -528,7 +569,9 @@ app.post(['/webhook', '/api/webhook', '/api/webhook/:businessId'], async (req, r
                   }).join('\n');
                 }
               }
-            } catch (e) {}
+            } catch (e: any) {
+              console.warn('[Webhook] History retrieval error:', e.message);
+            }
 
             const products = (businessData.products || []).map((p: any) => ({ 
               name: p.name, 
@@ -545,6 +588,7 @@ ${chatHistoryText}
 কাস্টমার: ${finalMessageText}`;
               
               try {
+                console.log(`[Webhook] Calling Gemini AI for biz: ${bizId}`);
                 const model = genAI!.getGenerativeModel({ 
                   model: "gemini-1.5-flash", 
                   generationConfig: { 
@@ -556,14 +600,17 @@ ${chatHistoryText}
                 const result = await model.generateContent(prompt);
                 const aiRes = JSON.parse(result.response.text());
                 const reply = aiRes.reply;
+                console.log(`[Webhook] AI Reply: ${reply.substring(0, 30)}...`);
                 
                 // Send Response to Facebook
+                console.log(`[Webhook] Sending response to Facebook: ${senderId}`);
                 await axios.post(`https://graph.facebook.com/v18.0/me/messages?access_token=${businessData.pageAccessToken}`, {
                   recipient: { id: senderId },
                   message: { text: reply }
                 });
 
                 await saveChatMessage(bizId!, senderId, 'bot', reply);
+                console.log('[Webhook] Reply sequence finished successfully');
                 await logActivity(bizId!, 'REPLY_SENT', `সফলভাবে উত্তর পাঠানো হয়েছে: "${reply.substring(0, 50)}..."`, 'success', ownerId);
               
               // Optional: Save summary/lead info
