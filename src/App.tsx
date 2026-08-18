@@ -14,6 +14,7 @@ import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import { cn } from './lib/utils';
 import { BrowserRouter as Router, Routes, Route, Link, useNavigate, useParams } from 'react-router-dom';
+import { LandingPage } from './components/landing/LandingPage';
 import { 
   MessageCircle, 
   MessageSquare,
@@ -298,18 +299,45 @@ export default function App() {
 
   return (
     <Router>
-      <div className="min-h-screen bg-zinc-50 font-sans text-zinc-900">
+      <div className="min-h-screen bg-zinc-50 dark:bg-zinc-950 font-sans text-zinc-900 dark:text-zinc-100">
         <GlobalBanner />
-        <Navbar user={user} profile={profile} />
-        <main className="max-w-7xl mx-auto p-4 md:p-8">
-          <Routes>
-            <Route path="/" element={<LandingPage />} />
-            <Route path="/login" element={<LoginPage />} />
-            <Route path="/chat/:businessId" element={<ChatView />} />
-            <Route path="/dashboard/*" element={<MerchantDashboard user={user} profile={profile} />} />
-            <Route path="/admin/*" element={<AdminPanel user={user} profile={profile} />} />
-          </Routes>
-        </main>
+        <Routes>
+          <Route path="/" element={<LandingPage user={user} profile={profile} />} />
+          <Route
+            path="/login"
+            element={
+              <>
+                <Navbar user={user} profile={profile} />
+                <main className="max-w-7xl mx-auto p-4 md:p-8">
+                  <LoginPage />
+                </main>
+              </>
+            }
+          />
+          <Route path="/chat/:businessId" element={<ChatView />} />
+          <Route
+            path="/dashboard/*"
+            element={
+              <>
+                <Navbar user={user} profile={profile} />
+                <main className="max-w-7xl mx-auto p-4 md:p-8">
+                  <MerchantDashboard user={user} profile={profile} />
+                </main>
+              </>
+            }
+          />
+          <Route
+            path="/admin/*"
+            element={
+              <>
+                <Navbar user={user} profile={profile} />
+                <main className="max-w-7xl mx-auto p-4 md:p-8">
+                  <AdminPanel user={user} profile={profile} />
+                </main>
+              </>
+            }
+          />
+        </Routes>
         <Toaster position="top-center" />
       </div>
     </Router>
@@ -364,173 +392,6 @@ function Navbar({ user, profile }: { user: FirebaseUser | null, profile: UserPro
         </div>
       </div>
     </nav>
-  );
-}
-
-function LandingPage() {
-  return (
-    <div className="space-y-32 py-10">
-      {/* Hero Section */}
-      <section className="relative text-center space-y-10 max-w-5xl mx-auto py-10">
-        <div className="absolute top-0 left-1/2 -translate-x-1/2 w-full h-[600px] bg-brand-orange/5 blur-[120px] rounded-full -z-10" />
-        
-        <div className="flex justify-center">
-          <Badge className="bg-brand-orange/10 text-brand-orange border-brand-orange/20 px-6 py-2 rounded-full text-sm font-bold animate-in fade-in slide-in-from-top-4 duration-1000">
-            ভবিষ্যতের ই-কমার্স এখনই
-          </Badge>
-        </div>
-        
-        <h1 className="text-6xl md:text-8xl font-black text-brand-black tracking-tight leading-[0.9] animate-in fade-in slide-in-from-bottom-8 duration-700">
-          চ্যাটকে রূপান্তরিত করুন <br />
-          <span className="text-brand-orange">বিক্রিতে</span>
-        </h1>
-        
-        <p className="text-xl md:text-2xl text-zinc-500 max-w-3xl mx-auto leading-relaxed animate-in fade-in slide-in-from-bottom-12 duration-1000">
-          অ্যাডভান্সড এআই মেসেনঞ্জার বট যা আপনার ব্যবসার জন্য স্বয়ংক্রিয়ভাবে বিক্রয় বৃদ্ধি করে এবং পিক্সেল ইভেন্ট ট্র্যাক করে।
-        </p>
-        
-        <div className="flex flex-col sm:flex-row justify-center gap-4 pt-6 animate-in fade-in slide-in-from-bottom-16 duration-1000">
-          <Link to="/login">
-            <Button size="lg" className="h-16 px-10 text-xl bg-brand-orange hover:bg-brand-orange/90 shadow-xl shadow-brand-orange/20 font-black rounded-2xl">
-              ফ্রি ট্রায়াল শুরু করুন
-            </Button>
-          </Link>
-          <Button size="lg" variant="outline" className="h-16 px-10 text-xl border-zinc-200 rounded-2xl font-bold bg-white">
-            ডেমো দেখুন
-          </Button>
-        </div>
-
-        {/* Hero Image / Mockup */}
-        <div className="mt-20 relative px-4">
-          <div className="max-w-4xl mx-auto rounded-3xl overflow-hidden shadow-2xl border-8 border-white animate-in zoom-in duration-1000">
-            <img 
-              src="https://picsum.photos/seed/tech/1200/675" 
-              alt="Dashboard Preview" 
-              className="w-full h-auto grayscale-[0.2] hover:grayscale-0 transition-all duration-700"
-              referrerPolicy="no-referrer"
-            />
-          </div>
-        </div>
-      </section>
-
-      {/* Features Section */}
-      <section className="space-y-16">
-        <div className="text-center space-y-4">
-          <h2 className="text-4xl md:text-5xl font-black tracking-tight">আপনার ব্যবসার জন্য যা কিছু থাকছে</h2>
-          <p className="text-zinc-500 text-lg">আধুনিক সব ফিচারের সমন্বয়ে তৈরি সেলকরি</p>
-        </div>
-        
-        <div className="grid md:grid-cols-3 gap-8">
-          {[
-            { 
-              icon: <Bot className="w-10 h-10 text-brand-orange" />, 
-              title: "স্মার্ট এআই এজেন্ট", 
-              desc: "বাংলায় কাস্টমারের প্রশ্নের উত্তর দেওয়া এবং প্রোডাক্ট সাজেস্ট করার জন্য ২৪/৭ নিয়োজিত থাকবে।" 
-            },
-            { 
-              icon: <Globe className="w-10 h-10 text-brand-orange" />, 
-              title: "ফুল পিক্সেল ইন্টিগ্রেশন", 
-              desc: "ফেসবুক পিক্সেল এবং সি-এপিআই (CAPI) এর মাধ্যমে আপনার বিজ্ঞাপনের কনভারশন ট্র্যাক করুন নিখুঁতভাবে।" 
-            },
-            { 
-              icon: <ShieldCheck className="w-10 h-10 text-brand-orange" />, 
-              title: "শক্তিশালী ড্যাশবোর্ড", 
-              desc: "মার্চেন্টদের জন্য একটি কমপ্লিট ড্যাশবোর্ড যেখানে অর্ডার ম্যানেজমেন্ট থেকে শুরু করে অ্যানালিটিক্স সবই পাবেন এক জায়গায়।" 
-            }
-          ].map((feat, i) => (
-            <Card key={i} className="border-none shadow-xl shadow-zinc-200/50 bg-white group hover:-translate-y-2 transition-transform duration-300 rounded-3xl overflow-hidden">
-              <CardContent className="pt-10 pb-10 px-8 space-y-6">
-                <div className="w-20 h-20 rounded-3xl bg-brand-orange/5 flex items-center justify-center group-hover:bg-brand-orange group-hover:text-white transition-colors duration-300">
-                  {feat.icon}
-                </div>
-                <h3 className="text-2xl font-black">{feat.title}</h3>
-                <p className="text-zinc-500 leading-relaxed text-base">{feat.desc}</p>
-              </CardContent>
-            </Card>
-          ))}
-        </div>
-      </section>
-
-      {/* Stats/Social Proof */}
-      <section className="bg-brand-black text-white rounded-[40px] p-12 md:p-24 overflow-hidden relative">
-        <div className="absolute top-0 right-0 w-96 h-96 bg-brand-orange/20 blur-[100px] rounded-full" />
-        <div className="relative z-10 grid md:grid-cols-2 gap-16 items-center">
-          <div className="space-y-8">
-            <h2 className="text-4xl md:text-6xl font-black leading-tight">আপনার সেলস বৃদ্ধি হবে চোখের সামনে</h2>
-            <p className="text-zinc-400 text-xl leading-relaxed">
-              হাজার হাজার মার্চেন্ট ইতিমধ্যে সেলকরি ব্যবহার করে তাদের কাস্টমার সাপোর্ট এবং সেলস অটোমেশন নিশ্চিত করেছেন।
-            </p>
-            <div className="grid grid-cols-2 gap-8 pt-4">
-              <div className="space-y-1">
-                <div className="text-4xl font-black text-brand-orange">৮৫%</div>
-                <div className="text-sm text-zinc-500 uppercase tracking-widest font-bold">অটোমেশন রেট</div>
-              </div>
-              <div className="space-y-1">
-                <div className="text-4xl font-black text-brand-orange">২.৫ গুণ</div>
-                <div className="text-sm text-zinc-500 uppercase tracking-widest font-bold">বিক্রয় বৃদ্ধি</div>
-              </div>
-            </div>
-          </div>
-          <div className="bg-white/5 backdrop-blur-xl border border-white/10 p-8 rounded-3xl space-y-6">
-            <div className="flex gap-1">
-              {[1,2,3,4,5].map(i => <Zap key={i} className="w-5 h-5 fill-brand-orange text-brand-orange" />)}
-            </div>
-            <p className="text-xl italic font-medium leading-relaxed">
-              "সেলকরি ইন্টিগ্রেট করার পর থেকে আমার আর এক্সট্রা কাস্টমার কেয়ার লোক রাখতে হয়নি। এআই একাই সব সামলাচ্ছে এবং সঠিক ভাবে অর্ডার কনফার্ম করছে।"
-            </p>
-            <div className="flex items-center gap-4">
-              <div className="w-12 h-12 rounded-full bg-brand-orange" />
-              <div>
-                <div className="font-bold">রাকিব আহমেদ</div>
-                <div className="text-sm text-zinc-500">সিইও, রাকিব স্টোর</div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {/* Footer */}
-      <footer className="border-t pt-20 pb-10">
-        <div className="flex flex-col md:flex-row justify-between items-start gap-12">
-          <div className="space-y-6 max-w-sm">
-            <Link to="/" className="flex items-center gap-2 font-black text-3xl tracking-tighter">
-              <span className="text-brand-black">Sell<span className="text-brand-orange">Kori</span></span>
-            </Link>
-            <p className="text-zinc-500">আপনার ই-কমার্স ব্যবসার বিক্রয় বৃদ্ধির সবচেয়ে নির্ভরযোগ্য সঙ্গী।</p>
-            <div className="flex gap-4">
-              <Button variant="ghost" size="icon" className="rounded-full bg-zinc-100"><Facebook className="w-5 h-5 text-zinc-600" /></Button>
-              <Button variant="ghost" size="icon" className="rounded-full bg-zinc-100"><MessageCircle className="w-5 h-5 text-zinc-600" /></Button>
-            </div>
-          </div>
-          <div className="grid grid-cols-2 md:grid-cols-3 gap-12">
-            <div className="space-y-4">
-              <h4 className="font-bold uppercase text-xs tracking-widest text-zinc-400">কোম্পানি</h4>
-              <ul className="space-y-2 text-sm font-medium">
-                <li><Link to="/" className="hover:text-brand-orange transition-colors">আমাদের সম্পর্কে</Link></li>
-                <li><Link to="/" className="hover:text-brand-orange transition-colors">প্রাইসিং</Link></li>
-              </ul>
-            </div>
-            <div className="space-y-4">
-              <h4 className="font-bold uppercase text-xs tracking-widest text-zinc-400">রিসোর্স</h4>
-              <ul className="space-y-2 text-sm font-medium">
-                <li><Link to="/" className="hover:text-brand-orange transition-colors">ডকুমেন্টেশন</Link></li>
-                <li><Link to="/" className="hover:text-brand-orange transition-colors">ব্লগ</Link></li>
-              </ul>
-            </div>
-            <div className="space-y-4">
-              <h4 className="font-bold uppercase text-xs tracking-widest text-zinc-400">লিগ্যাল</h4>
-              <ul className="space-y-2 text-sm font-medium">
-                <li><Link to="/" className="hover:text-brand-orange transition-colors">প্রাইভেসি পলিসি</Link></li>
-                <li><Link to="/" className="hover:text-brand-orange transition-colors">টার্মস অ্যান্ড কন্ডিশন</Link></li>
-              </ul>
-            </div>
-          </div>
-        </div>
-        <div className="mt-20 pt-8 border-t text-center text-sm text-zinc-400">
-          © ২০২৪ সেলকরি। সর্বস্বত্ব সংরক্ষিত।
-        </div>
-      </footer>
-    </div>
   );
 }
 
