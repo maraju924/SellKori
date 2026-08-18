@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
+import { useNavigate } from 'react-router-dom';
 import { User as FirebaseUser } from 'firebase/auth';
 import { 
   collection, 
@@ -59,6 +60,7 @@ export function MerchantPanel({ user, profile }: MerchantPanelProps) {
   const [searchQuery, setSearchQuery] = useState('');
   const [orders, setOrders] = useState<Order[]>([]);
   const [isDark, setIsDark] = useState(false);
+  const navigate = useNavigate();
 
   // Sync dark theme
   useEffect(() => {
@@ -146,7 +148,10 @@ export function MerchantPanel({ user, profile }: MerchantPanelProps) {
     }, () => {});
   }, [business?.id]);
 
+  const isAdmin = profile?.role === 'admin' || user?.email === 'maraju924@gmail.com';
+
   const searchableItems = [
+    ...(isAdmin ? [{ id: 'admin-portal', title: 'সুপার অ্যাডমিন পোর্টাল', desc: 'মার্চেন্ট ভেরিফিকেশন ও সিস্টেম কন্ট্রোল', icon: Sliders, href: '/admin' }] : []),
     { id: 'analytics', title: 'ওভারভিউ ও অ্যানালিটিক্স', desc: 'দৈনিক সেলস গ্রাফ ও মোট বিক্রয়', icon: TrendingUp },
     { id: 'orders', title: 'অর্ডার তালিকা ও মেমো', desc: 'গ্রাহকের অর্ডার ও কুরিয়ার ট্র্যাকিং', icon: Package },
     { id: 'products', title: 'পণ্য ক্যাটালগ ও মূল্য সীমা', desc: 'প্রোডাক্ট যোগ ও মিনিমাম প্রাইজ লক', icon: Tag },
@@ -181,6 +186,7 @@ export function MerchantPanel({ user, profile }: MerchantPanelProps) {
       {/* Software Top App Bar */}
       <MerchantHeader
         business={business}
+        profile={profile}
         onOpenMobileMenu={() => setIsMobileMenuOpen(true)}
         onNavigateTab={(tab) => setActiveTab(tab)}
         isDark={isDark}
@@ -197,6 +203,7 @@ export function MerchantPanel({ user, profile }: MerchantPanelProps) {
               activeTab={activeTab}
               setActiveTab={setActiveTab}
               business={business}
+              profile={profile}
             />
           </div>
         </div>
@@ -217,12 +224,14 @@ export function MerchantPanel({ user, profile }: MerchantPanelProps) {
                 animate={{ x: 0 }}
                 exit={{ x: '-100%' }}
                 transition={{ type: 'spring', damping: 28, stiffness: 260 }}
-                className="fixed top-0 bottom-0 left-0 w-4/5 max-w-xs bg-white dark:bg-zinc-950 z-50 md:hidden shadow-2xl rounded-r-3xl overflow-hidden"
+                className="fixed top-0 bottom-0 left-0 w-4/5 max-w-xs bg-white dark:bg-zinc-950 z-50 md:hidden shadow-2xl rounded-r-3xl overflow-hidden flex flex-col"
               >
+                <div className="sheet-handle md:hidden" />
                 <MerchantSidebar
                   activeTab={activeTab}
                   setActiveTab={setActiveTab}
                   business={business}
+                  profile={profile}
                   onClose={() => setIsMobileMenuOpen(false)}
                 />
               </motion.div>
@@ -231,7 +240,7 @@ export function MerchantPanel({ user, profile }: MerchantPanelProps) {
         </AnimatePresence>
 
         {/* Center Content Workspace */}
-        <main className="flex-1 p-3.5 sm:p-6 md:p-8 min-w-0 overflow-y-auto">
+        <main className="flex-1 p-3.5 sm:p-6 md:p-8 min-w-0 overflow-y-auto momentum-scroll">
           {activeTab === 'analytics' && (
             <MerchantOverview
               business={business}
@@ -354,13 +363,17 @@ export function MerchantPanel({ user, profile }: MerchantPanelProps) {
               </div>
 
               <div className="max-h-72 overflow-y-auto p-2 space-y-1">
-                {filteredCommands.map((cmd) => {
+                {filteredCommands.map((cmd: any) => {
                   const Icon = cmd.icon;
                   return (
                     <button
                       key={cmd.id}
                       onClick={() => {
-                        setActiveTab(cmd.id);
+                        if (cmd.href) {
+                          navigate(cmd.href);
+                        } else {
+                          setActiveTab(cmd.id);
+                        }
                         setIsCommandOpen(false);
                       }}
                       className="w-full flex items-center gap-3 p-2.5 rounded-2xl hover:bg-orange-50 dark:hover:bg-orange-950/40 text-left transition-colors group"

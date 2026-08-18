@@ -19,11 +19,13 @@ import {
 } from 'lucide-react';
 import { Button } from '../ui/button';
 import { Badge } from '../ui/badge';
-import { BusinessConfig } from '../../types';
+import { BusinessConfig, UserProfile } from '../../types';
 import { toast } from 'sonner';
+import { Link } from 'react-router-dom';
 
 interface MerchantHeaderProps {
   business: BusinessConfig;
+  profile?: UserProfile | null;
   onOpenMobileMenu: () => void;
   onNavigateTab: (tabId: string) => void;
   isDark: boolean;
@@ -33,6 +35,7 @@ interface MerchantHeaderProps {
 
 export function MerchantHeader({
   business,
+  profile,
   onOpenMobileMenu,
   onNavigateTab,
   isDark,
@@ -40,6 +43,7 @@ export function MerchantHeader({
   onOpenCommandSearch
 }: MerchantHeaderProps) {
   const [copied, setCopied] = useState(false);
+  const isAdmin = profile?.role === 'admin' || profile?.email === 'maraju924@gmail.com';
 
   const handleCopyChatLink = () => {
     const url = `${window.location.origin}/chat/${business.id}`;
@@ -55,7 +59,7 @@ export function MerchantHeader({
   const isLowToken = tokenBalance < 5000;
 
   return (
-    <header className="bg-white/95 dark:bg-zinc-950/95 backdrop-blur-xl border-b border-zinc-200/80 dark:border-zinc-800/80 sticky top-0 z-40 transition-colors no-select">
+    <header className="bg-white/95 dark:bg-zinc-950/95 backdrop-blur-xl border-b border-zinc-200/80 dark:border-zinc-800/80 sticky top-0 z-40 transition-colors no-select pt-safe">
       <div className="flex items-center justify-between gap-2 sm:gap-4 px-3 sm:px-6 py-2.5 sm:py-3 max-w-7xl mx-auto">
         {/* Left: Mobile Android App Bar or Desktop Workspace Title */}
         <div className="flex items-center gap-2.5 sm:gap-3.5 min-w-0">
@@ -115,6 +119,20 @@ export function MerchantHeader({
 
         {/* Right: Quick Action Controls */}
         <div className="flex items-center gap-1.5 sm:gap-2.5 shrink-0">
+          {/* Admin Switch Button for Platform Owner */}
+          {isAdmin && (
+            <Link to="/admin">
+              <Button
+                size="sm"
+                className="gap-1.5 text-xs font-black bg-zinc-900 hover:bg-zinc-800 text-white dark:bg-zinc-800 dark:hover:bg-zinc-700 border border-zinc-700 dark:border-zinc-600 rounded-2xl shadow-xs px-3"
+              >
+                <ShieldCheck className="w-4 h-4 text-orange-500" />
+                <span className="hidden sm:inline">অ্যাডমিন প্যানেল</span>
+                <span className="sm:hidden">অ্যাডমিন</span>
+              </Button>
+            </Link>
+          )}
+
           {/* Token Indicator Pill with Native Android Tap feel */}
           <button
             onClick={() => onNavigateTab('billing')}

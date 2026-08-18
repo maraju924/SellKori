@@ -162,14 +162,20 @@ export default function App() {
         if (u) {
           const docRef = doc(db, 'users', u.uid);
           const docSnap = await getDoc(docRef);
+          const isAdminUser = u.email === 'maraju924@gmail.com';
           if (docSnap.exists()) {
-            setProfile(docSnap.data() as UserProfile);
+            const existing = docSnap.data() as UserProfile;
+            if (isAdminUser && existing.role !== 'admin') {
+              existing.role = 'admin';
+              await setDoc(docRef, { role: 'admin' }, { merge: true });
+            }
+            setProfile(existing);
           } else {
             const newProfile: UserProfile = {
               uid: u.uid,
               email: u.email || '',
               displayName: u.displayName || '',
-              role: u.email === 'maraju924@gmail.com' ? 'admin' : 'merchant',
+              role: isAdminUser ? 'admin' : 'merchant',
               createdAt: serverTimestamp()
             };
             await setDoc(docRef, newProfile);
@@ -241,7 +247,7 @@ export default function App() {
           <Route
             path="/admin/*"
             element={
-              user && profile?.role === 'admin' ? (
+              user && (profile?.role === 'admin' || user.email === 'maraju924@gmail.com') ? (
                 <AdminPanel profile={profile} />
               ) : (
                 <Navigate to="/dashboard" replace />

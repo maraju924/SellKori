@@ -18,6 +18,19 @@ export function AdminLogsTelemetry() {
   const [logs, setLogs] = useState<any[]>([]);
   const [filterType, setFilterType] = useState<string>('all');
 
+  const formatLogTimestamp = (ts: any): string => {
+    if (!ts) return 'Just now';
+    if (typeof ts === 'string') return ts;
+    if (typeof ts === 'number') return new Date(ts).toLocaleTimeString();
+    if (ts.toDate && typeof ts.toDate === 'function') {
+      return ts.toDate().toLocaleTimeString();
+    }
+    if (typeof ts.seconds === 'number') {
+      return new Date(ts.seconds * 1000).toLocaleTimeString();
+    }
+    return 'Just now';
+  };
+
   useEffect(() => {
     const q = query(collection(db, 'system_logs'), orderBy('timestamp', 'desc'), limit(50));
     return onSnapshot(q, (snap) => {
@@ -100,7 +113,7 @@ export function AdminLogsTelemetry() {
         <div className="space-y-2 pt-2">
           {sampleLogs.map((log) => (
             <div key={log.id} className="flex items-start gap-3 p-2 rounded-xl hover:bg-zinc-900/60 transition-colors">
-              <span className="text-zinc-500 text-[10px] shrink-0 mt-0.5">[{log.timestamp}]</span>
+              <span className="text-zinc-500 text-[10px] shrink-0 mt-0.5">[{formatLogTimestamp(log.timestamp)}]</span>
               <span className={`text-[10px] font-black uppercase px-2 py-0.5 rounded-md shrink-0 ${
                 log.type === 'gemini_api' ? 'bg-indigo-950 text-indigo-400 border border-indigo-800' :
                 log.type === 'capi_event' ? 'bg-orange-950 text-orange-400 border border-orange-800' :

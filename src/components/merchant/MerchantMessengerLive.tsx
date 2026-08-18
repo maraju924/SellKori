@@ -75,6 +75,19 @@ export function MerchantMessengerLive({ business }: MerchantMessengerLiveProps) 
     }
   };
 
+  const formatLogTimestamp = (ts: any): string => {
+    if (!ts) return 'Just now';
+    if (typeof ts === 'string') return ts;
+    if (typeof ts === 'number') return new Date(ts).toLocaleTimeString();
+    if (ts.toDate && typeof ts.toDate === 'function') {
+      return ts.toDate().toLocaleTimeString();
+    }
+    if (typeof ts.seconds === 'number') {
+      return new Date(ts.seconds * 1000).toLocaleTimeString();
+    }
+    return 'Just now';
+  };
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -206,7 +219,7 @@ export function MerchantMessengerLive({ business }: MerchantMessengerLiveProps) 
                   <div key={log.id} className="p-3 bg-zinc-50 dark:bg-zinc-800/40 rounded-2xl text-xs space-y-1">
                     <div className="flex justify-between font-bold text-[10px] text-zinc-400">
                       <span>Sender: {log.senderId || 'FB User'}</span>
-                      <span>{log.timestamp?.toDate ? log.timestamp.toDate().toLocaleTimeString() : 'Just now'}</span>
+                      <span>{formatLogTimestamp(log.timestamp)}</span>
                     </div>
                     <p className="font-medium text-zinc-800 dark:text-zinc-200">{log.message}</p>
                     {log.reply && (

@@ -6,6 +6,7 @@ import { db } from '../../lib/firebase';
 
 import { AdminHeader } from './AdminHeader';
 import { AdminSidebar } from './AdminSidebar';
+import { AdminMobileNav } from './AdminMobileNav';
 import { AdminOverview } from './AdminOverview';
 import { AdminMerchants } from './AdminMerchants';
 import { AdminSystemSettings } from './AdminSystemSettings';
@@ -28,8 +29,10 @@ export function AdminPanel({ profile }: AdminPanelProps) {
     });
   }, []);
 
+  const pendingMerchantsCount = merchants.filter(m => m.verificationStatus === 'pending' || m.status === 'suspended').length;
+
   return (
-    <div className="min-h-screen bg-zinc-950 font-sans text-zinc-100 flex flex-col">
+    <div className="min-h-screen bg-zinc-950 font-sans text-zinc-100 flex flex-col pb-24 md:pb-0 transition-colors">
       {/* Admin Top Header */}
       <AdminHeader
         profile={profile}
@@ -40,7 +43,7 @@ export function AdminPanel({ profile }: AdminPanelProps) {
       <div className="flex-1 flex max-w-7xl w-full mx-auto">
         {/* Left Admin Desktop Sidebar */}
         <div className="hidden md:block shrink-0">
-          <div className="sticky top-[60px] h-[calc(100vh-60px)]">
+          <div className="sticky top-[60px] h-[calc(100vh-60px)] overflow-y-auto no-scrollbar">
             <AdminSidebar activeTab={activeTab} setActiveTab={setActiveTab} />
           </div>
         </div>
@@ -61,22 +64,25 @@ export function AdminPanel({ profile }: AdminPanelProps) {
                 animate={{ x: 0 }}
                 exit={{ x: '-100%' }}
                 transition={{ type: 'spring', damping: 28, stiffness: 260 }}
-                className="fixed top-0 bottom-0 left-0 w-4/5 max-w-xs bg-zinc-950 z-50 md:hidden shadow-2xl border-r border-zinc-800"
+                className="fixed top-0 bottom-0 left-0 w-4/5 max-w-xs bg-zinc-950 z-50 md:hidden shadow-2xl border-r border-zinc-800 rounded-r-3xl overflow-hidden flex flex-col"
               >
-                <AdminSidebar
-                  activeTab={activeTab}
-                  setActiveTab={(tab) => {
-                    setActiveTab(tab);
-                    setIsMobileMenuOpen(false);
-                  }}
-                />
+                <div className="sheet-handle md:hidden" />
+                <div className="flex-1 overflow-y-auto">
+                  <AdminSidebar
+                    activeTab={activeTab}
+                    setActiveTab={(tab) => {
+                      setActiveTab(tab);
+                      setIsMobileMenuOpen(false);
+                    }}
+                  />
+                </div>
               </motion.div>
             </>
           )}
         </AnimatePresence>
 
         {/* Admin Content Screen */}
-        <main className="flex-1 p-3.5 sm:p-6 md:p-8 min-w-0 overflow-y-auto">
+        <main className="flex-1 p-3.5 sm:p-6 md:p-8 min-w-0">
           {activeTab === 'overview' && (
             <AdminOverview merchants={merchants} />
           )}
@@ -94,6 +100,13 @@ export function AdminPanel({ profile }: AdminPanelProps) {
           )}
         </main>
       </div>
+
+      {/* Admin Mobile Bottom App Bar */}
+      <AdminMobileNav
+        activeTab={activeTab}
+        setActiveTab={setActiveTab}
+        pendingMerchantsCount={pendingMerchantsCount}
+      />
     </div>
   );
 }

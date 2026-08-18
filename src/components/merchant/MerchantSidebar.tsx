@@ -20,12 +20,14 @@ import {
   ExternalLink,
   Sliders
 } from 'lucide-react';
-import { BusinessConfig } from '../../types';
+import { BusinessConfig, UserProfile } from '../../types';
+import { Link } from 'react-router-dom';
 
 interface MerchantSidebarProps {
   activeTab: string;
   setActiveTab: (tab: string) => void;
   business: BusinessConfig;
+  profile?: UserProfile | null;
   onClose?: () => void;
 }
 
@@ -33,9 +35,18 @@ export function MerchantSidebar({
   activeTab,
   setActiveTab,
   business,
+  profile,
   onClose
 }: MerchantSidebarProps) {
+  const isAdmin = profile?.role === 'admin' || profile?.email === 'maraju924@gmail.com';
+
   const menuGroups = [
+    ...(isAdmin ? [{
+      group: 'সুপার অ্যাডমিন পোর্টাল',
+      items: [
+        { id: 'admin-portal', label: 'প্ল্যাটফর্ম অ্যাডমিন কন্ট্রোল', icon: ShieldCheck, badge: 'Root', isExternalRoute: true, href: '/admin' }
+      ]
+    }] : []),
     {
       group: 'মূল ড্যাশবোর্ড',
       items: [
@@ -104,9 +115,33 @@ export function MerchantSidebar({
                 {grp.group}
               </h4>
               <div className="space-y-0.5">
-                {grp.items.map((item) => {
+                {grp.items.map((item: any) => {
                   const Icon = item.icon;
                   const isActive = activeTab === item.id;
+                  
+                  if (item.isExternalRoute && item.href) {
+                    return (
+                      <Link
+                        key={item.id}
+                        to={item.href}
+                        onClick={() => {
+                          if (onClose) onClose();
+                        }}
+                        className="w-full flex items-center justify-between px-3.5 py-2.5 rounded-2xl text-xs font-bold transition-all native-ripple text-left bg-zinc-900 dark:bg-zinc-800 text-orange-400 hover:bg-zinc-800 border border-zinc-700/80 shadow-xs mb-1.5"
+                      >
+                        <div className="flex items-center gap-3">
+                          <Icon className="w-4 h-4 text-orange-500 shrink-0" />
+                          <span className="truncate">{item.label}</span>
+                        </div>
+                        {item.badge && (
+                          <span className="text-[9px] font-black px-1.5 py-0.5 rounded-md bg-orange-600 text-white">
+                            {item.badge}
+                          </span>
+                        )}
+                      </Link>
+                    );
+                  }
+
                   return (
                     <button
                       key={item.id}
