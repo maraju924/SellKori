@@ -15,13 +15,11 @@ import {
   CreditCard, 
   Store,
   X,
-  Sparkles,
   Zap,
-  TrendingUp,
-  Layers
+  ChevronRight,
+  ExternalLink,
+  Sliders
 } from 'lucide-react';
-import { Button } from '../ui/button';
-import { Badge } from '../ui/badge';
 import { BusinessConfig } from '../../types';
 
 interface MerchantSidebarProps {
@@ -39,65 +37,73 @@ export function MerchantSidebar({
 }: MerchantSidebarProps) {
   const menuGroups = [
     {
-      group: 'মূল পর্যবেক্ষণ',
+      group: 'মূল ড্যাশবোর্ড',
       items: [
         { id: 'analytics', label: 'ওভারভিউ ও অ্যানালিটিক্স', icon: BarChart3, badge: 'Live' },
       ]
     },
     {
-      group: 'ব্যবসা ও বিক্রয়',
+      group: 'কমার্স ও ইনভেন্টরি',
       items: [
-        { id: 'orders', label: 'অর্ডার ও কুরিয়ার', icon: Package },
-        { id: 'products', label: 'পণ্য ও দরদামের সীমা', icon: Tag },
-        { id: 'customers', label: 'কাস্টমার CRM ও লিডস', icon: Users },
-        { id: 'info', label: 'স্টোর প্রোফাইল', icon: Store },
+        { id: 'orders', label: 'অর্ডার ও ডেলিভারি ট্র্যাকিং', icon: Package },
+        { id: 'products', label: 'পণ্য ক্যাটালগ ও মূল্য সীমা', icon: Tag },
+        { id: 'customers', label: 'গ্রাহক সিআরএম ও লিডস', icon: Users },
+        { id: 'info', label: 'স্টোর প্রোফাইল ও ব্র্যান্ডিং', icon: Store },
       ]
     },
     {
-      group: 'এআই ও অটোমেশন',
+      group: 'এআই ও অটোমেশন ইঞ্জিন',
       items: [
-        { id: 'ai-control', label: 'এআই ব্রেন ও দরদাম', icon: Bot, isHighlighted: true },
+        { id: 'ai-control', label: 'এআই সেলস ব্রেন ও দরদাম', icon: Bot, isHighlighted: true },
         { id: 'test-chat', label: 'লাইভ চ্যাট সিমুলেটর', icon: Terminal },
-        { id: 'messenger', label: 'মেসেঞ্জার কানেক্ট', icon: MessageCircle },
-        { id: 'broadcasting', label: 'অফার ব্রডকাস্টিং', icon: Megaphone },
-        { id: 'faqs', label: 'স্টোর পলিসি ও নলেজবেস', icon: HelpCircle },
-        { id: 'features', label: 'ফিচার কন্ট্রোল', icon: ShieldCheck },
+        { id: 'messenger', label: 'ফেসবুক মেসেঞ্জার ওয়েবহুক', icon: MessageCircle },
+        { id: 'broadcasting', label: 'টার্গেটেড ব্রডকাস্টিং', icon: Megaphone },
+        { id: 'faqs', label: 'পলিসি ও নলেজবেস', icon: HelpCircle },
+        { id: 'features', label: 'সিস্টেম ফিচার সুইচ', icon: ShieldCheck },
       ]
     },
     {
-      group: 'ইন্টিগ্রেশন ও বিলিং',
+      group: 'ইন্টিগ্রেশন ও ওয়ালেট',
       items: [
         { id: 'facebook', label: 'মেটা পিক্সেল ও CAPI', icon: Globe },
-        { id: 'integrations', label: 'কুরিয়ার ও এপিআই', icon: Truck },
-        { id: 'billing', label: 'টোকেন ও বিলিং', icon: CreditCard, badge: 'Recharge' },
+        { id: 'integrations', label: 'কুরিয়ার ও এপিআই গেটওয়ে', icon: Truck },
+        { id: 'billing', label: 'টোকেন ওয়ালেট ও বিলিং', icon: CreditCard, badge: 'Recharge' },
       ]
     }
   ];
 
   return (
-    <aside className="w-full md:w-72 bg-white dark:bg-zinc-950 border-r border-zinc-200/80 dark:border-zinc-800/80 h-full flex flex-col justify-between overflow-y-auto scrollbar-none transition-colors">
-      <div className="p-4 space-y-6">
-        {/* Mobile Header Close */}
-        <div className="flex md:hidden justify-between items-center pb-2 border-b border-zinc-100 dark:border-zinc-800">
-          <div className="flex items-center gap-2">
-            <div className="w-7 h-7 rounded-xl bg-orange-600 text-white flex items-center justify-center font-bold text-xs">
+    <aside className="w-full md:w-72 bg-white dark:bg-zinc-950 md:border-r border-zinc-200/80 dark:border-zinc-800/80 h-full flex flex-col justify-between overflow-y-auto scrollbar-none transition-colors no-select">
+      <div className="p-4 space-y-5">
+        {/* Android Native Drawer Top Profile Header */}
+        <div className="flex md:hidden justify-between items-center pb-3 border-b border-zinc-200 dark:border-zinc-800">
+          <div className="flex items-center gap-2.5">
+            <div className="w-10 h-10 rounded-2xl bg-orange-600 text-white flex items-center justify-center font-black text-sm shadow-md shadow-orange-600/30">
               SK
             </div>
-            <span className="font-black text-sm text-zinc-900 dark:text-white">মার্চেন্ট মেন্যু</span>
+            <div>
+              <h3 className="font-black text-sm text-zinc-900 dark:text-white leading-tight">
+                {business.name || 'মার্চেন্ট প্যানেল'}
+              </h3>
+              <p className="text-[10px] text-zinc-500 font-bold">SellKori Native App</p>
+            </div>
           </div>
-          <Button variant="ghost" size="icon" onClick={onClose} className="rounded-xl">
-            <X className="w-5 h-5 text-zinc-500" />
-          </Button>
+          <button
+            onClick={onClose}
+            className="w-8 h-8 rounded-full bg-zinc-100 dark:bg-zinc-900 flex items-center justify-center text-zinc-500 native-ripple"
+          >
+            <X className="w-4 h-4" />
+          </button>
         </div>
 
-        {/* Categorized Menu Groups */}
-        <div className="space-y-5">
+        {/* Categorized Enterprise Menu */}
+        <div className="space-y-4">
           {menuGroups.map((grp, gIdx) => (
-            <div key={gIdx} className="space-y-1.5">
-              <h3 className="text-[10px] font-black uppercase tracking-wider text-zinc-400 dark:text-zinc-500 px-3">
+            <div key={gIdx} className="space-y-1">
+              <h4 className="text-[10px] font-black uppercase tracking-wider text-zinc-400 dark:text-zinc-500 px-3 py-0.5">
                 {grp.group}
-              </h3>
-              <div className="space-y-1">
+              </h4>
+              <div className="space-y-0.5">
                 {grp.items.map((item) => {
                   const Icon = item.icon;
                   const isActive = activeTab === item.id;
@@ -108,14 +114,14 @@ export function MerchantSidebar({
                         setActiveTab(item.id);
                         if (onClose) onClose();
                       }}
-                      className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-2xl text-xs font-bold transition-all duration-200 text-left ${
+                      className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-2xl text-xs font-bold transition-all native-ripple text-left ${
                         isActive
-                          ? 'bg-linear-to-r from-orange-600 to-amber-500 text-white shadow-md shadow-orange-600/25 scale-101'
-                          : 'text-zinc-600 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-900/80 hover:text-zinc-900 dark:hover:text-white'
+                          ? 'bg-orange-600 text-white shadow-md shadow-orange-600/20 scale-[1.01]'
+                          : 'text-zinc-700 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-900/80 hover:text-zinc-950 dark:hover:text-white'
                       }`}
                     >
                       <div className="flex items-center gap-3">
-                        <Icon className={`w-4 h-4 shrink-0 ${isActive ? 'text-white' : item.isHighlighted ? 'text-orange-500' : 'text-zinc-400'}`} />
+                        <Icon className={`w-4 h-4 shrink-0 ${isActive ? 'text-white' : item.isHighlighted ? 'text-orange-500' : 'text-zinc-500'}`} />
                         <span className="truncate">{item.label}</span>
                       </div>
 
@@ -139,23 +145,22 @@ export function MerchantSidebar({
         </div>
       </div>
 
-      {/* Bottom Token Card in Sidebar */}
-      <div className="p-4 border-t border-zinc-200/80 dark:border-zinc-800/80 bg-zinc-50/50 dark:bg-zinc-900/30 m-3 rounded-2xl space-y-2.5">
+      {/* Floating Quota Card */}
+      <div className="p-3.5 border-t border-zinc-200/80 dark:border-zinc-800/80 bg-zinc-50/80 dark:bg-zinc-900/50 m-3 rounded-2xl space-y-2">
         <div className="flex items-center justify-between">
-          <span className="text-[11px] font-bold text-zinc-500 dark:text-zinc-400 flex items-center gap-1">
+          <span className="text-[11px] font-black text-zinc-600 dark:text-zinc-300 flex items-center gap-1.5">
             <Zap className="w-3.5 h-3.5 text-orange-500 fill-orange-500" />
-            এআই কোটা
+            এআই টোকেন কোটা
           </span>
           <span className="text-[10px] font-mono font-black text-orange-600 dark:text-orange-400">
-            {(business.tokenBalance || 0).toLocaleString()} টোকেন
+            {(business.tokenBalance || 0).toLocaleString()}
           </span>
         </div>
 
-        {/* Simple Progress Bar */}
         <div className="w-full h-1.5 bg-zinc-200 dark:bg-zinc-800 rounded-full overflow-hidden">
           <div
-            className="h-full bg-linear-to-r from-orange-500 to-amber-400 rounded-full"
-            style={{ width: `${Math.min(100, Math.max(10, ((business.tokenBalance || 0) / 100000) * 100))}%` }}
+            className="h-full bg-linear-to-r from-orange-500 to-amber-400 rounded-full transition-all"
+            style={{ width: `${Math.min(100, Math.max(8, ((business.tokenBalance || 0) / 100000) * 100))}%` }}
           />
         </div>
 
@@ -164,9 +169,9 @@ export function MerchantSidebar({
             setActiveTab('billing');
             if (onClose) onClose();
           }}
-          className="w-full text-center text-[10px] font-black text-orange-600 dark:text-orange-400 hover:underline pt-0.5 block"
+          className="w-full py-1 text-center text-[10px] font-black text-orange-600 dark:text-orange-400 hover:underline block"
         >
-          + ইনস্ট্যান্ট টোকেন রিচার্জ করুন
+          + টোকেন প্যাক রিচার্জ
         </button>
       </div>
     </aside>

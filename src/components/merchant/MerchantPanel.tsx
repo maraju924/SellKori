@@ -9,9 +9,21 @@ import {
   setDoc, 
   where, 
   orderBy, 
-  serverTimestamp,
-  updateDoc
+  serverTimestamp 
 } from 'firebase/firestore';
+import { 
+  Plus, 
+  Bot, 
+  Package, 
+  Tag, 
+  Search, 
+  X, 
+  Zap, 
+  Globe, 
+  TrendingUp, 
+  Sliders, 
+  Share2 
+} from 'lucide-react';
 import { db } from '../../lib/firebase';
 import { BusinessConfig, Order, UserProfile } from '../../types';
 
@@ -31,6 +43,7 @@ import { MerchantBroadcasting } from './MerchantBroadcasting';
 import { MerchantFAQs } from './MerchantFAQs';
 import { MerchantFeatures } from './MerchantFeatures';
 import { MerchantInfo } from './MerchantInfo';
+import { toast } from 'sonner';
 
 interface MerchantPanelProps {
   user: FirebaseUser | null;
@@ -42,6 +55,8 @@ export function MerchantPanel({ user, profile }: MerchantPanelProps) {
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('analytics');
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const [isCommandOpen, setIsCommandOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
   const [orders, setOrders] = useState<Order[]>([]);
   const [isDark, setIsDark] = useState(false);
 
@@ -54,9 +69,17 @@ export function MerchantPanel({ user, profile }: MerchantPanelProps) {
     }
   }, [isDark]);
 
-  const handleToggleTheme = () => {
-    setIsDark(prev => !prev);
-  };
+  // Global Command + K listener
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+        e.preventDefault();
+        setIsCommandOpen(prev => !prev);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
 
   // Load business config for current user
   useEffect(() => {
@@ -123,41 +146,53 @@ export function MerchantPanel({ user, profile }: MerchantPanelProps) {
     }, () => {});
   }, [business?.id]);
 
+  const searchableItems = [
+    { id: 'analytics', title: 'ওভারভিউ ও অ্যানালিটিক্স', desc: 'দৈনিক সেলস গ্রাফ ও মোট বিক্রয়', icon: TrendingUp },
+    { id: 'orders', title: 'অর্ডার তালিকা ও মেমো', desc: 'গ্রাহকের অর্ডার ও কুরিয়ার ট্র্যাকিং', icon: Package },
+    { id: 'products', title: 'পণ্য ক্যাটালগ ও মূল্য সীমা', desc: 'প্রোডাক্ট যোগ ও মিনিমাম প্রাইজ লক', icon: Tag },
+    { id: 'ai-control', title: 'এআই সেলস ব্রেন', desc: 'পারসোনা, ভাষা ও বার্গেইনিং সেন্সিটিভিটি', icon: Bot },
+    { id: 'test-chat', title: 'লাইভ চ্যাট সিমুলেটর', desc: 'এআই-এর সাথে কথা বলে টেস্ট করুন', icon: Zap },
+    { id: 'facebook', title: 'মেটা পিক্সেল ও CAPI', desc: 'কনভার্সন এপিআই ও ইভেন্ট সেটআপ', icon: Globe },
+    { id: 'billing', title: 'টোকেন ওয়ালেট ও রিচার্জ', desc: 'এআই ব্যালেন্স ও পেমেন্ট হিস্ট্রি', icon: Sliders },
+  ];
+
+  const filteredCommands = searchableItems.filter(item => 
+    item.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
+    item.desc.toLowerCase().includes(searchQuery.toLowerCase())
+  );
+
+  const pendingCount = orders.filter(o => o.status === 'pending').length;
+
   if (loading) {
     return (
-      <div className="min-h-[70vh] flex flex-col items-center justify-center space-y-4">
-        <div className="w-12 h-12 rounded-2xl bg-orange-600 animate-spin flex items-center justify-center text-white font-black text-sm">
+      <div className="min-h-[80vh] flex flex-col items-center justify-center space-y-4">
+        <div className="w-12 h-12 rounded-3xl bg-orange-600 animate-spin flex items-center justify-center text-white font-black text-sm shadow-xl shadow-orange-600/30">
           SK
         </div>
-        <p className="text-sm font-bold text-zinc-500">মার্চেন্ট প্যানেল লোড হচ্ছে...</p>
+        <p className="text-xs font-black tracking-widest text-zinc-500 uppercase">SellKori OS Initializing...</p>
       </div>
     );
   }
 
-  if (!business) {
-    return (
-      <div className="min-h-[70vh] flex items-center justify-center">
-        <p className="text-zinc-500 text-sm">কোনো স্টোর কনফিগারেশন পাওয়া যায়নি।</p>
-      </div>
-    );
-  }
+  if (!business) return null;
 
   return (
-    <div className="min-h-screen bg-zinc-50/70 dark:bg-zinc-950 font-sans text-zinc-900 dark:text-zinc-100 flex flex-col transition-colors pb-20 md:pb-0">
-      {/* Top Header */}
+    <div className="min-h-screen bg-zinc-100/60 dark:bg-zinc-950 font-sans text-zinc-900 dark:text-zinc-100 flex flex-col transition-colors pb-24 md:pb-0">
+      {/* Software Top App Bar */}
       <MerchantHeader
         business={business}
         onOpenMobileMenu={() => setIsMobileMenuOpen(true)}
         onNavigateTab={(tab) => setActiveTab(tab)}
         isDark={isDark}
-        onToggleTheme={handleToggleTheme}
+        onToggleTheme={() => setIsDark(!isDark)}
+        onOpenCommandSearch={() => setIsCommandOpen(true)}
       />
 
-      {/* Main Workspace Layout */}
+      {/* Main Workspace */}
       <div className="flex-1 flex max-w-7xl w-full mx-auto">
-        {/* Desktop Left Sidebar */}
+        {/* Desktop Left ERP Sidebar */}
         <div className="hidden md:block shrink-0">
-          <div className="sticky top-[65px] h-[calc(100vh-65px)]">
+          <div className="sticky top-[57px] h-[calc(100vh-57px)]">
             <MerchantSidebar
               activeTab={activeTab}
               setActiveTab={setActiveTab}
@@ -166,7 +201,7 @@ export function MerchantPanel({ user, profile }: MerchantPanelProps) {
           </div>
         </div>
 
-        {/* Mobile Sidebar Overlay Drawer */}
+        {/* Mobile Android M3 Navigation Drawer */}
         <AnimatePresence>
           {isMobileMenuOpen && (
             <>
@@ -181,8 +216,8 @@ export function MerchantPanel({ user, profile }: MerchantPanelProps) {
                 initial={{ x: '-100%' }}
                 animate={{ x: 0 }}
                 exit={{ x: '-100%' }}
-                transition={{ type: 'spring', damping: 25, stiffness: 220 }}
-                className="fixed top-0 bottom-0 left-0 w-4/5 max-w-xs bg-white dark:bg-zinc-950 z-50 md:hidden shadow-2xl"
+                transition={{ type: 'spring', damping: 28, stiffness: 260 }}
+                className="fixed top-0 bottom-0 left-0 w-4/5 max-w-xs bg-white dark:bg-zinc-950 z-50 md:hidden shadow-2xl rounded-r-3xl overflow-hidden"
               >
                 <MerchantSidebar
                   activeTab={activeTab}
@@ -195,8 +230,8 @@ export function MerchantPanel({ user, profile }: MerchantPanelProps) {
           )}
         </AnimatePresence>
 
-        {/* Center Content View Area */}
-        <main className="flex-1 p-4 md:p-8 min-w-0 overflow-y-auto">
+        {/* Center Content Workspace */}
+        <main className="flex-1 p-3.5 sm:p-6 md:p-8 min-w-0 overflow-y-auto">
           {activeTab === 'analytics' && (
             <MerchantOverview
               business={business}
@@ -259,12 +294,92 @@ export function MerchantPanel({ user, profile }: MerchantPanelProps) {
         </main>
       </div>
 
-      {/* Floating Bottom Nav for Mobile Phone Viewers */}
+      {/* Android Native Floating Action Button (FAB) on Mobile */}
+      <div className="md:hidden fixed bottom-20 right-4 z-40">
+        <button
+          onClick={() => {
+            if (activeTab === 'products') {
+              // Trigger product modal
+              const btn = document.getElementById('add-product-btn');
+              if (btn) btn.click();
+            } else {
+              setActiveTab('test-chat');
+            }
+          }}
+          className="w-14 h-14 rounded-2xl bg-orange-600 text-white flex items-center justify-center shadow-2xl shadow-orange-600/50 native-ripple active:scale-95 transition-transform"
+          aria-label="Action Button"
+        >
+          {activeTab === 'products' ? (
+            <Plus className="w-6 h-6 stroke-[2.5]" />
+          ) : (
+            <Bot className="w-6 h-6 stroke-[2.2]" />
+          )}
+        </button>
+      </div>
+
+      {/* Android M3 Bottom Navigation Bar */}
       <MerchantMobileNav
         activeTab={activeTab}
         setActiveTab={setActiveTab}
         onOpenFullMenu={() => setIsMobileMenuOpen(true)}
+        pendingOrdersCount={pendingCount}
       />
+
+      {/* Command + K Search Modal */}
+      <AnimatePresence>
+        {isCommandOpen && (
+          <div className="fixed inset-0 z-50 flex items-start justify-center pt-16 sm:pt-24 p-4 bg-black/60 backdrop-blur-xs">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: -10 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: -10 }}
+              className="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-3xl w-full max-w-lg shadow-2xl overflow-hidden"
+            >
+              <div className="p-3.5 border-b border-zinc-200 dark:border-zinc-800 flex items-center gap-2.5">
+                <Search className="w-4 h-4 text-zinc-400 shrink-0" />
+                <input
+                  autoFocus
+                  type="text"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder="সেলকরি সফটওয়্যার কমান্ড খুঁজুন..."
+                  className="flex-1 bg-transparent text-xs sm:text-sm font-medium outline-none text-zinc-900 dark:text-white"
+                />
+                <button
+                  onClick={() => setIsCommandOpen(false)}
+                  className="w-6 h-6 rounded-full bg-zinc-100 dark:bg-zinc-800 flex items-center justify-center text-zinc-500"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+
+              <div className="max-h-72 overflow-y-auto p-2 space-y-1">
+                {filteredCommands.map((cmd) => {
+                  const Icon = cmd.icon;
+                  return (
+                    <button
+                      key={cmd.id}
+                      onClick={() => {
+                        setActiveTab(cmd.id);
+                        setIsCommandOpen(false);
+                      }}
+                      className="w-full flex items-center gap-3 p-2.5 rounded-2xl hover:bg-orange-50 dark:hover:bg-orange-950/40 text-left transition-colors group"
+                    >
+                      <div className="w-8 h-8 rounded-xl bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-300 group-hover:bg-orange-600 group-hover:text-white flex items-center justify-center shrink-0 transition-colors">
+                        <Icon className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <p className="text-xs font-black text-zinc-900 dark:text-white">{cmd.title}</p>
+                        <p className="text-[10px] text-zinc-500">{cmd.desc}</p>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

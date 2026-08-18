@@ -1,53 +1,74 @@
 import React from 'react';
-import { BarChart3, Package, Bot, Terminal, Menu } from 'lucide-react';
+import { BarChart3, Package, Tag, Bot, LayoutGrid } from 'lucide-react';
 
 interface MerchantMobileNavProps {
   activeTab: string;
   setActiveTab: (tab: string) => void;
   onOpenFullMenu: () => void;
+  pendingOrdersCount?: number;
 }
 
 export function MerchantMobileNav({
   activeTab,
   setActiveTab,
-  onOpenFullMenu
+  onOpenFullMenu,
+  pendingOrdersCount = 0
 }: MerchantMobileNavProps) {
-  const quickTabs = [
+  const navItems = [
     { id: 'analytics', label: 'ওভারভিউ', icon: BarChart3 },
-    { id: 'orders', label: 'অর্ডার', icon: Package },
+    { id: 'orders', label: 'অর্ডার', icon: Package, badge: pendingOrdersCount > 0 ? pendingOrdersCount : undefined },
+    { id: 'products', label: 'পণ্য', icon: Tag },
     { id: 'ai-control', label: 'এআই ব্রেন', icon: Bot },
-    { id: 'test-chat', label: 'সিমুলেটর', icon: Terminal },
   ];
 
   return (
-    <div className="md:hidden fixed bottom-0 left-0 right-0 z-50 bg-white/95 dark:bg-zinc-950/95 backdrop-blur-lg border-t border-zinc-200/80 dark:border-zinc-800 px-3 py-2 flex items-center justify-around shadow-2xl safe-area-bottom">
-      {quickTabs.map((tab) => {
+    <nav className="md:hidden fixed bottom-0 left-0 right-0 z-50 bg-white/95 dark:bg-zinc-950/95 backdrop-blur-2xl border-t border-zinc-200/90 dark:border-zinc-800/90 px-2 py-1.5 flex items-center justify-around shadow-2xl pb-safe no-select">
+      {navItems.map((tab) => {
         const Icon = tab.icon;
         const isActive = activeTab === tab.id;
         return (
           <button
             key={tab.id}
             onClick={() => setActiveTab(tab.id)}
-            className={`flex flex-col items-center gap-1 py-1 px-3 rounded-2xl transition-all ${
-              isActive
-                ? 'text-orange-600 dark:text-orange-400 font-extrabold scale-105'
-                : 'text-zinc-500 dark:text-zinc-400 font-medium'
-            }`}
+            className="flex-1 flex flex-col items-center justify-center py-1 relative native-ripple"
           >
-            <Icon className={`w-5 h-5 ${isActive ? 'stroke-[2.5]' : 'stroke-2'}`} />
-            <span className="text-[10px] tracking-tight">{tab.label}</span>
+            <div
+              className={`px-4 py-1 rounded-full transition-all duration-200 flex items-center justify-center relative ${
+                isActive
+                  ? 'bg-orange-600 text-white shadow-md shadow-orange-600/30'
+                  : 'text-zinc-600 dark:text-zinc-400 hover:text-zinc-900'
+              }`}
+            >
+              <Icon className="w-5 h-5 stroke-[2.2]" />
+              {tab.badge !== undefined && (
+                <span className="absolute -top-1 -right-1 bg-rose-600 text-white text-[9px] font-black w-4 h-4 rounded-full flex items-center justify-center border-2 border-white dark:border-zinc-950">
+                  {tab.badge}
+                </span>
+              )}
+            </div>
+            <span
+              className={`text-[10px] font-bold mt-0.5 tracking-tight transition-colors ${
+                isActive ? 'text-orange-600 dark:text-orange-400' : 'text-zinc-500 dark:text-zinc-400'
+              }`}
+            >
+              {tab.label}
+            </span>
           </button>
         );
       })}
 
-      {/* Full Menu Bottom Trigger */}
+      {/* Android M3 Native Apps / More Sheet Button */}
       <button
         onClick={onOpenFullMenu}
-        className="flex flex-col items-center gap-1 py-1 px-3 rounded-2xl text-zinc-500 dark:text-zinc-400 font-medium hover:text-orange-600 transition-colors"
+        className="flex-1 flex flex-col items-center justify-center py-1 relative native-ripple"
       >
-        <Menu className="w-5 h-5 stroke-2" />
-        <span className="text-[10px] tracking-tight">সব মেন্যু</span>
+        <div className="px-4 py-1 rounded-full text-zinc-600 dark:text-zinc-400 flex items-center justify-center">
+          <LayoutGrid className="w-5 h-5 stroke-[2.2]" />
+        </div>
+        <span className="text-[10px] font-bold text-zinc-500 dark:text-zinc-400 mt-0.5 tracking-tight">
+          সব মেন্যু
+        </span>
       </button>
-    </div>
+    </nav>
   );
 }
