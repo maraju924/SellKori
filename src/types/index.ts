@@ -52,6 +52,11 @@ export interface BusinessConfig {
   botTone?: 'formal' | 'casual' | 'enthusiastic' | 'empathetic';
   aiTemplate?: string;
   customSystemPrompt: string;
+  useOwnApiKey?: boolean;
+  customGeminiApiKey?: string;
+  selectedAiModel?: string;
+  aiTemperature?: number;
+  aiMaxTokens?: number;
   messengerWebhookUrl?: string;
   messengerVerifyToken?: string;
   facebookAppId?: string;

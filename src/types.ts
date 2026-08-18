@@ -67,6 +67,11 @@ export interface BusinessConfig {
   aiPersona?: 'friendly' | 'professional' | 'humorous' | 'enthusiastic';
   aiLanguage?: 'bangla' | 'banglish' | 'english' | 'auto';
   bargainingSensitivity?: number; // 0 to 100
+  useOwnApiKey?: boolean;
+  customGeminiApiKey?: string;
+  selectedAiModel?: string;
+  aiTemperature?: number;
+  aiMaxTokens?: number;
   messengerVerifyToken?: string;
   pageAccessToken?: string;
   pageId?: string;

@@ -160,15 +160,14 @@
     -moz-osx-font-smoothing: grayscale;
     text-rendering: optimizeLegibility;
     min-height: 100%;
-    overflow-x: hidden;
+    overflow-y: auto;
+    scroll-behavior: smooth;
   }
   
   body {
     @apply bg-background text-foreground antialiased selection:bg-orange-500/20 selection:text-orange-600;
     min-height: 100%;
     min-height: 100dvh;
-    overflow-x: hidden;
-    touch-action: pan-y pinch-zoom;
     -webkit-text-size-adjust: 100%;
     font-feature-settings: "cv02", "cv03", "cv04", "cv11";
   }
@@ -288,35 +287,21 @@
   }
 }
 
-/* Custom Sleek Mobile & Desktop Scrollbars */
-@media (max-width: 768px) {
-  ::-webkit-scrollbar {
-    display: none;
-    width: 0px;
-    height: 0px;
-  }
-  * {
-    -ms-overflow-style: none;
-    scrollbar-width: none;
-  }
+/* Custom Sleek Scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
 }
-
-@media (min-width: 769px) {
-  ::-webkit-scrollbar {
-    width: 6px;
-    height: 6px;
-  }
-  ::-webkit-scrollbar-track {
-    background: transparent;
-  }
-  ::-webkit-scrollbar-thumb {
-    background: oklch(0.8 0 0 / 40%);
-    border-radius: 9999px;
-  }
-  .dark ::-webkit-scrollbar-thumb {
-    background: oklch(0.35 0 0 / 50%);
-  }
-  ::-webkit-scrollbar-thumb:hover {
-    background: oklch(0.6 0 0 / 60%);
-  }
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: oklch(0.7 0 0 / 30%);
+  border-radius: 9999px;
+}
+.dark ::-webkit-scrollbar-thumb {
+  background: oklch(0.4 0 0 / 40%);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: oklch(0.6 0 0 / 60%);
 }

@@ -118,6 +118,7 @@ try {
 }
 
 import { GoogleGenerativeAI, SchemaType } from '@google/generative-ai';
+import { GoogleGenAI, Type } from '@google/genai';
 
 // Initialize AI
 const genAI = process.env.GEMINI_API_KEY ? new GoogleGenerativeAI(process.env.GEMINI_API_KEY) : null;
@@ -350,6 +351,60 @@ app.get('/api/status', (req, res) => {
     serverVersion: '1.2.0',
     timestamp: new Date().toISOString()
   });
+});
+
+// Dynamic Gemini AI Diagnostic Test
+app.post('/api/ai/test', async (req, res) => {
+  const { apiKey, model } = req.body;
+  const effectiveKey = (apiKey && typeof apiKey === 'string' && apiKey.trim()) || process.env.GEMINI_API_KEY || '';
+  let selectedModel = model || 'gemini-3.7-flash';
+  // Map any outdated/retired model IDs to modern active models
+  if (selectedModel === 'gemini-2.5-flash' || selectedModel === 'gemini-1.5-flash' || selectedModel === 'gemini-1.5-pro') {
+    selectedModel = 'gemini-3.7-flash';
+  }
+
+  if (!effectiveKey) {
+    return res.status(400).json({
+      success: false,
+      error: 'কোনো Gemini API Key কনফিগার করা নেই। অনুগ্রহ করে অ্যাডমিন বা শপ সেটিংস এ একটি ভ্যালিড API Key প্রদান করুন।'
+    });
+  }
+
+  const startTime = Date.now();
+  try {
+    const ai = new GoogleGenAI({ apiKey: effectiveKey });
+    const response = await ai.models.generateContent({
+      model: selectedModel,
+      contents: "Hello! Reply with a single short sentence in Bengali: সেলকরি এআই ইঞ্জিন প্রস্তুত ও সক্রিয়।",
+    });
+
+    const latencyMs = Date.now() - startTime;
+    const responseText = response.text?.trim() || 'সেলকরি এআই ইঞ্জিন প্রস্তুত ও সক্রিয়।';
+
+    return res.json({
+      success: true,
+      latencyMs,
+      responseText,
+      model: selectedModel
+    });
+  } catch (err: any) {
+    const latencyMs = Date.now() - startTime;
+    console.error('Server AI Test Failed:', err?.message || err);
+    let errorMsg = err?.message || 'সংযোগ ব্যর্থ হয়েছে।';
+    if (errorMsg.includes('API_KEY_INVALID') || errorMsg.includes('API key not valid') || errorMsg.includes('PERMISSION_DENIED') || errorMsg.includes('permission')) {
+      errorMsg = 'API Key টি সঠিক নয় বা গুগল পারমিশন পাওয়া যায়নি। অনুগ্রহ করে Google AI Studio থেকে একটি ভ্যালিড Gemini API Key প্রদান করুন।';
+    } else if (errorMsg.includes('RESOURCE_EXHAUSTED') || errorMsg.includes('quota')) {
+      errorMsg = 'এই API Key এর নির্ধারিত কোটা শেষ হয়েছে (Rate Limit / Quota Exceeded)।';
+    } else if (errorMsg.includes('NOT_FOUND') || errorMsg.includes('not found')) {
+      errorMsg = `মডেল "${selectedModel}" পাওয়া যায়নি বা এই API Key দিয়ে অ্যাক্সেসযোগ্য নয়।`;
+    }
+
+    return res.status(400).json({
+      success: false,
+      latencyMs,
+      error: errorMsg
+    });
+  }
 });
 
 // Consolidated Webhook Verification (GET)
@@ -615,7 +670,8 @@ ${chatHistoryText}
               
               try {
                 console.log(`[Webhook] Calling Gemini AI for biz: ${bizId}`);
-                const model = genAI!.getGenerativeModel({ model: "gemini-1.5-flash" });
+                const aiModelName = businessData.selectedAiModel || "gemini-3.7-flash";
+                const model = genAI!.getGenerativeModel({ model: aiModelName === 'gemini-1.5-flash' || aiModelName === 'gemini-2.5-flash' ? 'gemini-3.7-flash' : aiModelName });
                 const result = await model.generateContent(prompt);
                 const responseText = result.response.text();
                 

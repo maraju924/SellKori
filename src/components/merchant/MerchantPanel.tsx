@@ -240,7 +240,7 @@ export function MerchantPanel({ user, profile }: MerchantPanelProps) {
         </AnimatePresence>
 
         {/* Center Content Workspace */}
-        <main className="flex-1 p-3.5 sm:p-6 md:p-8 min-w-0 overflow-y-auto momentum-scroll">
+        <main className="flex-1 p-3.5 sm:p-6 md:p-8 min-w-0">
           {activeTab === 'analytics' && (
             <MerchantOverview
               business={business}
