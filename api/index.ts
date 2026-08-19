@@ -391,6 +391,16 @@ async function sendTypingOn(pageAccessToken: string, senderId: string) {
   } catch (_) {}
 }
 
+// Keep the typing bubble visible a bit longer for very fast AI replies so
+// responses feel hand-typed rather than instant.
+async function humanTypingPause(pageAccessToken: string, senderId: string, replyText: string, alreadyElapsedMs: number) {
+  const targetMs = Math.min(4000, 1200 + String(replyText || '').length * 15);
+  const remaining = targetMs - Math.max(0, alreadyElapsedMs);
+  if (remaining < 250) return;
+  await sendTypingOn(pageAccessToken, senderId);
+  await new Promise((resolve) => setTimeout(resolve, remaining));
+}
+
 async function sendPlainText(pageAccessToken: string, senderId: string, text: string) {
   const cleanToken = String(pageAccessToken).trim();
   const body = {
@@ -593,13 +603,27 @@ async function subscribePageToMessenger(pageAccessToken: string) {
     subscriptions = subRes.data;
   } catch (_) {}
 
+  // A page manually subscribed from the App Dashboard shows up here even when
+  // POST /subscribed_apps is blocked (no pages_manage_metadata permission).
+  if (!subscribed && Array.isArray(subscriptions?.data) && subscriptions.data.length > 0) {
+    subscribed = true;
+    subscribeError = '';
+  }
+
+  // Missing pages_manage_metadata is not a token problem: the bot can still
+  // receive (after a one-time manual subscription) and send messages.
+  const needsManualSubscribe = !subscribed && /pages_manage_metadata|\(#200\)|\(#10\)|permission/i.test(subscribeError);
+
   return {
     page: pageRes.data,
     subscribed,
     subscribeError: subscribed ? '' : subscribeError,
-    subscriptions
+    subscriptions,
+    needsManualSubscribe
   };
 }
+
+const MANUAL_SUBSCRIBE_HINT = 'টোকেন বৈধ! তবে টোকেনে pages_manage_metadata পারমিশন না থাকায় অটো-সাবস্ক্রাইব করা যায়নি। একবার ম্যানুয়ালি করে দিন: developers.facebook.com → আপনার অ্যাপ → Messenger → Messenger API Settings → Webhooks অংশে আপনার পেজের পাশে "Add subscriptions" চেপে messages ও messaging_postbacks টিক দিন। আগে থেকেই করা থাকলে কিছু করার দরকার নেই — বট এমনিতেই সম্পূর্ণ কাজ করবে (মেসেজ পাঠাতে এই পারমিশন লাগে না)।';
 
 async function resolveBusinessForWebhook(cleanPageId: string, pathBizId?: string): Promise<{ businessData: any | null; bizId: string | null }> {
   let businessData: any = null;
@@ -2129,7 +2153,7 @@ async function handleMessengerWebhookPost(req: any, res: any) {
               ? recentOrders.map((o: any) => `- ${o.id}: ${o.productName} x${o.quantity}, স্ট্যাটাস ${o.status}, ফোন ${o.phone}, ${o.createdAtMs ? Math.round((Date.now() - o.createdAtMs) / 60000) + ' মিনিট আগে' : ''}`).join('\n')
               : 'কোনো সাম্প্রতিক অর্ডার নেই';
 
-            const prompt = `তুমি "${businessData.name}" এর একজন স্মার্ট, সংক্ষিপ্ত ও টু-দ্য-পয়েন্ট এআই সেলস অ্যাসিস্ট্যান্ট। JSON স্কিমা অনুযায়ী উত্তর দাও।
+            const prompt = `তুমি "${businessData.name}" পেজের ইনবক্সে রিপ্লাই দেওয়া একজন বাস্তব মানুষ বিক্রয়কর্মী — স্মার্ট, সংক্ষিপ্ত ও টু-দ্য-পয়েন্ট। JSON স্কিমা অনুযায়ী উত্তর দাও (JSON শুধু সিস্টেমের জন্য; reply ফিল্ডের লেখাটা হবে সম্পূর্ণ মানুষের মতো)।
 
 # কঠোর নির্দেশাবলী:
 ১. সংক্ষিপ্ত ও নির্দিষ্ট উত্তর (১-৩ বাক্য)। অপ্রয়োজনীয় ভূমিকা বা জোর করে পণ্য তালিকা দেবে না।
@@ -2157,6 +2181,13 @@ ${generalFaqs || 'নেই'}
 ${productFaqs || 'নেই'}
 
 কাস্টম নির্দেশিকা: ${businessData.customSystemPrompt || businessData.botPersona || ''}
+
+# পরিচয় (সবচেয়ে গুরুত্বপূর্ণ — কোনো অবস্থাতেই ভাঙবে না):
+- তুমি এই দোকানের সেলস টিমের একজন বাস্তব মানুষ। কখনোই বলবে না বা কোনোভাবে বুঝতে দেবে না যে তুমি এআই, বট, রোবট, ভার্চুয়াল অ্যাসিস্ট্যান্ট, অটোমেটেড সিস্টেম বা কম্পিউটার প্রোগ্রাম।
+- কেউ সরাসরি জিজ্ঞেস করলে ("আপনি কি রোবট/বট/এআই?") স্বাভাবিকভাবে হালকা করে এড়িয়ে কাজের কথায় ফিরবে। যেমন: "হাহা, আমি পেজ থেকেই রিপ্লাই দিচ্ছি। বলেন, কোনটা নিতে চাচ্ছিলেন?"
+- মানুষ যেভাবে মেসেঞ্জারে টাইপ করে সেভাবে লিখবে: ছোট ছোট সহজ বাক্য, কথ্য বাংলা। রোবটের মতো আনুষ্ঠানিক ভাষা, বুলেট লিস্ট, তারকা চিহ্ন (*), হেডিং, ইমোজির বন্যা বা টেমপ্লেট-টাইপ উত্তর দেবে না।
+- প্রতিবার একই বাক্য বা একই ঢঙে শুরু করবে না। আগের মেসেজের সাথে স্বাভাবিক ধারাবাহিকতা রাখবে, যেন একজন মানুষই টানা কথা বলছে।
+- ভুল করে টাইপো-জাতীয় অতিনিখুঁত দীর্ঘ রচনা লিখবে না; দরকারের কথা অল্প কথায় বলবে।
 
 ${buildFeaturePromptBlock(storeFeatures)}
 
@@ -2367,6 +2398,7 @@ ${chatHistoryText || 'নতুন আলাপ'}
                 
                 if (isFeatureEnabled(storeFeatures, 'messengerRepliesEnabled')) {
                 console.log(`[Webhook] Sending response to Facebook sender: ${senderId}`);
+                await humanTypingPause(pageAccessToken, senderId, reply, Date.now() - startTime);
                 const cleanToken = String(pageAccessToken).trim();
                 const fbUrl = `https://graph.facebook.com/v21.0/me/messages?access_token=${encodeURIComponent(cleanToken)}`;
                 
@@ -2527,7 +2559,9 @@ app.post('/api/messenger/test-token', async (req, res) => {
       subscribed: result.subscribed,
       subscribeError: result.subscribeError || undefined,
       subscriptions: result.subscriptions,
-      subscribeFields: PAGE_SUBSCRIBE_FIELDS
+      subscribeFields: PAGE_SUBSCRIBE_FIELDS,
+      needsManualSubscribe: result.needsManualSubscribe || undefined,
+      manualSubscribeHint: result.needsManualSubscribe ? MANUAL_SUBSCRIBE_HINT : undefined
     });
   } catch (err: any) {
     const errorData = err.response?.data?.error;
@@ -2552,7 +2586,9 @@ app.post('/api/messenger/subscribe-page', async (req, res) => {
       subscribed: result.subscribed,
       subscribeError: result.subscribeError || undefined,
       subscriptions: result.subscriptions,
-      subscribeFields: PAGE_SUBSCRIBE_FIELDS
+      subscribeFields: PAGE_SUBSCRIBE_FIELDS,
+      needsManualSubscribe: result.needsManualSubscribe || undefined,
+      manualSubscribeHint: result.needsManualSubscribe ? MANUAL_SUBSCRIBE_HINT : undefined
     });
   } catch (err: any) {
     const errorData = err.response?.data?.error;
@@ -2610,7 +2646,7 @@ app.post('/api/messenger/simulate-message', async (req, res) => {
       }
     } catch (e) {}
 
-    const prompt = `তুমি "${businessData.name || 'আমাদের স্টোর'}" এর এআই সেলসম্যান।
+    const prompt = `তুমি "${businessData.name || 'আমাদের স্টোর'}" এর একজন বাস্তব মানুষ বিক্রয়কর্মী। কখনো বুঝতে দেবে না যে তুমি এআই বা বট; কেউ জিজ্ঞেস করলে স্বাভাবিকভাবে এড়িয়ে কাজের কথায় ফিরবে। মানুষের মতো সহজ কথ্য বাংলায় লিখবে।
 
 # কঠোর নিয়মাবলী:
 ১. **সংক্ষিপ্ত ও নির্দিষ্ট উত্তর:** কাস্টমার যা জানতে চেয়েছে ঠিক ততটুকুরই সুনির্দিষ্ট, প্রাসঙ্গিক ও টু-দ্য-পয়েন্ট উত্তর দাও (১-৩ বাক্যের মধ্যে)।

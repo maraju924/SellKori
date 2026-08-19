@@ -148,7 +148,9 @@ export function MerchantMessengerLive({ business }: MerchantMessengerLiveProps) 
           });
           const subData = await parseJsonResponse(subRes);
           if (subRes.ok && subData.page?.id && !pageId) setPageId(subData.page.id);
-          if (subRes.ok && subData.subscribed) {
+          if (subRes.ok && subData.needsManualSubscribe && subData.manualSubscribeHint) {
+            toast.info(subData.manualSubscribeHint, { duration: 12000 });
+          } else if (subRes.ok && subData.subscribed) {
             toast.success('সেটিংস সেভ হয়েছে এবং পেজ ওয়েবহুকে সাবস্ক্রাইব করা হয়েছে!');
           } else {
             toast.success('সেটিংস সেভ হয়েছে। পেজ সাবস্ক্রাইব করতে টোকেন টেস্ট করুন।');
@@ -244,6 +246,19 @@ export function MerchantMessengerLive({ business }: MerchantMessengerLiveProps) 
       const data = await parseJsonResponse(res);
       if (res.ok && data.success) {
         const subscribed = data.subscribed !== false;
+        if (!subscribed && data.needsManualSubscribe && data.manualSubscribeHint) {
+          setTokenStatus({
+            success: true,
+            subscribed: false,
+            message: data.manualSubscribeHint,
+            page: data.page
+          });
+          if (data.page?.id && data.page.id !== pageId) {
+            setPageId(data.page.id);
+          }
+          toast.success('টোকেন বৈধ! শুধু একবার ম্যানুয়াল সাবস্ক্রিপশন লাগবে (নির্দেশনা দেখুন)');
+          return;
+        }
         setTokenStatus({
           success: true,
           subscribed,
