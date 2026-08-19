@@ -9,7 +9,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "clean": "rm -rf dist",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "test": "tsx src/lib/featureFlags.test.ts && tsx src/lib/outreach.test.ts && tsx src/lib/productCatalog.test.ts && tsx src/lib/messengerWebhook.test.ts && tsx api/metaWebhookEntry.test.ts"
   },
   "dependencies": {
     "@base-ui/react": "^1.4.0",

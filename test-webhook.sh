@@ -5,8 +5,11 @@ BUSINESS_ID="biz-1713098212345" # Example ID, user should use theirs
 VERIFY_TOKEN="my_secret_token" # The token set in the dashboard
 
 echo "Testing Webhook Verification (GET)..."
-curl -X GET "http://localhost:3000/api/webhook/$BUSINESS_ID?hub.mode=subscribe&hub.verify_token=$VERIFY_TOKEN&hub.challenge=CHALLENGE_ACCEPTED"
+curl -sS -X GET "http://localhost:3000/api/webhook/$BUSINESS_ID?hub.mode=subscribe&hub.verify_token=$VERIFY_TOKEN&hub.challenge=CHALLENGE_ACCEPTED"
 echo -e "\n"
+
+echo "Testing Webhook Verification on global URL (GET)..."
+curl -sS -X GET "http://localhost:3000/api/webhook?hub.mode=subscribe&hub.verify_token=$VERIFY_TOKEN&hub.challenge=CHALLENGE_ACCEPTED"
 
 echo "Testing Webhook Message Handling (POST)..."
 curl -X POST "http://localhost:3000/api/webhook/$BUSINESS_ID" \

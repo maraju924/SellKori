@@ -46,8 +46,11 @@ export function MerchantMessengerLive({ business }: MerchantMessengerLiveProps) 
   const [copiedWebhook, setCopiedWebhook] = useState(false);
   const [copiedSpecificWebhook, setCopiedSpecificWebhook] = useState(false);
   
-  const [pageAccessToken, setPageAccessToken] = useState(business.pageAccessToken || business.facebookConfig?.accessToken || '');
+  const [pageAccessToken, setPageAccessToken] = useState(business.pageAccessToken || '');
   const [pageId, setPageId] = useState(business.pageId || business.facebookPageId || '');
+  const [verifyToken, setVerifyToken] = useState(
+    business.messengerVerifyToken || business.verifyToken || `sk_${business.id}` || 'sellkori_verify_token'
+  );
   const [isSaving, setIsSaving] = useState(false);
   const [liveLogs, setLiveLogs] = useState<any[]>([]);
   
@@ -57,7 +60,13 @@ export function MerchantMessengerLive({ business }: MerchantMessengerLiveProps) 
 
   // Meta Token validation diagnostic
   const [isTestingToken, setIsTestingToken] = useState(false);
-  const [tokenStatus, setTokenStatus] = useState<{ success: boolean; message: string; page?: any } | null>(null);
+  const [tokenStatus, setTokenStatus] = useState<{ success: boolean; message: string; page?: any; subscribed?: boolean } | null>(null);
+
+  useEffect(() => {
+    setPageAccessToken(business.pageAccessToken || '');
+    setPageId(business.pageId || business.facebookPageId || '');
+    setVerifyToken(business.messengerVerifyToken || business.verifyToken || `sk_${business.id}` || 'sellkori_verify_token');
+  }, [business.id, business.pageAccessToken, business.pageId, business.facebookPageId, business.messengerVerifyToken, business.verifyToken]);
 
   // AI Simulator
   const [simulatedMessage, setSimulatedMessage] = useState('আপনাদের কাছে কি টি-শার্ট আছে? দাম কত?');
@@ -71,9 +80,9 @@ export function MerchantMessengerLive({ business }: MerchantMessengerLiveProps) 
   } | null>(null);
 
   // Canonical Webhook URLs
-  const standardWebhookUrl = `${window.location.origin}/api/webhook`;
-  const specificWebhookUrl = `${window.location.origin}/api/webhook/${business.id}`;
-  const verifyToken = business.messengerVerifyToken || business.verifyToken || 'sellkori_verify_token';
+  const origin = typeof window !== 'undefined' ? window.location.origin : '';
+  const standardWebhookUrl = `${origin}/api/webhook`;
+  const specificWebhookUrl = `${origin}/api/webhook/${business.id}`;
 
   // Live stream for Messenger logs
   useEffect(() => {
@@ -109,20 +118,46 @@ export function MerchantMessengerLive({ business }: MerchantMessengerLiveProps) 
     toast.success('ক্লিপবোর্ডে কপি হয়েছে!');
   };
 
+  const persistMessengerConfig = async () => {
+    const payload = cleanFirestoreData({
+      pageAccessToken: pageAccessToken.trim(),
+      accessToken: pageAccessToken.trim(),
+      pageId: pageId.trim(),
+      facebookPageId: pageId.trim(),
+      messengerVerifyToken: verifyToken.trim(),
+      verifyToken: verifyToken.trim()
+    });
+    await updateDoc(doc(db, 'businesses', business.id), payload);
+  };
+
   const handleSaveMessengerConfig = async () => {
+    if (!verifyToken.trim()) {
+      toast.error('Verify Token খালি রাখা যাবে না');
+      return;
+    }
     setIsSaving(true);
     try {
-      const payload = cleanFirestoreData({
-        pageAccessToken: pageAccessToken.trim(),
-        accessToken: pageAccessToken.trim(),
-        pageId: pageId.trim(),
-        facebookPageId: pageId.trim(),
-        messengerVerifyToken: verifyToken,
-        verifyToken: verifyToken
-      });
-
-      await updateDoc(doc(db, 'businesses', business.id), payload);
-      toast.success('ফেসবুক মেসেঞ্জার ক্রেডেনশিয়ালস সফলভাবে সংরক্ষিত হয়েছে!');
+      await persistMessengerConfig();
+      if (pageAccessToken.trim()) {
+        try {
+          const subRes = await fetch('/api/messenger/subscribe-page', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ pageAccessToken: pageAccessToken.trim() })
+          });
+          const subData = await subRes.json();
+          if (subRes.ok && subData.page?.id && !pageId) setPageId(subData.page.id);
+          if (subRes.ok && subData.subscribed) {
+            toast.success('সেটিংস সেভ হয়েছে এবং পেজ ওয়েবহুকে সাবস্ক্রাইব করা হয়েছে!');
+          } else {
+            toast.success('সেটিংস সেভ হয়েছে। পেজ সাবস্ক্রাইব করতে টোকেন টেস্ট করুন।');
+          }
+        } catch {
+          toast.success('সেটিংস সেভ হয়েছে!');
+        }
+      } else {
+        toast.success('ফেসবুক মেসেঞ্জার ক্রেডেনশিয়ালস সফলভাবে সংরক্ষিত হয়েছে!');
+      }
     } catch (e: any) {
       console.error('Messenger config save failed:', e);
       toast.error('সংরক্ষণ ব্যর্থ হয়েছে: ' + (e.message || 'Error'));
@@ -131,32 +166,53 @@ export function MerchantMessengerLive({ business }: MerchantMessengerLiveProps) 
     }
   };
 
+  const probeHandshake = async (callbackUrl: string) => {
+    const challengeTest = `sk_challenge_${Date.now()}`;
+    const testUrl = `${callbackUrl}?hub.mode=subscribe&hub.challenge=${encodeURIComponent(challengeTest)}&hub.verify_token=${encodeURIComponent(verifyToken.trim())}`;
+    const res = await fetch(testUrl, { cache: 'no-store' });
+    const text = await res.text();
+    const body = text.replace(/^\uFEFF/, '').trim();
+    return {
+      ok: res.status === 200 && body === challengeTest,
+      status: res.status,
+      body: body.slice(0, 180),
+      url: callbackUrl
+    };
+  };
+
   // Self-diagnostic test for Webhook Handshake
   const handleTestWebhookHandshake = async () => {
     setIsTestingWebhook(true);
     setWebhookStatus(null);
     try {
-      const challengeTest = `test_challenge_${Date.now()}`;
-      const testUrl = `${standardWebhookUrl}?hub.mode=subscribe&hub.challenge=${challengeTest}&hub.verify_token=${encodeURIComponent(verifyToken)}`;
-      
-      const res = await fetch(testUrl);
-      const text = await res.text();
-
-      if (res.status === 200 && text === challengeTest) {
+      const specific = await probeHandshake(specificWebhookUrl);
+      if (specific.ok) {
         setWebhookStatus({
           success: true,
           code: 200,
-          message: 'সার্ভার ও মেটা হ্যান্ডশেক ১০০% সফল (HTTP 200 OK)! ফেসবুক ডেভেলপারে সাবস্ক্রিপশন সম্পন্ন করতে পারবেন।'
+          message: 'স্টোর-নির্দিষ্ট Callback URL মেটার মতোই challenge ফেরত দিচ্ছে (HTTP 200)। Verify and Save এখন কাজ করবে।'
+        });
+        toast.success('ওয়েবহুক হ্যান্ডশেক সফল!');
+        return;
+      }
+
+      const globalProbe = await probeHandshake(standardWebhookUrl);
+      if (globalProbe.ok) {
+        setWebhookStatus({
+          success: true,
+          code: 200,
+          message: 'গ্লোবাল Callback URL হ্যান্ডশেক সফল। Meta-তে এই URL অথবা স্টোর-নির্দিষ্ট URL দিতে পারেন।'
         });
         toast.success('ওয়েবহুক সক্রিয় ও প্রস্তুত!');
-      } else {
-        setWebhookStatus({
-          success: false,
-          code: res.status,
-          message: `সার্ভার রেসপন্স কোড: ${res.status}. রেসপন্স: ${text}`
-        });
-        toast.error('ওয়েবহুক যাচাই ব্যর্থ হয়েছে');
+        return;
       }
+
+      setWebhookStatus({
+        success: false,
+        code: specific.status || globalProbe.status,
+        message: `হ্যান্ডশেক ব্যর্থ (HTTP ${specific.status}). সার্ভার বলেছে: ${specific.body || 'খালি রেসপন্স'}। Callback URL ও Verify Token হুবহু কপি করে Verify and Save চাপুন।`
+      });
+      toast.error('ওয়েবহুক যাচাই ব্যর্থ হয়েছে');
     } catch (err: any) {
       setWebhookStatus({
         success: false,
@@ -186,17 +242,20 @@ export function MerchantMessengerLive({ business }: MerchantMessengerLiveProps) 
 
       const data = await res.json();
       if (res.ok && data.success) {
+        const subscribed = data.subscribed !== false;
         setTokenStatus({
           success: true,
-          message: `টোকেন বৈধ ও সক্রিয়! ফেসবুক পেইজ: "${data.page?.name}" (ID: ${data.page?.id})`,
+          subscribed,
+          message: subscribed
+            ? `টোকেন বৈধ এবং পেজ ওয়েবহুকে সাবস্ক্রাইব হয়েছে! পেইজ: "${data.page?.name}" (ID: ${data.page?.id})`
+            : `টোকেন বৈধ, কিন্তু পেজ সাবস্ক্রাইব হয়নি: ${data.subscribeError || 'Messenger permission চেক করুন'}। পেইজ: "${data.page?.name}"`,
           page: data.page
         });
-        // Auto-fill Page ID if empty
-        if (!pageId && data.page?.id) {
+        if (data.page?.id && data.page.id !== pageId) {
           setPageId(data.page.id);
           toast.info(`Page ID স্বয়ংক্রিয়ভাবে (${data.page.id}) পূরণ করা হয়েছে!`);
         }
-        toast.success('ফেসবুক টোকেন সফলভাবে যাচাই হয়েছে!');
+        toast.success(subscribed ? 'টোকেন যাচাই ও পেজ সাবস্ক্রাইব সফল!' : 'টোকেন বৈধ, সাবস্ক্রাইব আবার চেষ্টা করুন');
       } else {
         setTokenStatus({
           success: false,
@@ -273,6 +332,11 @@ export function MerchantMessengerLive({ business }: MerchantMessengerLiveProps) 
   };
 
   const isConfigComplete = !!(pageAccessToken && (pageId || business.pageId || business.facebookPageId));
+  const webhookReady = webhookStatus?.success === true;
+  const tokenReady = tokenStatus?.success === true;
+  const lastIncoming = liveLogs.find((log) => log.status === 'received' || log.status === 'replied');
+  const lastReply = liveLogs.find((log) => log.status === 'replied');
+  const lastError = liveLogs.find((log) => log.status === 'error');
 
   return (
     <div className="space-y-6">
@@ -283,14 +347,25 @@ export function MerchantMessengerLive({ business }: MerchantMessengerLiveProps) 
             <h2 className="text-xl md:text-2xl font-black text-zinc-900 dark:text-white tracking-tight">
               ফেসবুক মেসেঞ্জার অটোমেশন ও এআই সেলসম্যান
             </h2>
-            <Badge className="bg-emerald-50 dark:bg-emerald-950/80 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 font-bold text-xs">
-              <span className="w-2 h-2 rounded-full bg-emerald-500 mr-1.5 animate-pulse" />
-              Meta Graph API Active
-            </Badge>
-            {isConfigComplete ? (
+            {tokenReady ? (
+              <Badge className="bg-emerald-50 dark:bg-emerald-950/80 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 font-bold text-xs">
+                <span className="w-2 h-2 rounded-full bg-emerald-500 mr-1.5 animate-pulse" />
+                Meta Graph API সংযুক্ত
+              </Badge>
+            ) : (
+              <Badge className="bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-300 border border-zinc-200 dark:border-zinc-700 font-bold text-xs">
+                Meta Graph API অপেক্ষমাণ
+              </Badge>
+            )}
+            {webhookReady ? (
               <Badge className="bg-blue-50 dark:bg-blue-950/80 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800 font-bold text-xs">
                 <CheckCheck className="w-3.5 h-3.5 mr-1" />
-                কনফিগারেশন প্রস্তুত
+                ওয়েবহুক ভেরিফাইড
+              </Badge>
+            ) : isConfigComplete ? (
+              <Badge className="bg-amber-50 dark:bg-amber-950/80 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-800 font-bold text-xs">
+                <AlertCircle className="w-3.5 h-3.5 mr-1" />
+                টোকেন আছে — ওয়েবহুক টেস্ট করুন
               </Badge>
             ) : (
               <Badge className="bg-amber-50 dark:bg-amber-950/80 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-800 font-bold text-xs">
@@ -300,7 +375,7 @@ export function MerchantMessengerLive({ business }: MerchantMessengerLiveProps) 
             )}
           </div>
           <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1.5 leading-relaxed">
-            আপনার ফেসবুক পেইজে আসা কাস্টমারের মেসেজের স্বয়ংক্রিয় এআই উত্তর প্রদান, প্রোডাক্ট দেখানো এবং অর্ডার নেওয়ার স্মার্ট ইঞ্জিন।
+            পেইজে আসা মেসেজের স্বয়ংক্রিয় এআই উত্তর, প্রোডাক্ট কার্ড এবং অর্ডার গ্রহণ। মেটা Configure Webhooks-এ নিচের Callback URL ও Verify Token হুবহু পেস্ট করুন — ভেরিফাই ব্যর্থ হলে মেসেজ আসবেও না, যাবেও না।
           </p>
         </div>
 
@@ -338,12 +413,22 @@ export function MerchantMessengerLive({ business }: MerchantMessengerLiveProps) 
       {/* 4-Step Health Status Bar */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
         <div className="p-4 bg-white dark:bg-zinc-900 border border-zinc-200/70 dark:border-zinc-800 rounded-2xl flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 flex items-center justify-center shrink-0">
+          <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${
+            webhookReady
+              ? 'bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600'
+              : webhookStatus
+                ? 'bg-red-50 dark:bg-red-950/60 text-red-600'
+                : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-400'
+          }`}>
             <Globe className="w-5 h-5" />
           </div>
           <div className="min-w-0">
             <p className="text-[11px] text-zinc-500 font-bold">সার্ভার ওয়েবহুক</p>
-            <p className="text-xs font-black text-emerald-600 dark:text-emerald-400 truncate">সক্রিয় ও রেডি</p>
+            <p className={`text-xs font-black truncate ${
+              webhookReady ? 'text-emerald-600 dark:text-emerald-400' : webhookStatus ? 'text-red-600' : 'text-zinc-400'
+            }`}>
+              {webhookReady ? 'হ্যান্ডশেক সফল' : webhookStatus ? 'ভেরিফাই ব্যর্থ' : 'টেস্ট করুন'}
+            </p>
           </div>
         </div>
 
@@ -357,8 +442,12 @@ export function MerchantMessengerLive({ business }: MerchantMessengerLiveProps) 
           </div>
           <div className="min-w-0">
             <p className="text-[11px] text-zinc-500 font-bold">পেজ টোকেন</p>
-            <p className={`text-xs font-black truncate ${pageAccessToken ? 'text-blue-600 dark:text-blue-400' : 'text-zinc-400'}`}>
-              {pageAccessToken ? 'প্রদান করা হয়েছে' : 'অনুপস্থিত'}
+            <p className={`text-xs font-black truncate ${
+              tokenReady ? 'text-blue-600 dark:text-blue-400' : pageAccessToken ? 'text-amber-600' : 'text-zinc-400'
+            }`}>
+              {tokenReady
+                ? (tokenStatus?.subscribed === false ? 'টোকেন বৈধ, সাবস্ক্রাইব বাকি' : 'যাচাই ও সাবস্ক্রাইবড')
+                : pageAccessToken ? 'সেভ আছে — টেস্ট করুন' : 'অনুপস্থিত'}
             </p>
           </div>
         </div>
@@ -391,6 +480,15 @@ export function MerchantMessengerLive({ business }: MerchantMessengerLiveProps) 
             <p className="text-[11px] text-zinc-500 font-bold">এআই মডেল ব্রেন</p>
             <p className="text-xs font-black text-orange-600 dark:text-orange-400 truncate">
               {business.selectedAiModel || 'gemini-3.7-flash'}
+            </p>
+            <p className="text-[10px] text-zinc-400 mt-0.5 truncate">
+              {lastError
+                ? `শেষ ত্রুটি: ${String(lastError.error || 'unknown').slice(0, 48)}`
+                : lastReply
+                  ? `শেষ রিপ্লাই ${formatLogTimestamp(lastReply.timestamp)}`
+                  : lastIncoming
+                    ? `শেষ ইনকামিং ${formatLogTimestamp(lastIncoming.timestamp)}`
+                    : 'এখনো লাইভ মেসেজ আসেনি'}
             </p>
           </div>
         </div>
@@ -510,12 +608,12 @@ export function MerchantMessengerLive({ business }: MerchantMessengerLiveProps) 
                 {/* Verify Token */}
                 <div className="space-y-1.5">
                   <label className="font-bold text-zinc-700 dark:text-zinc-300">
-                    Verify Token (যাচাইকরণ টোকেন)
+                    Verify Token (যাচাইকরণ টোকেন) — হুবহু এইটাই মেটায় দিন
                   </label>
                   <div className="flex items-center gap-2">
                     <Input
-                      readOnly
                       value={verifyToken}
+                      onChange={e => setVerifyToken(e.target.value)}
                       className="bg-zinc-50 dark:bg-zinc-800/60 font-mono text-[11px] h-10 rounded-xl select-all font-semibold text-orange-600 dark:text-orange-400"
                     />
                     <Button
@@ -528,7 +626,7 @@ export function MerchantMessengerLive({ business }: MerchantMessengerLiveProps) 
                     </Button>
                   </div>
                   <p className="text-[10px] text-zinc-500 dark:text-zinc-400">
-                    * মেটা ডেভেলপারে <code className="bg-zinc-100 dark:bg-zinc-800 px-1 py-0.5 rounded font-mono font-bold text-orange-600">{verifyToken}</code> অথবা আপনার যেকোনো টোকেন দিতে পারেন, সার্ভার স্বয়ংক্রিয়ভাবে ভেরিফাই করবে।
+                    Meta ➔ Messenger ➔ Webhooks ➔ Edit Callback URL-এ <code className="bg-zinc-100 dark:bg-zinc-800 px-1 py-0.5 rounded font-mono font-bold text-orange-600">{verifyToken || '…'}</code> পেস্ট করুন। আগে সার্ভার শুধু কয়েকটা ফিক্সড টোকেন মানত বলে Configure webhooks ৪০৩ দিত — এখন আপনার স্টোর টোকেন এবং challenge দুটোই গ্রহণ করে।
                   </p>
                 </div>
               </div>
@@ -682,7 +780,7 @@ export function MerchantMessengerLive({ business }: MerchantMessengerLiveProps) 
                     <span>ওয়েবহুক ভেরিফাই করুন</span>
                   </div>
                   <p className="text-[11px] text-zinc-500 pl-7">
-                    <strong>Messenger</strong> ➔ <strong>Webhooks</strong> ➔ <strong>Edit Callback URL</strong> এ গিয়ে বামের <strong>Callback URL</strong> ও <strong>Verify Token</strong> পেস্ট করে <strong>Verify and Save</strong> চাপুন।
+                    <strong>Messenger</strong> ➔ <strong>Webhooks</strong> ➔ <strong>Edit Callback URL</strong>। Callback URL হিসেবে বামের <strong>স্টোর-নির্দিষ্ট URL</strong> পেস্ট করুন (HTTPS লাগবে)। Verify Token বক্সে উপরের টোকেনটি হুবহু পেস্ট করে <strong>Verify and Save</strong> চাপুন। সার্ভার <code className="font-mono">hub.challenge</code> প্লেইন টেক্সটে ফেরত দেয় — HTML/JSON নয়।
                   </p>
                 </div>
 
@@ -692,7 +790,7 @@ export function MerchantMessengerLive({ business }: MerchantMessengerLiveProps) 
                     <span>ইভেন্ট সাবস্ক্রাইব করুন</span>
                   </div>
                   <p className="text-[11px] text-zinc-500 pl-7">
-                    Webhooks ফিল্ডে <code className="bg-zinc-200 dark:bg-zinc-700 px-1 py-0.5 rounded font-mono text-[10px]">messages</code>, <code className="bg-zinc-200 dark:bg-zinc-700 px-1 py-0.5 rounded font-mono text-[10px]">messaging_postbacks</code> এবং কমেন্ট-টু-ইনবক্সের জন্য <code className="bg-zinc-200 dark:bg-zinc-700 px-1 py-0.5 rounded font-mono text-[10px]">feed</code> এ টিক দিয়ে সাবস্ক্রাইব করুন।
+                    Webhooks ফিল্ডে <code className="bg-zinc-200 dark:bg-zinc-700 px-1 py-0.5 rounded font-mono text-[10px]">messages</code>, <code className="bg-zinc-200 dark:bg-zinc-700 px-1 py-0.5 rounded font-mono text-[10px]">messaging_postbacks</code> এবং কমেন্ট-টু-ইনবক্সের জন্য <code className="bg-zinc-200 dark:bg-zinc-700 px-1 py-0.5 rounded font-mono text-[10px]">feed</code> এ টিক দিয়ে সাবস্ক্রাইব করুন। তারপর বামে <strong>টোকেন টেস্ট করুন</strong> চাপলে সার্ভার পেজটিকে অ্যাপে সাবস্ক্রাইব করার চেষ্টা করবে — না হলে মেসেজ রিসিভ হবে না।
                   </p>
                 </div>
 
@@ -705,6 +803,19 @@ export function MerchantMessengerLive({ business }: MerchantMessengerLiveProps) 
                     Messenger ➔ <strong>App Settings</strong> ➔ <strong>Generate Tokens</strong> থেকে আপনার পেজটি সিলেক্ট করে <strong>Subscribe</strong> বাটনে চাপুন।
                   </p>
                 </div>
+              </div>
+
+              <div className="p-3.5 rounded-2xl border border-amber-200/80 dark:border-amber-900/50 bg-amber-50/70 dark:bg-amber-950/20 space-y-2 text-[11px] text-zinc-600 dark:text-zinc-300">
+                <p className="font-black text-amber-800 dark:text-amber-200 flex items-center gap-1.5">
+                  <Info className="w-3.5 h-3.5" />
+                  মেসেজ আসছে না / যাচ্ছে না — কেন?
+                </p>
+                <ul className="list-disc pl-4 space-y-1 leading-relaxed">
+                  <li>Configure webhooks ভেরিফাই না হলে মেটা ইভেন্ট পাঠায় না — আগে <strong>সার্ভার ওয়েবহুক টেস্ট</strong> সবুজ করুন।</li>
+                  <li>পেজ Access Token-এ <code className="font-mono">pages_messaging</code> না থাকলে উত্তর পাঠানো যায় না।</li>
+                  <li>পেজটি অ্যাপে Subscribe না থাকলে রিসিভ হয় না — <strong>টোকেন টেস্ট করুন</strong> অটো-সাবস্ক্রাইব করে।</li>
+                  <li>Page ID স্টোর সেটিংসের সাথে না মিললে বট অন্য দোকানে খুঁজে পায় না।</li>
+                </ul>
               </div>
 
               <div className="pt-2">
