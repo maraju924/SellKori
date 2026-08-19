@@ -87,8 +87,10 @@ export interface BusinessConfig {
   aiTemperature?: number;
   aiMaxTokens?: number;
   messengerVerifyToken?: string;
+  verifyToken?: string;
   pageAccessToken?: string;
   pageId?: string;
+  facebookPageId?: string;
   status?: 'active' | 'suspended' | 'pending';
   plan?: 'free' | 'pro' | 'enterprise';
   verificationStatus?: 'verified' | 'pending' | 'rejected';

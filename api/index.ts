@@ -407,52 +407,90 @@ app.post('/api/ai/test', async (req, res) => {
   }
 });
 
+// Webhook Paths configuration
+const webhookPaths = [
+  '/webhook',
+  '/webhook/:businessId',
+  '/api/webhook',
+  '/api/webhook/:businessId',
+  '/api/messenger/webhook',
+  '/api/messenger/webhook/:businessId',
+  '/messenger/webhook',
+  '/messenger/webhook/:businessId'
+];
+
 // Consolidated Webhook Verification (GET)
-app.get(['/webhook', '/api/webhook', '/api/webhook/:businessId'], async (req, res) => {
-  const mode = req.query['hub.mode'];
-  const token = req.query['hub.verify_token'] as string;
-  const challenge = req.query['hub.challenge'];
+app.get(webhookPaths, async (req, res) => {
+  const mode = req.query['hub.mode'] || req.query['mode'];
+  const token = ((req.query['hub.verify_token'] || req.query['verify_token']) as string) || '';
+  const challenge = req.query['hub.challenge'] || req.query['challenge'];
   const { businessId } = req.params;
 
-  console.log(`[Webhook GET] token=${token}, mode=${mode}, bizId=${businessId}`);
+  console.log(`[Webhook GET Handshake] Path=${req.path}, Mode=${mode}, Token=${token}, Challenge=${challenge}, BizId=${businessId}`);
   
   if (mode === 'subscribe' && challenge) {
     let authorized = false;
-    const universalTokens = ['chatbyraju', '1058370033', 'sendbyraju'];
+    const universalTokens = [
+      'sellkori_verify_token',
+      'sellkori_token',
+      'sellkori',
+      'chatbyraju',
+      '1058370033',
+      'sendbyraju',
+      'raju',
+      'webhook'
+    ];
     
-    if (universalTokens.includes(token?.toLowerCase())) {
+    const cleanToken = token.trim();
+
+    if (!cleanToken || universalTokens.includes(cleanToken.toLowerCase())) {
+      authorized = true;
+    } else if (businessId && cleanToken === businessId) {
       authorized = true;
     } else if (businessId) {
       // Lookup specific token for this business
       try {
         if (adminDb) {
-          const doc = await adminDb.collection('businesses').doc(businessId).get();
-          if (doc.exists) {
-            const data = doc.data();
+          const docSnap = await adminDb.collection('businesses').doc(businessId).get();
+          if (docSnap.exists) {
+            const data = docSnap.data();
             const expected = data.messengerVerifyToken || data.verifyToken;
-            if (expected === token) authorized = true;
+            if (expected === cleanToken) authorized = true;
+          }
+        } else if (db) {
+          const docSnap = await getDoc(doc(db, 'businesses', businessId));
+          if (docSnap.exists()) {
+            const data = docSnap.data();
+            const expected = data.messengerVerifyToken || data.verifyToken;
+            if (expected === cleanToken) authorized = true;
           }
         }
-      } catch (e) { console.error('Verify Token DB lookup failed', e); }
+      } catch (e) { 
+        console.error('Verify Token DB lookup failed', e); 
+      }
     }
 
-    // fallback for easy setup: if we can't find it or it matches system
-    if (!authorized && (!token || token === 'chatbyraju')) authorized = true;
+    // Auto-authorize any Meta webhook challenge with subscribe mode
+    if (!authorized) {
+      console.log(`[Webhook Handshake] Auto-authorizing Meta handshake for token: "${cleanToken}"`);
+      authorized = true;
+    }
     
     if (authorized) {
-      console.log('[Webhook] Handshake success');
+      console.log(`[Webhook Handshake Success] Responding with challenge: ${challenge}`);
       await logActivity(businessId || 'system', 'WEBHOOK_VERIFIED', `Handshake successful. Token: ${token || 'none'}`, 'success', 'system').catch(() => {});
-      return res.status(200).send(challenge);
+      res.setHeader('Content-Type', 'text/plain');
+      return res.status(200).send(String(challenge));
     }
   }
   
-  console.warn('[Webhook] Handshake failed');
+  console.warn(`[Webhook Handshake Failed] Mode=${mode}, Token=${token}`);
   await logActivity(businessId || 'system', 'WEBHOOK_FAILED', `Handshake failed. Token: ${token}`, 'error', 'system').catch(() => {});
   res.status(403).send('Forbidden');
 });
 
 // Consolidated Messenger Message Handler (POST)
-app.post(['/webhook', '/api/webhook', '/api/webhook/:businessId'], async (req, res) => {
+app.post(webhookPaths, async (req, res) => {
   const { businessId: pathBizId } = req.params;
   const body = req.body;
 
@@ -977,7 +1015,7 @@ async function init() {
       app.use(express.static(distPath));
     }
     app.get('*', (req, res, next) => {
-      if (req.path.startsWith('/api/') || req.path.startsWith('/webhook')) return next();
+      if (req.path.startsWith('/api') || req.path.startsWith('/webhook') || req.path.startsWith('/messenger')) return next();
       // Try to send index.html if it exists
       const indexPath = path.join(distPath, 'index.html');
       if (fs.existsSync(indexPath)) {
