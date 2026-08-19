@@ -224,6 +224,143 @@ async function sendImageMessage(pageAccessToken: string, senderId: string, image
   }
 }
 
+type IncomingMediaKind = 'image' | 'audio' | 'video' | 'file' | 'sticker';
+interface IncomingMedia {
+  kind: IncomingMediaKind;
+  url: string;
+}
+interface DownloadedMedia {
+  kind: 'image' | 'audio';
+  mimeType: string;
+  data: string;
+}
+
+const MAX_MEDIA_BYTES = 6 * 1024 * 1024;
+const MEDIA_KIND_BN: Record<IncomingMediaKind, string> = {
+  image: 'ছবি',
+  audio: 'ভয়েস মেসেজ',
+  video: 'ভিডিও',
+  file: 'ফাইল',
+  sticker: 'স্টিকার',
+};
+
+function extractMessengerAttachments(webhookEvent: any): IncomingMedia[] {
+  const attachments = webhookEvent?.message?.attachments;
+  if (!Array.isArray(attachments) || attachments.length === 0) return [];
+
+  const media: IncomingMedia[] = [];
+  for (const att of attachments) {
+    const type = String(att?.type || '').toLowerCase();
+    const url = String(att?.payload?.url || '').trim();
+    if (!url) continue;
+    if (att?.payload?.sticker_id) {
+      media.push({ kind: 'sticker', url });
+      continue;
+    }
+    if (type === 'image' || type === 'audio' || type === 'video' || type === 'file') {
+      media.push({ kind: type, url });
+    }
+  }
+  return media;
+}
+
+function mediaPlaceholderText(media: IncomingMedia[], caption?: string): string {
+  const labels = [...new Set(media.map((m) => MEDIA_KIND_BN[m.kind] || 'মিডিয়া'))];
+  const note = labels.length === 1
+    ? `[কাস্টমার একটি ${labels[0]} পাঠিয়েছেন]`
+    : `[কাস্টমার ${labels.join(' ও ')} পাঠিয়েছেন]`;
+  const trimmed = (caption || '').trim();
+  return trimmed ? `${trimmed}\n${note}` : note;
+}
+
+function normalizeGeminiMime(kind: 'image' | 'audio', headerMime: string): string {
+  const m = (headerMime || '').toLowerCase().split(';')[0].trim();
+  if (kind === 'image') {
+    if (['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/heic', 'image/heif'].includes(m)) return m;
+    return 'image/jpeg';
+  }
+  if (m === 'audio/mp3' || m === 'audio/mpeg') return 'audio/mpeg';
+  if (m === 'audio/x-m4a' || m === 'audio/m4a' || m === 'audio/mp4' || m === 'audio/aac') return 'audio/mp4';
+  if (['audio/wav', 'audio/ogg', 'audio/flac', 'audio/webm'].includes(m)) return m;
+  return 'audio/mpeg';
+}
+
+async function downloadFacebookMedia(
+  url: string,
+  pageAccessToken?: string
+): Promise<{ data: string; mimeType: string } | null> {
+  const tryGet = async (targetUrl: string) => axios.get(targetUrl, {
+    responseType: 'arraybuffer',
+    timeout: 12000,
+    maxContentLength: MAX_MEDIA_BYTES,
+    maxBodyLength: MAX_MEDIA_BYTES,
+    maxRedirects: 5,
+    headers: {
+      'User-Agent': 'SellKoriBot/1.0',
+      ...(pageAccessToken ? { Authorization: `Bearer ${pageAccessToken}` } : {})
+    },
+    validateStatus: (s) => s >= 200 && s < 400,
+  });
+
+  try {
+    let res;
+    try {
+      res = await tryGet(url);
+    } catch (firstErr: any) {
+      if (pageAccessToken && !url.includes('access_token=')) {
+        const joiner = url.includes('?') ? '&' : '?';
+        res = await tryGet(`${url}${joiner}access_token=${encodeURIComponent(pageAccessToken)}`);
+      } else {
+        throw firstErr;
+      }
+    }
+    const buf = Buffer.from(res.data);
+    if (buf.length < 24) return null;
+    const headerMime = String(res.headers['content-type'] || '').split(';')[0].trim();
+    return { data: buf.toString('base64'), mimeType: headerMime || 'application/octet-stream' };
+  } catch (err: any) {
+    console.warn('[Webhook] Media download failed:', err.response?.status || err.message);
+    return null;
+  }
+}
+
+async function downloadIncomingMedia(
+  media: IncomingMedia[],
+  pageAccessToken?: string
+): Promise<DownloadedMedia[]> {
+  const downloaded: DownloadedMedia[] = [];
+  let imagesTaken = 0;
+  let audioTaken = 0;
+
+  for (const item of media) {
+    if (item.kind !== 'image' && item.kind !== 'audio') continue;
+    if (item.kind === 'image' && imagesTaken >= 3) continue;
+    if (item.kind === 'audio' && audioTaken >= 1) continue;
+
+    const file = await downloadFacebookMedia(item.url, pageAccessToken);
+    if (!file) continue;
+
+    downloaded.push({
+      kind: item.kind,
+      mimeType: normalizeGeminiMime(item.kind, file.mimeType),
+      data: file.data
+    });
+    if (item.kind === 'image') imagesTaken += 1;
+    else audioTaken += 1;
+  }
+  return downloaded;
+}
+
+async function sendTypingOn(pageAccessToken: string, senderId: string) {
+  const cleanToken = String(pageAccessToken).trim();
+  try {
+    await axios.post(`https://graph.facebook.com/v21.0/me/messages?access_token=${encodeURIComponent(cleanToken)}`, {
+      recipient: { id: senderId },
+      sender_action: 'typing_on'
+    }, { timeout: 5000 });
+  } catch (_) {}
+}
+
 // Helper to get effective Gemini Config (Admin DB or Environment)
 async function getEffectiveGeminiConfig() {
   let apiKey = process.env.GEMINI_API_KEY || '';
@@ -1156,6 +1293,8 @@ app.post(webhookPaths, async (req, res) => {
             const ownerId = businessData.ownerId;
             const shopName = businessData.name || "আমাদের স্টোর";
 
+            const incomingMedia = isPostback ? [] : extractMessengerAttachments(webhookEvent);
+
             let finalMessageText = messageText;
             if (isPostback) {
               if (payload.startsWith('ORDER_')) {
@@ -1168,9 +1307,13 @@ app.post(webhookPaths, async (req, res) => {
               finalMessageText = webhookEvent.message.quick_reply.payload || messageText;
             }
 
-            if (!finalMessageText) {
+            if (!finalMessageText && incomingMedia.length === 0) {
               console.log('[Webhook] Empty message text, skipping processing');
               continue;
+            }
+
+            if (incomingMedia.length > 0) {
+              finalMessageText = mediaPlaceholderText(incomingMedia, finalMessageText);
             }
 
             // Retrieve recent chat history for context (Robust multi-source)
@@ -1315,6 +1458,14 @@ app.post(webhookPaths, async (req, res) => {
               continue;
             }
 
+            let downloadedMedia: DownloadedMedia[] = [];
+            if (incomingMedia.length > 0) {
+              downloadedMedia = await downloadIncomingMedia(incomingMedia, pageAccessToken);
+              console.log(`[Webhook] Media attachments: ${incomingMedia.length} incoming, ${downloadedMedia.length} downloaded`);
+            }
+
+            await sendTypingOn(pageAccessToken, senderId);
+
             // AI Processing
             console.log(`[Webhook] Starting AI processing with model: ${aiConfig.model}`);
             await logActivity(bizId!, 'AI_START', `বটের কাছে পাঠানো হচ্ছে (${aiConfig.model})...`, 'info', ownerId);
@@ -1342,12 +1493,19 @@ app.post(webhookPaths, async (req, res) => {
             const prompt = `তুমি "${businessData.name}" এর একজন স্মার্ট, সংক্ষিপ্ত ও টু-দ্য-পয়েন্ট এআই সেলস অ্যাসিস্ট্যান্ট। JSON স্কিমা অনুযায়ী উত্তর দাও।
 
 # কঠোর নির্দেশাবলী:
-১. সংক্ষিপ্ত ও নির্দিষ্ট উত্তর (১-৩ বাক্য)।
+১. সংক্ষিপ্ত ও নির্দিষ্ট উত্তর (১-৩ বাক্য)। অপ্রয়োজনীয় ভূমিকা বা জোর করে পণ্য তালিকা দেবে না।
 ২. জানা তথ্য (নাম/ফোন/ঠিকানা) আর কখনো জিজ্ঞেস করবে না — order_data-তে প্রতিবার কপি করবে।
 ৩. সাম্প্রতিক অর্ডার থাকলে আবার অর্ডার করতে বলবে না; স্ট্যাটাস জানাবে।
 ৪. রিভিউ/প্রুফ/কাস্টমার ফটো চাইলে show_review_images=true। ছবি চাইলে show_product_image=true।
 ৫. নাম+১১ ডিজিট ফোন+পূর্ণ ঠিকানা+পণ্য জানা এবং কাস্টমার কনফার্ম করলে should_create_order=true, conversation_stage=order_completed, event_name=Purchase, need_more_info=false।
 ৬. minPrice-এর নিচে দাম দিবে না।
+৭. ফটো/ছবি রিপ্লাই: কাস্টমার ছবি পাঠালে অবশ্যই ছবিটি দেখে উত্তর দাও — নীরব থাকবে না।
+   - পণ্য/ক্যাটালগ স্ক্রিনশট: ক্যাটালগের সাথে মিলিয়ে নাম, দাম ও স্টক বলো; অর্ডার করতে চান কিনা জিজ্ঞেস করো। মিললে show_product_image true করতে পারো।
+   - পেমেন্ট/বিকাশ/নগদ/রকেট স্ক্রিনশট: "স্ক্রিনশট পেয়েছি, আমাদের টিম ভেরিফাই করে আপনাকে জানাবে" — নিজে থেকে পেমেন্ট কনফার্মড বলবে না।
+   - নাম/ঠিকানা/ফোন লেখা ছবি: পড়ে নিশ্চিত করে নাও।
+   - ক্ষতি/কমপ্লেইন/ডেলিভারি সমস্যা: সহানুভূতি দেখিয়ে সমাধানের কথা বলো।
+   - স্পষ্ট না হলে: "ছবিটি পেয়েছি — এটা কোন পণ্য বা বিষয় সম্পর্কে জানতে চান?"
+৮. ভয়েস মেসেজ রিপ্লাই: অডিও শুনে কাস্টমার যা বলেছে তা বুঝে ঠিক টেক্সট মেসেজের মতো সেলস উত্তর দাও। উত্তরের প্রথম বাক্যে সংক্ষেপে নিশ্চিত করো তুমি কী শুনেছ। অডিও বোঝা না গেলে নম্রভাবে লিখে পাঠাতে বলো।
 
 দোকানের তথ্য: ${businessData.description || ''}
 পণ্যতালিকা:
@@ -1369,6 +1527,7 @@ ${recentOrderText}
 
 দীর্ঘমেয়াদী সামারি:
 ${longTermSummary || 'নেই'}
+${downloadedMedia.length > 0 ? `\nকাস্টমারের সাথে পাঠানো মিডিয়া এই রিকোয়েস্টে সংযুক্ত আছে (${downloadedMedia.map((m) => m.kind === 'audio' ? 'ভয়েস' : 'ছবি').join(', ')})। মিডিয়া দেখে/শুনে উত্তর দাও।` : ''}
 
 পূর্ববর্তী কথোপকথন:
 ${chatHistoryText || 'নতুন আলাপ'}
@@ -1376,15 +1535,20 @@ ${chatHistoryText || 'নতুন আলাপ'}
 কাস্টমারের বর্তমান বার্তা: "${finalMessageText}"`;
               
               const startTime = Date.now();
+              const geminiParts: any[] = [{ text: prompt }];
+              for (const media of downloadedMedia) {
+                geminiParts.push({ inlineData: { mimeType: media.mimeType, data: media.data } });
+              }
+
               try {
-                console.log(`[Webhook] Calling Gemini AI for biz: ${bizId}`);
+                console.log(`[Webhook] Calling Gemini AI for biz: ${bizId}${downloadedMedia.length ? ` with ${downloadedMedia.length} media part(s)` : ''}`);
                 let responseText = '';
                 
-                const generateJson = async (modelName: string) => {
+                const generateJson = async (modelName: string, parts: any[]) => {
                   const ai = new GoogleGenAI({ apiKey: aiConfig.apiKey });
                   const aiResponse = await ai.models.generateContent({
                     model: modelName,
-                    contents: prompt,
+                    contents: [{ role: 'user', parts }],
                     config: {
                       responseMimeType: 'application/json',
                       responseSchema: webhookResponseSchema,
@@ -1396,13 +1560,18 @@ ${chatHistoryText || 'নতুন আলাপ'}
                 };
 
                 try {
-                  responseText = await generateJson(aiConfig.model);
+                  responseText = await generateJson(aiConfig.model, geminiParts);
                 } catch (primaryAiErr: any) {
                   console.warn(`[Webhook] Primary model ${aiConfig.model} failed, falling back to gemini-3.1-flash-lite...`, primaryAiErr?.message);
                   try {
-                    responseText = await generateJson('gemini-3.1-flash-lite');
+                    responseText = await generateJson('gemini-3.1-flash-lite', geminiParts);
                   } catch (fallbackErr: any) {
-                    throw new Error(`AI Generation failed on all models: ${fallbackErr?.message}`);
+                    if (geminiParts.length > 1) {
+                      console.warn('[Webhook] Multimodal fallback failed, retrying text-only JSON...', fallbackErr?.message);
+                      responseText = await generateJson('gemini-3.1-flash-lite', [{ text: prompt }]);
+                    } else {
+                      throw new Error(`AI Generation failed on all models: ${fallbackErr?.message}`);
+                    }
                   }
                 }
 
@@ -1423,7 +1592,15 @@ ${chatHistoryText || 'নতুন আলাপ'}
                 }
 
                 if (!reply || reply.trim().length === 0) {
-                  reply = 'ধন্যবাদ! আপনার মেসেজটি আমরা পেয়েছি। আমাদের সেলস টিম শীঘ্রই আপনার সাথে যোগাযোগ করবে।';
+                  const hasAudio = incomingMedia.some((m) => m.kind === 'audio');
+                  const hasImage = incomingMedia.some((m) => m.kind === 'image');
+                  if (hasAudio) {
+                    reply = 'আপনার ভয়েস মেসেজটি পেয়েছি। অনুগ্রহ করে একটু লিখে জানান আপনি কোন পণ্য বা বিষয় নিয়ে সাহায্য চান?';
+                  } else if (hasImage) {
+                    reply = 'আপনার ছবিটি পেয়েছি। এটা কোন পণ্য বা বিষয় সম্পর্কে জানতে চান?';
+                  } else {
+                    reply = 'ধন্যবাদ! আপনার মেসেজটি আমরা পেয়েছি। আমাদের সেলস টিম শীঘ্রই আপনার সাথে যোগাযোগ করবে।';
+                  }
                 }
 
                 const nextLead = mergeLead(knownLead, {
@@ -1629,7 +1806,11 @@ ${chatHistoryText || 'নতুন আলাপ'}
                 try {
                   await axios.post(`https://graph.facebook.com/v21.0/me/messages?access_token=${pageAccessToken}`, {
                     recipient: { id: senderId },
-                    message: { text: "ধন্যবাদ আপনার বার্তার জন্য! আমাদের সেলস অ্যাসিস্ট্যান্ট শীঘ্রই আপনার সাথে যুক্ত হচ্ছে।" }
+                    message: { text: incomingMedia.some((m) => m.kind === 'audio')
+                      ? "আপনার ভয়েস মেসেজটি পেয়েছি। আমাদের সেলস অ্যাসিস্ট্যান্ট শীঘ্রই আপনার সাথে যুক্ত হচ্ছে।"
+                      : incomingMedia.some((m) => m.kind === 'image')
+                        ? "আপনার ছবিটি পেয়েছি। আমাদের সেলস অ্যাসিস্ট্যান্ট শীঘ্রই আপনার সাথে যুক্ত হচ্ছে।"
+                        : "ধন্যবাদ আপনার বার্তার জন্য! আমাদের সেলস অ্যাসিস্ট্যান্ট শীঘ্রই আপনার সাথে যুক্ত হচ্ছে।" }
                   });
                 } catch (e) {}
               }

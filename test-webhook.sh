@@ -31,3 +31,63 @@ curl -X POST "http://localhost:3000/api/webhook/$BUSINESS_ID" \
        ]
      }'
 echo -e "\n"
+
+echo "Testing Webhook Photo Message Handling (POST)..."
+curl -X POST "http://localhost:3000/api/webhook/$BUSINESS_ID" \
+     -H "Content-Type: application/json" \
+     -d '{
+       "object": "page",
+       "entry": [
+         {
+           "id": "PAGE_ID",
+           "time": 123456789,
+           "messaging": [
+             {
+               "sender": { "id": "USER_ID" },
+               "recipient": { "id": "PAGE_ID" },
+               "timestamp": 123456789,
+               "message": {
+                 "mid": "mid.photo.test",
+                 "attachments": [
+                   {
+                     "type": "image",
+                     "payload": { "url": "https://example.com/product.jpg" }
+                   }
+                 ]
+               }
+             }
+           ]
+         }
+       ]
+     }'
+echo -e "\n"
+
+echo "Testing Webhook Voice Message Handling (POST)..."
+curl -X POST "http://localhost:3000/api/webhook/$BUSINESS_ID" \
+     -H "Content-Type: application/json" \
+     -d '{
+       "object": "page",
+       "entry": [
+         {
+           "id": "PAGE_ID",
+           "time": 123456789,
+           "messaging": [
+             {
+               "sender": { "id": "USER_ID" },
+               "recipient": { "id": "PAGE_ID" },
+               "timestamp": 123456789,
+               "message": {
+                 "mid": "mid.voice.test",
+                 "attachments": [
+                   {
+                     "type": "audio",
+                     "payload": { "url": "https://example.com/voice.m4a" }
+                   }
+                 ]
+               }
+             }
+           ]
+         }
+       ]
+     }'
+echo -e "\n"

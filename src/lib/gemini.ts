@@ -348,7 +348,8 @@ export async function getAIResponse(
   customerContext?: string,
   audioData?: { inlineData: { data: string, mimeType: string } },
   overrideApiKey?: string,
-  chatSummary?: string
+  chatSummary?: string,
+  imageData?: { inlineData: { data: string, mimeType: string } } | { inlineData: { data: string, mimeType: string } }[]
 ): Promise<AIResponse> {
   const sysConfig = await fetchSystemGeminiSettings();
   
@@ -503,6 +504,11 @@ ${chatSummary ? `Previous Conversation Summary: ${chatSummary}` : ''}
 - **ভাষা:** কাস্টমার যে ভাষায় কথা বলবে (বাংলা/ইংরেজি), তুমিও সেই ভাষায় কথা বলো। তবে ডিফল্ট হিসেবে সুন্দর প্রমিত বাংলা ব্যবহার করো।
 - **সম্বোধন:** কাস্টমারকে "স্যার/ম্যাম" বা "আপনি" বলে সম্মান দিয়ে কথা বলবে।
 
+## ৩.১ ফটো ও ভয়েস মেসেজ রিপ্লাই
+- **ছবি:** কাস্টমার ছবি পাঠালে অবশ্যই ছবিটি দেখে উত্তর দাও। পণ্য/স্ক্রিনশট হলে ক্যাটালগ মিলিয়ে দাম ও স্টক বলো। পেমেন্ট স্ক্রিনশট হলে ভেরিফিকেশনের কথা বলো, নিজে থেকে পেইড কনফার্ম করবে না। ঠিকানা/ফোন লেখা ছবি হলে পড়ে নিশ্চিত করো। বোঝা না গেলে জিজ্ঞেস করো ছবিটি কোন পণ্য সম্পর্কে।
+- **ভয়েস:** অডিও শুনে যা বলেছে তা বুঝে টেক্সট মেসেজের মতো সেলস উত্তর দাও। প্রথম বাক্যে সংক্ষেপে নিশ্চিত করো তুমি কী শুনেছ। বোঝা না গেলে লিখে পাঠাতে বলো।
+- কখনোই ফটো বা ভয়েস মেসেজে নীরব থাকবে না।
+
 ## ৪. কনফার্মেশন রুলস
 - সব তথ্য (নাম, ফোন, ঠিকানা, পরিমাণ) না পাওয়া পর্যন্ত 'need_more_info: true' রাখবে।
 - ফোন নম্বর অবশ্যই ১১ ডিজিটের হতে হবে।
@@ -517,8 +523,13 @@ CRITICAL MEMORY RULES:
 - When the customer asks for reviews/proof photos, set show_review_images=true.
 `;
 
+  const mediaDirective = `
+
+## ফটো ও ভয়েস মেসেজ
+কাস্টমার ছবি পাঠালে অবশ্যই ছবিটি দেখে উত্তর দাও। ভয়েস পাঠালে অডিও শুনে টেক্সট মেসেজের মতো উত্তর দাও। নীরব থাকবে না। পেমেন্ট স্ক্রিনশটে নিজে থেকে পেইড কনফার্ম করবে না।`;
+
   const systemInstruction = businessConfig.customSystemPrompt 
-    ? `${businessConfig.customSystemPrompt}\n\n${memoryGuard}\nContext:\nBusiness Name: ${businessConfig.name}\n${businessConfig.description ? `Business Info: ${businessConfig.description}\n` : ''}Products Data: ${JSON.stringify(sanitizeProductsForAI(businessConfig.products))}\nFAQs: ${JSON.stringify(businessConfig.faqs || [])}\n${customerContext ? `Customer Context: ${customerContext}` : ''}${chatSummary ? `\nPrevious Conversation Summary: ${chatSummary}` : ''}`
+    ? `${businessConfig.customSystemPrompt}\n\n${memoryGuard}\nContext:\nBusiness Name: ${businessConfig.name}\n${businessConfig.description ? `Business Info: ${businessConfig.description}\n` : ''}Products Data: ${JSON.stringify(sanitizeProductsForAI(businessConfig.products))}\nFAQs: ${JSON.stringify(businessConfig.faqs || [])}\n${customerContext ? `Customer Context: ${customerContext}` : ''}${chatSummary ? `\nPrevious Conversation Summary: ${chatSummary}` : ''}${mediaDirective}`
     : defaultPrompt;
 
   const startTime = Date.now();
@@ -527,6 +538,12 @@ CRITICAL MEMORY RULES:
     const parts: any[] = [{ text: `Previous Chat History:\n${chatHistory || '(no prior messages)'}\n\nUser Message: ${userMessage}` }];
     if (audioData) {
       parts.push(audioData);
+    }
+    if (imageData) {
+      const images = Array.isArray(imageData) ? imageData : [imageData];
+      for (const img of images) {
+        if (img?.inlineData?.data) parts.push(img);
+      }
     }
 
     const response = await ai.models.generateContent({
