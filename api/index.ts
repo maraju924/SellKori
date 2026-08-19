@@ -17,6 +17,20 @@ import {
   mergeFeatures,
   shouldRunAi
 } from '../src/lib/featureFlags';
+import {
+  BROADCAST_CONCURRENCY,
+  DEFAULT_COMMENT_INBOX_MESSAGE,
+  DEFAULT_COMMENT_PUBLIC_REPLY,
+  extractFeedCommentEvents,
+  findMentionedProductName,
+  mapPool,
+  normalizeOutreachCustomer,
+  parseCommentKeywords,
+  personalizeOutreachMessage,
+  planBroadcastRecipients,
+  shouldPrivateReplyToComment,
+  type BroadcastAudience
+} from '../src/lib/outreach';
 
 dotenv.config();
 
@@ -391,6 +405,277 @@ async function sendPlainText(pageAccessToken: string, senderId: string, text: st
   }
 }
 
+async function sendMessengerPayload(pageAccessToken: string, payload: Record<string, unknown>) {
+  const cleanToken = String(pageAccessToken).trim();
+  try {
+    return await axios.post(
+      `https://graph.facebook.com/v21.0/me/messages?access_token=${encodeURIComponent(cleanToken)}`,
+      payload,
+      { timeout: 15000 }
+    );
+  } catch (err: any) {
+    return await axios.post(
+      `https://graph.facebook.com/v18.0/me/messages?access_token=${encodeURIComponent(cleanToken)}`,
+      payload,
+      { timeout: 15000 }
+    );
+  }
+}
+
+async function sendBroadcastText(pageAccessToken: string, recipientId: string, text: string) {
+  const message = String(text || '').trim().slice(0, 1900);
+  if (!message || !recipientId) return;
+  await sendMessengerPayload(pageAccessToken, {
+    recipient: { id: recipientId },
+    messaging_type: 'UPDATE',
+    message: { text: message }
+  });
+}
+
+async function sendCommentPrivateReply(pageAccessToken: string, commentId: string, text: string) {
+  const message = String(text || '').trim().slice(0, 1900);
+  if (!message || !commentId) return;
+  try {
+    await sendMessengerPayload(pageAccessToken, {
+      recipient: { comment_id: commentId },
+      message: { text: message }
+    });
+    return;
+  } catch (_) {}
+  const cleanToken = String(pageAccessToken).trim();
+  try {
+    await axios.post(
+      `https://graph.facebook.com/v21.0/${encodeURIComponent(commentId)}/private_replies?access_token=${encodeURIComponent(cleanToken)}`,
+      { message },
+      { timeout: 15000 }
+    );
+  } catch (_) {
+    await axios.post(
+      `https://graph.facebook.com/v18.0/${encodeURIComponent(commentId)}/private_replies?access_token=${encodeURIComponent(cleanToken)}`,
+      { message },
+      { timeout: 15000 }
+    );
+  }
+}
+
+async function sendCommentPublicReply(pageAccessToken: string, commentId: string, text: string) {
+  const message = String(text || '').trim().slice(0, 500);
+  if (!message || !commentId) return;
+  const cleanToken = String(pageAccessToken).trim();
+  await axios.post(
+    `https://graph.facebook.com/v21.0/${encodeURIComponent(commentId)}/comments?access_token=${encodeURIComponent(cleanToken)}`,
+    { message },
+    { timeout: 15000 }
+  );
+}
+
+async function touchMessengerCustomer(bizId: string, messengerId: string, extra: Record<string, unknown> = {}) {
+  const psid = String(messengerId || '').trim();
+  if (!bizId || !psid) return;
+  const payload: Record<string, unknown> = {
+    businessId: bizId,
+    messengerId: psid,
+    passengerId: psid,
+    lastIncomingAtMs: Date.now(),
+    lastInteraction: adminDb ? admin.firestore.FieldValue.serverTimestamp() : serverTimestamp(),
+    updatedAt: adminDb ? admin.firestore.FieldValue.serverTimestamp() : serverTimestamp(),
+    ...extra
+  };
+  try {
+    if (adminDb) {
+      await adminDb.collection('customers').doc(`${bizId}_${psid}`).set(payload, { merge: true });
+      return;
+    }
+    if (db) {
+      await setDoc(doc(db, 'customers', `${bizId}_${psid}`), payload, { merge: true });
+    }
+  } catch (err) {
+    console.warn('[touchMessengerCustomer]', err);
+  }
+}
+
+async function loadBusinessCustomers(businessId: string): Promise<any[]> {
+  if (adminDb) {
+    const snap = await adminDb.collection('customers').where('businessId', '==', businessId).limit(500).get();
+    return snap.docs.map((d: any) => ({ id: d.id, ...d.data() }));
+  }
+  if (db) {
+    const snap = await getDocs(query(collection(db, 'customers'), where('businessId', '==', businessId), limit(500)));
+    return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+  }
+  return [];
+}
+
+async function loadBusinessById(businessId: string): Promise<{ id: string; data: any } | null> {
+  if (!businessId) return null;
+  try {
+    if (adminDb) {
+      const snap = await adminDb.collection('businesses').doc(businessId).get();
+      if (snap.exists) return { id: snap.id, data: snap.data() };
+    } else if (db) {
+      const snap = await getDoc(doc(db, 'businesses', businessId));
+      if (snap.exists()) return { id: snap.id, data: snap.data() };
+    }
+  } catch (err) {
+    console.warn('[loadBusinessById]', err);
+  }
+  return null;
+}
+
+async function resolveBusinessForWebhook(cleanPageId: string, pathBizId?: string): Promise<{ businessData: any | null; bizId: string | null }> {
+  let businessData: any = null;
+  let bizId: string | null = pathBizId || null;
+
+  if (pathBizId && pathBizId !== 'unknown' && pathBizId !== 'system') {
+    const loaded = await loadBusinessById(pathBizId);
+    if (loaded) return { businessData: loaded.data, bizId: loaded.id };
+  }
+
+  if (cleanPageId) {
+    const possiblePageIds = [cleanPageId];
+    if (!isNaN(Number(cleanPageId))) possiblePageIds.push(Number(cleanPageId) as any);
+
+    if (adminDb) {
+      try {
+        for (const pid of possiblePageIds) {
+          let snap = await adminDb.collection('businesses').where('facebookPageId', '==', pid).limit(1).get();
+          if (snap.empty) snap = await adminDb.collection('businesses').where('pageId', '==', pid).limit(1).get();
+          if (snap.empty) snap = await adminDb.collection('businesses').where('facebookConfig.pageId', '==', pid).limit(1).get();
+          if (snap.empty) snap = await adminDb.collection('businesses').where('facebookConfig.facebookPageId', '==', pid).limit(1).get();
+          if (!snap.empty) {
+            return { businessData: snap.docs[0].data(), bizId: snap.docs[0].id };
+          }
+        }
+      } catch (e: any) {
+        console.warn('[Webhook] Admin Lookup Query Notice:', e.message);
+      }
+    }
+
+    if (db) {
+      try {
+        for (const pid of possiblePageIds) {
+          let snap = await getDocs(query(collection(db, 'businesses'), where('facebookPageId', '==', pid), limit(1)));
+          if (snap.empty) snap = await getDocs(query(collection(db, 'businesses'), where('pageId', '==', pid), limit(1)));
+          if (!snap.empty) {
+            return { businessData: snap.docs[0].data(), bizId: snap.docs[0].id };
+          }
+        }
+      } catch (e: any) {
+        console.warn('[Webhook] Client Lookup Query Notice:', e.message);
+      }
+    }
+  }
+
+  try {
+    let allDocs: any[] = [];
+    if (adminDb) {
+      const allSnap = await adminDb.collection('businesses').limit(100).get();
+      allDocs = allSnap.docs.map((d: any) => ({ id: d.id, ...d.data() }));
+    } else if (db) {
+      const allSnap = await getDocs(query(collection(db, 'businesses'), limit(100)));
+      allDocs = allSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+    }
+
+    const matched = allDocs.find((b: any) => {
+      const bPageId = String(b.facebookPageId || b.pageId || b.facebookConfig?.pageId || b.facebookConfig?.facebookPageId || '').trim();
+      return bPageId && (bPageId === cleanPageId || cleanPageId.includes(bPageId) || bPageId.includes(cleanPageId));
+    });
+
+    if (matched) return { businessData: matched, bizId: matched.id };
+    if (allDocs.length === 1) return { businessData: allDocs[0], bizId: allDocs[0].id };
+  } catch (scanErr) {
+    console.error('[Webhook] In-memory scan error:', scanErr);
+  }
+
+  return { businessData, bizId };
+}
+
+async function handlePageFeedComments(entry: any, pathBizId?: string) {
+  const events = extractFeedCommentEvents(entry);
+  if (events.length === 0) return;
+
+  const pageId = String(entry?.id || events[0].pageId || '').trim();
+  const resolved = await resolveBusinessForWebhook(pageId, pathBizId);
+  const businessData = resolved.businessData;
+  const bizId = resolved.bizId;
+  if (!businessData || !bizId) {
+    console.warn(`[Webhook] Comment received but no business matched page ${pageId}`);
+    return;
+  }
+
+  const features = mergeFeatures(businessData.features);
+  if (!isFeatureEnabled(features, 'commentToInboxEnabled') || !isFeatureEnabled(features, 'messengerRepliesEnabled')) {
+    await logActivity(bizId, 'COMMENT_SKIPPED', 'কমেন্ট-টু-ইনবক্স সুইচবোর্ডে বন্ধ।', 'info', businessData.ownerId);
+    return;
+  }
+
+  const pageAccessToken = businessData.pageAccessToken || businessData.facebookConfig?.accessToken || businessData.accessToken;
+  if (!pageAccessToken) {
+    await logActivity(bizId, 'ERROR', 'কমেন্ট-টু-ইনবক্স: পেজ অ্যাক্সেস টোকেন নেই।', 'error', businessData.ownerId);
+    return;
+  }
+
+  const keywords = parseCommentKeywords(businessData.commentToInboxKeywords);
+  const products = Array.isArray(businessData.products) ? businessData.products : [];
+
+  for (const event of events) {
+    if (isDuplicateMessage(`comment:${event.commentId}`)) continue;
+    if (!shouldPrivateReplyToComment(event, keywords)) continue;
+
+    const product = findMentionedProductName(event.message, products);
+    const inboxText = personalizeOutreachMessage(
+      businessData.commentInboxMessage || DEFAULT_COMMENT_INBOX_MESSAGE,
+      { name: event.fromName, shop: businessData.name, product }
+    );
+    const publicText = String(businessData.commentPublicReply || DEFAULT_COMMENT_PUBLIC_REPLY).trim();
+
+    try {
+      await sendCommentPrivateReply(pageAccessToken, event.commentId, inboxText);
+      await saveChatMessage(bizId, event.fromId || event.commentId, 'bot', `[COMMENT_INBOX] ${inboxText}`);
+      await touchMessengerCustomer(bizId, event.fromId, {
+        name: event.fromName || '',
+        source: 'comment',
+        lastCommentId: event.commentId,
+        lastComment: event.message.slice(0, 200)
+      });
+      if (publicText) {
+        try { await sendCommentPublicReply(pageAccessToken, event.commentId, publicText); } catch (pubErr: any) {
+          console.warn('[Webhook] Public comment reply failed:', pubErr.response?.data || pubErr.message);
+        }
+      }
+      await logActivity(
+        bizId,
+        'COMMENT_INBOX',
+        `কমেন্ট-টু-ইনবক্স: "${event.message.substring(0, 60)}" → ${event.fromName || event.fromId}`,
+        'success',
+        businessData.ownerId,
+        { commentId: event.commentId, postId: event.postId }
+      );
+      await saveMessengerLog(bizId, {
+        senderId: event.fromId,
+        pageId,
+        message: event.message,
+        reply: inboxText,
+        status: 'replied',
+        source: 'comment'
+      });
+    } catch (err: any) {
+      const fbError = err.response?.data?.error;
+      const errorMsg = fbError?.message || err.message || 'কমেন্ট প্রাইভেট রিপ্লাই ব্যর্থ';
+      console.error('[Webhook] Comment-to-inbox failed:', fbError || err.message);
+      await logActivity(bizId, 'ERROR', `কমেন্ট-টু-ইনবক্স ব্যর্থ: ${errorMsg}`, 'error', businessData.ownerId, fbError);
+      await saveMessengerLog(bizId, {
+        senderId: event.fromId,
+        pageId,
+        message: event.message,
+        status: 'error',
+        error: errorMsg,
+        source: 'comment'
+      });
+    }
+  }
+}
+
 // Helper to get effective Gemini Config (Admin DB or Environment)
 async function getEffectiveGeminiConfig() {
   let apiKey = process.env.GEMINI_API_KEY || '';
@@ -762,6 +1047,7 @@ async function saveMessengerLog(businessId: string, logData: {
   status?: 'received' | 'replied' | 'error';
   error?: string;
   latencyMs?: number;
+  source?: string;
 }) {
   const payload = {
     businessId: businessId || 'unknown',
@@ -771,7 +1057,8 @@ async function saveMessengerLog(businessId: string, logData: {
     reply: logData.reply || '',
     status: logData.status || 'received',
     error: logData.error || null,
-    latencyMs: logData.latencyMs || 0
+    latencyMs: logData.latencyMs || 0,
+    source: logData.source || 'messenger'
   };
 
   if (adminDb) {
@@ -916,12 +1203,14 @@ async function saveChatMessage(bizId: string, senderId: string, role: 'user' | '
       const existing = await chatRef.get();
       const prev = existing.exists && Array.isArray(existing.data()?.messages) ? existing.data().messages : [];
       const messages = [...prev, newMsg].slice(-40);
+      const incomingPatch = role === 'user' ? { lastIncomingAtMs: Date.now() } : {};
       await chatRef.set({
         businessId: bizId,
         senderId: senderId,
         lastMessage: text.substring(0, 200),
         timestamp: ts,
         messages,
+        ...incomingPatch,
       }, { merge: true });
       return;
     } catch (err) {
@@ -937,12 +1226,14 @@ async function saveChatMessage(bizId: string, senderId: string, role: 'user' | '
       const existing = await getDoc(chatRef);
       const prev = existing.exists() && Array.isArray(existing.data()?.messages) ? existing.data()!.messages : [];
       const messages = [...prev, newMsg].slice(-40);
+      const incomingPatch = role === 'user' ? { lastIncomingAtMs: Date.now() } : {};
       await setDoc(chatRef, {
         businessId: bizId,
         senderId: senderId,
         lastMessage: text.substring(0, 200),
         timestamp: ts,
         messages,
+        ...incomingPatch,
       }, { merge: true });
     } catch (err) {
       console.error('[History Client Save Error]', err);
@@ -1239,6 +1530,11 @@ app.post(webhookPaths, async (req, res) => {
 
       for (const entry of body.entry) {
         const pageId = String(entry.id).trim();
+        try {
+          await handlePageFeedComments(entry, pathBizId);
+        } catch (feedErr: any) {
+          console.error('[Webhook] Feed comment handler error:', feedErr?.message || feedErr);
+        }
         const messaging = entry.messaging || entry.standby;
         
         if (!messaging) continue;
@@ -1269,101 +1565,13 @@ app.post(webhookPaths, async (req, res) => {
             }
 
             // Identify Store by Page ID (Multi-Strategy Bulletproof Matcher)
-            let businessData: any = null;
-            let bizId: string | null = pathBizId;
             const cleanPageId = String(pageId).trim();
 
             console.log(`[Webhook] Incoming Event for Page ID: "${cleanPageId}", URL BizId: "${pathBizId || 'none'}"`);
 
-            // Strategy 1: Look up by path business ID if provided
-            if (pathBizId && pathBizId !== 'unknown' && pathBizId !== 'system') {
-              try {
-                if (adminDb) {
-                  const d = await adminDb.collection('businesses').doc(pathBizId).get();
-                  if (d.exists) { businessData = d.data(); bizId = pathBizId; }
-                } else if (db) {
-                  const d = await getDoc(doc(db, 'businesses', pathBizId));
-                  if (d.exists()) { businessData = d.data(); bizId = pathBizId; }
-                }
-              } catch (e) {}
-            }
-
-            // Strategy 2: Direct Page ID queries
-            if (!businessData && cleanPageId) {
-              const possiblePageIds = [cleanPageId];
-              if (!isNaN(Number(cleanPageId))) {
-                possiblePageIds.push(Number(cleanPageId) as any);
-              }
-
-              if (adminDb) {
-                try {
-                  for (const pid of possiblePageIds) {
-                    let snap = await adminDb.collection('businesses').where('facebookPageId', '==', pid).limit(1).get();
-                    if (snap.empty) snap = await adminDb.collection('businesses').where('pageId', '==', pid).limit(1).get();
-                    if (snap.empty) snap = await adminDb.collection('businesses').where('facebookConfig.pageId', '==', pid).limit(1).get();
-                    if (snap.empty) snap = await adminDb.collection('businesses').where('facebookConfig.facebookPageId', '==', pid).limit(1).get();
-                    if (!snap.empty) {
-                      businessData = snap.docs[0].data();
-                      bizId = snap.docs[0].id;
-                      console.log(`[Webhook] Admin Lookup Matched Biz: ${bizId}`);
-                      break;
-                    }
-                  }
-                } catch (e: any) {
-                  console.warn('[Webhook] Admin Lookup Query Notice:', e.message);
-                }
-              }
-
-              if (!businessData && db) {
-                try {
-                  for (const pid of possiblePageIds) {
-                    let snap = await getDocs(query(collection(db, 'businesses'), where('facebookPageId', '==', pid), limit(1)));
-                    if (snap.empty) snap = await getDocs(query(collection(db, 'businesses'), where('pageId', '==', pid), limit(1)));
-                    if (!snap.empty) {
-                      businessData = snap.docs[0].data();
-                      bizId = snap.docs[0].id;
-                      console.log(`[Webhook] Client Lookup Matched Biz: ${bizId}`);
-                      break;
-                    }
-                  }
-                } catch (e: any) {
-                  console.warn('[Webhook] Client Lookup Query Notice:', e.message);
-                }
-              }
-            }
-
-            // Strategy 3: In-memory exhaustive scan across all businesses
-            if (!businessData) {
-              try {
-                let allDocs: any[] = [];
-                if (adminDb) {
-                  const allSnap = await adminDb.collection('businesses').limit(100).get();
-                  allDocs = allSnap.docs.map((d: any) => ({ id: d.id, ...d.data() }));
-                } else if (db) {
-                  const allSnap = await getDocs(query(collection(db, 'businesses'), limit(100)));
-                  allDocs = allSnap.docs.map(d => ({ id: d.id, ...d.data() }));
-                }
-
-                // Match against all fields
-                const matched = allDocs.find((b: any) => {
-                  const bPageId = String(b.facebookPageId || b.pageId || b.facebookConfig?.pageId || b.facebookConfig?.facebookPageId || '').trim();
-                  return bPageId && (bPageId === cleanPageId || cleanPageId.includes(bPageId) || bPageId.includes(cleanPageId));
-                });
-
-                if (matched) {
-                  businessData = matched;
-                  bizId = matched.id;
-                  console.log(`[Webhook] In-memory scan matched Biz: ${bizId}`);
-                } else if (allDocs.length === 1) {
-                  // Single store fallback
-                  businessData = allDocs[0];
-                  bizId = allDocs[0].id;
-                  console.log(`[Webhook] Single store fallback applied: ${bizId}`);
-                }
-              } catch (scanErr) {
-                console.error('[Webhook] In-memory scan error:', scanErr);
-              }
-            }
+            const resolved = await resolveBusinessForWebhook(cleanPageId, pathBizId);
+            const businessData = resolved.businessData;
+            const bizId = resolved.bizId;
 
             if (!businessData) {
               console.error(`[Webhook] Business not found for Page ID: "${cleanPageId}"`);
@@ -1480,6 +1688,7 @@ app.post(webhookPaths, async (req, res) => {
             console.log(`[Webhook] Message from ${senderId}: ${finalMessageText}`);
             await logActivity(bizId!, 'INCOMING', `Customer: "${finalMessageText.substring(0, 70)}"`, 'info', ownerId);
             await saveChatMessage(bizId!, senderId, 'user', finalMessageText).catch(e => console.error('Save chat error:', e));
+            await touchMessengerCustomer(bizId!, senderId).catch(() => {});
             await saveMessengerLog(bizId!, { senderId, pageId: cleanPageId, message: finalMessageText, status: 'received' });
 
             const pageAccessToken = businessData.pageAccessToken || 
@@ -1926,6 +2135,7 @@ ${chatHistoryText || 'নতুন আলাপ'}
                   name: nextLead.name || '',
                   phone: nextLead.phone || '',
                   address: nextLead.address || '',
+                  lastIncomingAtMs: Date.now(),
                   lastInteraction: adminDb ? admin.firestore.FieldValue.serverTimestamp() : serverTimestamp(),
                   chatSummary: isFeatureEnabled(storeFeatures, 'chatSummaryEnabled') ? (aiRes?.summary || longTermSummary || '') : (longTermSummary || ''),
                   leadInfo: nextLead,
@@ -2167,65 +2377,174 @@ app.get('/api/chat-history', async (req, res) => {
   }
 });
 
-// Broadcast promotional messages
-app.post('/api/broadcast', async (req, res) => {
-  const { businessId, pageAccessToken, message, segment, ownerId } = req.body;
+function normalizeBroadcastAudience(raw: any): BroadcastAudience {
+  const value = String(raw || 'all').trim().toLowerCase();
+  if (value === 'hot_leads' || value === 'hot' || value === 'leads') return 'hot_leads';
+  if (value === 'buyers' || value === 'buyer') return 'buyers';
+  return 'all';
+}
 
-  if (!businessId || !pageAccessToken || !message) {
-    return res.status(400).json({ error: 'Missing parameters' });
+async function buildBroadcastPlan(businessId: string, audience: BroadcastAudience) {
+  const rows = await loadBusinessCustomers(businessId);
+  const customers = rows.map(normalizeOutreachCustomer);
+  return {
+    totalCustomers: customers.length,
+    ...planBroadcastRecipients(customers, audience)
+  };
+}
+
+app.post('/api/broadcast/preview', async (req, res) => {
+  const businessId = String(req.body?.businessId || '').trim();
+  const audience = normalizeBroadcastAudience(req.body?.targetAudience || req.body?.segment);
+  if (!businessId) return res.status(400).json({ success: false, error: 'businessId প্রয়োজন' });
+
+  try {
+    const loaded = await loadBusinessById(businessId);
+    if (!loaded) return res.status(404).json({ success: false, error: 'স্টোর পাওয়া যায়নি' });
+    const features = mergeFeatures(loaded.data?.features);
+    if (!isFeatureEnabled(features, 'broadcastingEnabled') || !isFeatureEnabled(features, 'messengerRepliesEnabled')) {
+      return res.status(403).json({ success: false, error: 'ব্রডকাস্টিং সুইচবোর্ডে বন্ধ আছে' });
+    }
+    const plan = await buildBroadcastPlan(businessId, audience);
+    return res.json({
+      success: true,
+      audience,
+      eligibleCount: plan.eligible.length,
+      skippedOutsideWindow: plan.skippedOutsideWindow,
+      skippedNoPsid: plan.skippedNoPsid,
+      truncated: plan.truncated,
+      totalCustomers: plan.totalCustomers
+    });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Real Messenger broadcast — 24h window only
+app.post('/api/broadcast', async (req, res) => {
+  const businessId = String(req.body?.businessId || '').trim();
+  const title = String(req.body?.title || '').trim().slice(0, 120);
+  const message = String(req.body?.message || '').trim().slice(0, 1900);
+  const audience = normalizeBroadcastAudience(req.body?.targetAudience || req.body?.segment);
+  const dryRun = req.body?.dryRun === true;
+  const ownerId = req.body?.ownerId;
+
+  if (!businessId || !message) {
+    return res.status(400).json({ success: false, error: 'ক্যাম্পেইন মেসেজ ও স্টোর আইডি দিন' });
   }
 
   if (!adminDb && !db) {
-    return res.status(500).json({ error: 'Firestore not initialized' });
+    return res.status(500).json({ success: false, error: 'Firestore not initialized' });
   }
 
   try {
-    let bizFeatures: any = {};
+    const loaded = await loadBusinessById(businessId);
+    if (!loaded) return res.status(404).json({ success: false, error: 'স্টোর পাওয়া যায়নি' });
+    const businessData = loaded.data;
+    const features = mergeFeatures(businessData?.features);
+    if (!isFeatureEnabled(features, 'broadcastingEnabled') || !isFeatureEnabled(features, 'messengerRepliesEnabled')) {
+      return res.status(403).json({ success: false, error: 'ব্রডকাস্টিং সুইচবোর্ডে বন্ধ আছে' });
+    }
+
+    const pageAccessToken = String(
+      businessData.pageAccessToken || businessData.facebookConfig?.accessToken || businessData.accessToken || req.body?.pageAccessToken || ''
+    ).trim();
+    if (!pageAccessToken && !dryRun) {
+      return res.status(400).json({ success: false, error: 'পেজ অ্যাক্সেস টোকেন নেই। মেসেঞ্জার সেটাপে টোকেন দিন।' });
+    }
+
+    const plan = await buildBroadcastPlan(businessId, audience);
+    if (dryRun) {
+      return res.json({
+        success: true,
+        dryRun: true,
+        audience,
+        eligibleCount: plan.eligible.length,
+        skippedOutsideWindow: plan.skippedOutsideWindow,
+        skippedNoPsid: plan.skippedNoPsid,
+        truncated: plan.truncated,
+        totalCustomers: plan.totalCustomers
+      });
+    }
+
+    const campaignId = `bc-${Date.now()}`;
+    const campaignBase = {
+      id: campaignId,
+      businessId,
+      title: title || 'মেসেঞ্জার অফার',
+      message,
+      targetAudience: audience,
+      status: 'sending',
+      eligibleCount: plan.eligible.length,
+      skippedCount: plan.skippedOutsideWindow + plan.skippedNoPsid,
+      sentCount: 0,
+      failedCount: 0,
+      truncated: plan.truncated,
+      createdAtMs: Date.now(),
+      createdAt: adminDb ? admin.firestore.FieldValue.serverTimestamp() : serverTimestamp()
+    };
+
     try {
-      if (adminDb) {
-        const bSnap = await adminDb.collection('businesses').doc(businessId).get();
-        bizFeatures = bSnap.exists ? (bSnap.data()?.features || {}) : {};
-      }
-    } catch (_) {}
-    if (!isFeatureEnabled(bizFeatures, 'broadcastingEnabled') || !isFeatureEnabled(bizFeatures, 'messengerRepliesEnabled')) {
-      return res.status(403).json({ error: 'Broadcasting is disabled in the feature switchboard' });
-    }
-    let customers: any[] = [];
-    if (adminDb) {
-      let queryRef = adminDb.collection('customers').where('businessId', '==', businessId);
-      if (segment && segment !== 'All') {
-        queryRef = queryRef.where('segment', '==', segment);
-      }
-      const snap = await queryRef.get();
-      customers = snap.docs.map((d: any) => d.data());
-    } else {
-      let q = query(collection(db, 'customers'), where('businessId', '==', businessId));
-      if (segment && segment !== 'All') {
-        q = query(q, where('segment', '==', segment));
-      }
-      const snap = await getDocs(q);
-      customers = snap.docs.map(d => d.data());
+      if (adminDb) await adminDb.collection('broadcasts').doc(campaignId).set(campaignBase);
+      else if (db) await setDoc(doc(db, 'broadcasts', campaignId), campaignBase);
+    } catch (campErr) {
+      console.warn('[broadcast] campaign persist notice:', campErr);
     }
 
-    let successCount = 0;
-    for (const customer of customers) {
-      if (!customer.messengerId) continue;
+    const results = await mapPool(plan.eligible, BROADCAST_CONCURRENCY, async (customer) => {
+      const psid = String(customer.messengerId || '');
+      const text = personalizeOutreachMessage(message, {
+        name: customer.name,
+        shop: businessData.name
+      });
       try {
-        await axios.post(`https://graph.facebook.com/v18.0/me/messages?access_token=${pageAccessToken}`, {
-          recipient: { id: customer.messengerId },
-          message: { text: message }
-        });
-        successCount++;
-        await saveChatMessage(businessId, customer.messengerId, 'merchant', `[BROADCAST] ${message}`);
-      } catch (e) {
-        console.error(`Broadcast failed for ${customer.messengerId}`);
+        await sendBroadcastText(pageAccessToken, psid, text);
+        await saveChatMessage(businessId, psid, 'merchant', `[BROADCAST] ${text}`);
+        return { ok: true as const, psid };
+      } catch (err: any) {
+        const fbError = err.response?.data?.error;
+        return { ok: false as const, psid, error: fbError?.message || err.message || 'send failed' };
       }
-    }
+    });
 
-    await logActivity(businessId, 'BROADCAST_SENT', `${successCount} জন কাস্টমারকে ব্রডকাস্ট পাঠানো হয়েছে।`, 'info', ownerId);
-    res.json({ success: true, count: successCount });
+    const sentCount = results.filter(r => r.ok).length;
+    const failedCount = results.filter(r => !r.ok).length;
+    const failedSample = results.filter(r => !r.ok).slice(0, 5).map(r => r.error);
+
+    const donePatch = {
+      status: 'completed',
+      sentCount,
+      failedCount,
+      finishedAtMs: Date.now()
+    };
+    try {
+      if (adminDb) await adminDb.collection('broadcasts').doc(campaignId).set(donePatch, { merge: true });
+      else if (db) await setDoc(doc(db, 'broadcasts', campaignId), donePatch, { merge: true });
+    } catch (_) {}
+
+    await logActivity(
+      businessId,
+      'BROADCAST_SENT',
+      `${sentCount} জনের ইনবক্সে ব্রডকাস্ট গেছে (${failedCount} ব্যর্থ, ${plan.skippedOutsideWindow} জন ২৪ ঘণ্টার বাইরে)।`,
+      sentCount > 0 ? 'success' : 'info',
+      ownerId || businessData.ownerId
+    );
+
+    return res.json({
+      success: true,
+      campaignId,
+      audience,
+      sentCount,
+      failedCount,
+      skippedOutsideWindow: plan.skippedOutsideWindow,
+      skippedNoPsid: plan.skippedNoPsid,
+      eligibleCount: plan.eligible.length,
+      truncated: plan.truncated,
+      failedSample
+    });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    console.error('[broadcast]', error);
+    return res.status(500).json({ success: false, error: error.message });
   }
 });
 

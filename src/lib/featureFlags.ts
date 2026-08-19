@@ -19,6 +19,7 @@ export const DEFAULT_FEATURES: Required<
     | 'invoicingEnabled'
     | 'autoCourierBookingEnabled'
     | 'broadcastingEnabled'
+    | 'commentToInboxEnabled'
     | 'analyticsEnabled'
     | 'proactiveNotificationsEnabled'
     | 'humanHandoverEnabled'
@@ -41,6 +42,7 @@ export const DEFAULT_FEATURES: Required<
   invoicingEnabled: true,
   autoCourierBookingEnabled: true,
   broadcastingEnabled: true,
+  commentToInboxEnabled: true,
   analyticsEnabled: true,
   proactiveNotificationsEnabled: true,
   humanHandoverEnabled: true,
@@ -71,7 +73,7 @@ export const FEATURE_GROUPS: { id: FeatureGroupId; title: string; hint: string }
   { id: 'ai', title: 'এআই কোর ইঞ্জিন', hint: 'মেসেঞ্জার রিপ্লাই, মিডিয়া ও মেমোরি' },
   { id: 'sales', title: 'সেলস ও অর্ডার অটোমেশন', hint: 'দরদাম, আপসেল, অটো অর্ডার, স্টক' },
   { id: 'experience', title: 'কাস্টমার এক্সপেরিয়েন্স', hint: 'ছবি, ট্র্যাকিং, FAQ, হ্যান্ডওভার' },
-  { id: 'ops', title: 'অপারেশনস ও গ্রোথ', hint: 'কুরিয়ার, ব্রডকাস্ট, অ্যানালিটিক্স, রিকভারি' }
+  { id: 'ops', title: 'অপারেশনস ও গ্রোথ', hint: 'কুরিয়ার, ব্রডকাস্ট, কমেন্ট-ইনবক্স, অ্যানালিটিক্স' }
 ];
 
 export const FEATURE_CATALOG: FeatureDefinition[] = [
@@ -205,8 +207,16 @@ export const FEATURE_CATALOG: FeatureDefinition[] = [
   {
     key: 'broadcastingEnabled',
     title: 'মেসেঞ্জার ব্রডকাস্টিং',
-    desc: 'অফার/রিমার্কেটিং ক্যাম্পেইন পাঠানো যাবে।',
+    desc: '২৪ ঘণ্টার উইন্ডোর ভিতরে অফার/রিমার্কেটিং ক্যাম্পেইন পাঠানো যাবে।',
     impact: 'গ্রোথ',
+    group: 'ops',
+    tab: 'broadcasting'
+  },
+  {
+    key: 'commentToInboxEnabled',
+    title: 'কমেন্ট-টু-ইনবক্স',
+    desc: 'পোস্টে দাম/ইনবক্স কমেন্ট এলে প্রাইভেট মেসেজ খুলে সেলস শুরু করবে।',
+    impact: 'ফিড কমেন্ট → মেসেঞ্জার',
     group: 'ops',
     tab: 'broadcasting'
   },
@@ -260,6 +270,7 @@ export const FEATURE_PRESETS: FeaturePreset[] = [
       autoOrderEnabled: false,
       autoCourierBookingEnabled: false,
       broadcastingEnabled: false,
+      commentToInboxEnabled: true,
       orderTrackingEnabled: true,
       faqEnabled: true,
       humanHandoverEnabled: true,
@@ -276,6 +287,7 @@ export const FEATURE_PRESETS: FeaturePreset[] = [
       autoOrderEnabled: false,
       autoCourierBookingEnabled: false,
       broadcastingEnabled: false,
+      commentToInboxEnabled: false,
       proactiveNotificationsEnabled: false,
       quietHoursEnabled: false
     }

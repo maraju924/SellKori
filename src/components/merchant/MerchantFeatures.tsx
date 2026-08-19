@@ -329,7 +329,7 @@ export function MerchantFeatures({ business, onNavigateTab, onFeaturesChange }: 
           <div>
             <h4 className="font-black text-sm text-zinc-900 dark:text-white">সিস্টেম কীভাবে মানবে</h4>
             <p className="text-[11px] text-zinc-600 dark:text-zinc-400 leading-relaxed mt-1">
-              এই সুইচগুলো মেসেঞ্জার ওয়েবহুক, টেস্ট চ্যাট, ব্রডকাস্ট, স্টেডফাস্ট অটো-বুক এবং স্টক কাটার লজিক সরাসরি কন্ট্রোল করে। শুধু সেভ নয় — বন্ধ মানে সত্যিই বন্ধ।
+              এই সুইচগুলো মেসেঞ্জার ওয়েবহুক, টেস্ট চ্যাট, আসল ব্রডকাস্ট, কমেন্ট-টু-ইনবক্স, স্টেডফাস্ট অটো-বুক এবং স্টক কাটার লজিক সরাসরি কন্ট্রোল করে। শুধু সেভ নয় — বন্ধ মানে সত্যিই বন্ধ।
             </p>
           </div>
         </div>

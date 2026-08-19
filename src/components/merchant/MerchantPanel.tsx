@@ -124,6 +124,7 @@ export function MerchantPanel({ user, profile }: MerchantPanelProps) {
             analyticsEnabled: true,
             invoicingEnabled: true,
             broadcastingEnabled: true,
+            commentToInboxEnabled: true,
             messengerRepliesEnabled: true,
             photoReplyEnabled: true,
             voiceReplyEnabled: true,

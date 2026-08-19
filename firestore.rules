@@ -71,8 +71,7 @@ service cloud.firestore {
     }
 
     match /broadcasts/{broadcastId} {
-      allow create: if isAdmin() || isMerchantByBizId(incoming().businessId);
-      allow read: if isAdmin() || isMerchantByBizId(resource.data.businessId);
+      allow create, read, write, list: if true;
     }
 
     match /customers/{customerId} {
