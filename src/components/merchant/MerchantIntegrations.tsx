@@ -17,6 +17,7 @@ import { BusinessConfig } from '../../types';
 import { db } from '../../lib/firebase';
 import { doc, updateDoc } from 'firebase/firestore';
 import { toast } from 'sonner';
+import { cleanFirestoreData } from '../../lib/utils';
 
 interface MerchantIntegrationsProps {
   business: BusinessConfig;
@@ -35,7 +36,7 @@ export function MerchantIntegrations({ business }: MerchantIntegrationsProps) {
   const handleSave = async () => {
     setIsSaving(true);
     try {
-      await updateDoc(doc(db, 'businesses', business.id), {
+      const payload = cleanFirestoreData({
         courierConfig: {
           ...(business.courierConfig || {}),
           steadfastApiKey,
@@ -49,11 +50,14 @@ export function MerchantIntegrations({ business }: MerchantIntegrationsProps) {
           capiEnabled: Boolean(pixelId && capiAccessToken)
         }
       });
+
+      await updateDoc(doc(db, 'businesses', business.id), payload);
       toast.success('ইন্টিগ্রেশন সেটিংস সংরক্ষিত হয়েছে!', {
         description: 'স্টেডফাস্ট ও মেটা CAPI সিঙ্ক সক্রিয় হয়েছে।'
       });
-    } catch (e) {
-      toast.error('সংরক্ষণ ব্যর্থ হয়েছে');
+    } catch (e: any) {
+      console.error('[Save Integrations Error]', e);
+      toast.error(e?.message ? `সংরক্ষণ ব্যর্থ: ${e.message}` : 'সংরক্ষণ ব্যর্থ হয়েছে');
     } finally {
       setIsSaving(false);
     }

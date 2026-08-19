@@ -232,6 +232,34 @@ export function ChatView() {
                 }`}
               >
                 {msg.content}
+
+                {/* Optional Product Image & Gallery Display */}
+                {msg.role === 'assistant' && msg.aiMetadata?.show_product_image && (() => {
+                  const matched = business.products?.find(p => 
+                    p.name.toLowerCase().includes((msg.aiMetadata?.product_name || '').toLowerCase())
+                  );
+                  if (!matched || !matched.images || matched.images.length === 0) return null;
+
+                  return (
+                    <div className="mt-3 pt-3 border-t border-zinc-100 dark:border-zinc-700 space-y-2">
+                      <div className="flex items-center gap-1.5 text-[11px] font-bold text-orange-600 dark:text-orange-400">
+                        <ShoppingBag className="w-3.5 h-3.5" />
+                        <span>{matched.name}</span>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        {matched.images.slice(0, 4).map((img, idx) => (
+                          <img
+                            key={idx}
+                            src={img}
+                            alt={matched.name}
+                            className="rounded-xl w-full h-24 object-cover border border-zinc-200 dark:border-zinc-700"
+                            referrerPolicy="no-referrer"
+                          />
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })()}
               </div>
             </div>
           ))}

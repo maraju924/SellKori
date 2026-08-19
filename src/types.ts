@@ -1,21 +1,35 @@
+export interface ProductTier {
+  quantity: number;
+  price: number;
+  minPrice: number;
+  label?: string; // e.g. "১ পিস ট্রায়াল", "২ পিস বেস্ট ডিল", "৩ পিস কম্বো"
+}
+
 export interface Product {
   id: string;
   name: string;
   price: number;
   minPrice?: number;
+  pricingTiers?: ProductTier[];
   description: string;
   specs?: string;
   stock?: number;
   category?: string;
   images?: string[];
+  reviewImages?: string[];
   isAvailable?: boolean;
 }
 
 export interface FAQ {
   id: string;
+  type: 'general' | 'product'; // সাধারণ স্টোর প্রশ্নোত্তর নাকি নির্দিষ্ট পণ্যভিত্তিক
   question: string;
   answer: string;
-  category?: string;
+  category?: string; // e.g. "ডেলিভারি", "পেমেন্ট ও সিওডি", "রিটার্ন ও রিফান্ড", "কোয়ালিটি ও সাইজ", "ওয়ারেন্টি", "অর্ডার প্রসেস"
+  productId?: string; // যদি পণ্যভিত্তিক হয়
+  productName?: string; // পণ্যটির নাম
+  tags?: string[];
+  isActive?: boolean;
 }
 
 export interface BusinessFeatures {

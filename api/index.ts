@@ -572,29 +572,55 @@ app.post(['/webhook', '/api/webhook', '/api/webhook/:businessId'], async (req, r
             }
 
             const ownerId = businessData.ownerId;
-            const shopName = businessData.name || "আমাদের দোকান";
-            let finalMessageText = messageText;
+            const shopName = businessData.name || "আমাদের স্টোর";
 
-            // Handle Postbacks & Quick Replies
+            let finalMessageText = messageText;
             if (isPostback) {
               if (payload.startsWith('ORDER_')) {
                 const pid = payload.replace('ORDER_', '');
-                finalMessageText = `আমি পণ্যটি (ID: ${pid}) অর্ডার করতে চাই।`;
+                finalMessageText = `আমি এই প্রোডাক্টটি (ID: ${pid}) অর্ডার করতে চাই।`;
               } else {
-                finalMessageText = webhookEvent.postback.title || payload;
+                finalMessageText = webhookEvent.postback?.title || payload || 'শুরু করুন';
               }
             } else if (webhookEvent.message?.quick_reply) {
-              finalMessageText = webhookEvent.message.quick_reply.payload || webhookEvent.message.text;
-            }
-
-            // Still nothing? Check attachments
-            if (!finalMessageText && webhookEvent.message?.attachments) {
-              finalMessageText = "[Customer sent an attachment]";
+              finalMessageText = webhookEvent.message.quick_reply.payload || messageText;
             }
 
             if (!finalMessageText) {
               console.log('[Webhook] Empty message text, skipping processing');
               continue;
+            }
+
+            // Retrieve recent chat history for context
+            let chatHistoryText = '';
+            try {
+              if (adminDb) {
+                const historySnap = await adminDb.collection('chat_history')
+                  .where('businessId', '==', bizId)
+                  .where('senderId', '==', senderId)
+                  .orderBy('timestamp', 'desc')
+                  .limit(6)
+                  .get();
+                if (!historySnap.empty) {
+                  const msgs = historySnap.docs.map((d: any) => d.data()).reverse();
+                  chatHistoryText = msgs.map((m: any) => `${m.role === 'user' ? 'Customer' : 'Bot'}: ${m.text}`).join('\n');
+                }
+              } else if (db) {
+                const qHist = query(
+                  collection(db, 'chat_history'),
+                  where('businessId', '==', bizId),
+                  where('senderId', '==', senderId),
+                  orderBy('timestamp', 'desc'),
+                  limit(6)
+                );
+                const snapHist = await getDocs(qHist);
+                if (!snapHist.empty) {
+                  const msgs = snapHist.docs.map((d: any) => d.data()).reverse();
+                  chatHistoryText = msgs.map((m: any) => `${m.role === 'user' ? 'Customer' : 'Bot'}: ${m.text}`).join('\n');
+                }
+              }
+            } catch (histErr) {
+              console.warn('[Webhook] Chat history load notice:', histErr);
             }
 
             console.log(`[Webhook] Message from ${senderId}: ${finalMessageText}`);
@@ -619,49 +645,51 @@ app.post(['/webhook', '/api/webhook', '/api/webhook/:businessId'], async (req, r
 
             // AI Processing
             console.log(`[Webhook] Starting AI processing...`);
-            await logActivity(bizId!, 'AI_START', 'বট উত্তর তৈরি করছে...', 'info', ownerId);
-            let chatHistoryText = "";
-            try {
-              if (adminDb) {
-                const hSnap = await adminDb.collection('chat_history')
-                  .where('senderId', '==', senderId)
-                  .where('businessId', '==', bizId)
-                  .orderBy('timestamp', 'desc')
-                  .limit(7)
-                  .get();
-                if (hSnap && !hSnap.empty) {
-                  chatHistoryText = hSnap.docs.reverse().map((d: any) => {
-                    const data = d.data();
-                    return `${data.role === 'user' ? 'Customer' : 'Bot'}: ${data.text}`;
-                  }).join('\n');
-                }
-              }
-            } catch (e: any) {
-              console.warn('[Webhook] History retrieval error:', e.message);
-            }
+            await logActivity(bizId!, 'AI_START', 'বটের কাছে পাঠানো হচ্ছে...', 'info', ownerId);
 
-            const products = (businessData.products || []).map((p: any) => ({ 
-              name: p.name, 
-              price: p.price, 
-              stock: p.stockCount 
+            const products = (businessData.products || []).map((p: any) => ({
+              id: p.id,
+              name: p.name,
+              price: p.price,
+              minPrice: p.minPrice || p.price,
+              pricingTiers: p.pricingTiers || [{ quantity: 1, price: p.price, minPrice: p.minPrice || p.price }],
+              stock: p.stock ?? p.stockCount ?? 10,
+              category: p.category || 'General'
             }));
 
-            const faqs = (businessData.faqs || []).map((f: any) => `${f.question}: ${f.answer}`).join('\n');
+            const allFaqs = businessData.faqs || [];
+            const generalFaqs = allFaqs
+              .filter((f: any) => (f.type || (f.productId ? 'product' : 'general')) === 'general')
+              .map((f: any) => `[${f.category || 'General'}] Q: ${f.question} -> A: ${f.answer}`)
+              .join('\n');
 
-            const prompt = `তুমি "${businessData.name}" এর জন্য একজন দক্ষ সেলস অ্যাসিস্ট্যান্ট। তোমার কাজ হলো কাস্টমারের সাথে বন্ধুত্বপূর্ণ আচরণ করা এবং তাদের কেনাকাটায় সাহায্য করা।
+            const productFaqs = allFaqs
+              .filter((f: any) => (f.type || (f.productId ? 'product' : 'general')) === 'product')
+              .map((f: any) => `[Product: ${f.productName || f.productId}] Q: ${f.question} -> A: ${f.answer}`)
+              .join('\n');
+
+            const prompt = `তুমি "${businessData.name}" এর জন্য একজন অত্যন্ত দক্ষ, বিনয়ী ও পেশাদার সেলস অ্যাসিস্ট্যান্ট। তোমার কাজ হলো কাস্টমারের সাথে বন্ধুত্বপূর্ণ আচরণ করা, পণ্যের সঠিক তথ্য দেওয়া এবং অর্ডার নেওয়া।
 
 দোকানের বর্ণনা: ${businessData.description || ''}
-পণ্যতালিকা: ${JSON.stringify(products)}
-সচরাচর জিজ্ঞাসা (FAQs):
-${faqs}
+পণ্যতালিকা ও প্রাইসিং অফার:
+${JSON.stringify(products, null, 2)}
+
+সাধারণ স্টোর পলিসি FAQs (ডেলিভারি, পেমেন্ট, রিটার্ন):
+${generalFaqs || 'কোনো সাধারণ FAQ নেই।'}
+
+পণ্যভিত্তিক বিশেষ প্রশ্নোত্তর FAQs (সাইজ, মেটেরিয়াল, কোয়ালিটি):
+${productFaqs || 'কোনো পণ্যভিত্তিক FAQ নেই।'}
 
 অতিরিক্ত নিয়ম ও ব্যক্তিত্ব: ${businessData.botPersona || ''}
 
 নির্দেশনা:
-১. সবসময় নম্রভাবে কথা বলবে এবং বাংলা ভাষা ব্যবহার করবে।
-২. কাস্টমার যদি পণ্য সম্পর্কে জানতে চায়, তবে পণ্যতালিকা থেকে তথ্য দিবে। স্টক না থাকলে বিনীতভাবে জানাবে।
-৩. যদি কাস্টমার অর্ডার করতে চায়, তবে তাদের নাম, ফোন নম্বর এবং ঠিকানা জানতে চাইবে।
-৪. কথা সংক্ষেপে কিন্তু কার্যকরভাবে বলবে।
+১. সবসময় নম্র ও মার্জিত বাংলায় কথা বলবে।
+২. কাস্টমার দাম জানতে চাইলে একক মূল্যের পাশাপাশি আকর্ষণীয় কোয়ান্টিটি বান্ডেল অফার (যেমন: ১ পিস ৫০০৳, ২ পিস ৮০০৳, ৩ পিস ১০০০৳) তুলে ধরবে যাতে কাস্টমার বেশি কিনতে উৎসাহিত হয়।
+৩. কাস্টমার সাধারণ পলিসি (ডেলিভারি, সিওডি, রিটার্ন) নিয়ে প্রশ্ন করলে 'সাধারণ স্টোর পলিসি FAQs' থেকে উত্তর দেবে।
+৪. কাস্টমার কোনো বিশেষ প্রোডাক্টের সাইজ, মেটেরিয়াল বা যত্ন নিয়ে প্রশ্ন করলে 'পণ্যভিত্তিক বিশেষ প্রশ্নোত্তর FAQs' থেকে উত্তর দেবে।
+৫. কাস্টমার দরদাম (Bargaining) করতে চাইলে সংশ্লিষ্ট কোয়ান্টিটির সর্বনিম্ন দরদাম সীমা (minPrice) বজায় রেখে নেগোসিয়েট করবে। কখনোই minPrice-এর নিচে বিক্রি করতে রাজি হবে না।
+৬. কাস্টমার যদি অর্ডার করতে চায়, তবে তাদের নাম, ফোন নম্বর (১১ ডিজিট) এবং সম্পূর্ণ ডেলিভারি ঠিকানা জানতে চাইবে।
+৭. কথা সংক্ষেপে কিন্তু কার্যকরভাবে বলবে।
 
 সাম্প্রতিক আলাপ:
 ${chatHistoryText}
