@@ -1,17 +1,56 @@
 {
   "version": 2,
+  "functions": {
+    "api/index.ts": {
+      "maxDuration": 60
+    },
+    "api/webhook/index.ts": {
+      "maxDuration": 60
+    },
+    "api/webhook/[businessId].ts": {
+      "maxDuration": 60
+    }
+  },
   "rewrites": [
     {
-      "source": "/api/(.*)",
-      "destination": "/api/index.ts"
+      "source": "/api/((?!webhook).*)",
+      "destination": "/api"
     },
     {
-      "source": "/webhook(.*)",
-      "destination": "/api/index.ts"
+      "source": "/webhook",
+      "destination": "/api/webhook"
+    },
+    {
+      "source": "/webhook/:businessId",
+      "destination": "/api/webhook/:businessId"
+    },
+    {
+      "source": "/messenger/webhook",
+      "destination": "/api/webhook"
+    },
+    {
+      "source": "/messenger/webhook/:businessId",
+      "destination": "/api/webhook/:businessId"
     },
     {
       "source": "/((?!api|webhook|assets|favicon.ico).*)",
       "destination": "/index.html"
+    }
+  ],
+  "headers": [
+    {
+      "source": "/api/webhook(.*)",
+      "headers": [
+        { "key": "Cache-Control", "value": "no-store, no-cache, must-revalidate, private" },
+        { "key": "Pragma", "value": "no-cache" }
+      ]
+    },
+    {
+      "source": "/webhook(.*)",
+      "headers": [
+        { "key": "Cache-Control", "value": "no-store, no-cache, must-revalidate, private" },
+        { "key": "Pragma", "value": "no-cache" }
+      ]
     }
   ]
 }

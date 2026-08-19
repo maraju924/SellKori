@@ -31,6 +31,16 @@ import {
   shouldPrivateReplyToComment,
   type BroadcastAudience
 } from '../src/lib/outreach';
+import {
+  classifyWebhookToken,
+  extractWebhookBusinessId,
+  isMetaPageWebhookPayload,
+  isMetaWebhookVerification,
+  PAGE_SUBSCRIBE_FIELDS,
+  parseWebhookVerification,
+  resolveRequestPath,
+  withTimeout
+} from '../src/lib/messengerWebhook';
 
 dotenv.config();
 
@@ -520,6 +530,84 @@ async function loadBusinessById(businessId: string): Promise<{ id: string; data:
     console.warn('[loadBusinessById]', err);
   }
   return null;
+}
+
+async function findBusinessByVerifyToken(token: string): Promise<{ id: string; data: any } | null> {
+  const clean = String(token || '').trim();
+  if (!clean) return null;
+  try {
+    if (adminDb) {
+      let snap = await adminDb.collection('businesses').where('messengerVerifyToken', '==', clean).limit(1).get();
+      if (snap.empty) snap = await adminDb.collection('businesses').where('verifyToken', '==', clean).limit(1).get();
+      if (!snap.empty) return { id: snap.docs[0].id, data: snap.docs[0].data() };
+    }
+    if (db) {
+      let snap = await getDocs(query(collection(db, 'businesses'), where('messengerVerifyToken', '==', clean), limit(1)));
+      if (snap.empty) snap = await getDocs(query(collection(db, 'businesses'), where('verifyToken', '==', clean), limit(1)));
+      if (!snap.empty) return { id: snap.docs[0].id, data: snap.docs[0].data() };
+    }
+  } catch (err) {
+    console.warn('[findBusinessByVerifyToken]', err);
+  }
+  return null;
+}
+
+async function subscribePageToMessenger(pageAccessToken: string) {
+  const cleanToken = String(pageAccessToken || '').trim();
+  const fields = PAGE_SUBSCRIBE_FIELDS.join(',');
+  const pageRes = await axios.get('https://graph.facebook.com/v21.0/me', {
+    params: { fields: 'id,name,category,link', access_token: cleanToken },
+    timeout: 15000
+  });
+
+  const pageId = String(pageRes.data?.id || '').trim();
+  let subscribed = false;
+  let subscribeError = '';
+  const attempts: Array<() => Promise<unknown>> = [
+    () => axios.post(
+      'https://graph.facebook.com/v21.0/me/subscribed_apps',
+      { subscribed_fields: fields },
+      { params: { access_token: cleanToken }, timeout: 15000 }
+    ),
+    () => axios.post(
+      `https://graph.facebook.com/v21.0/me/subscribed_apps?access_token=${encodeURIComponent(cleanToken)}&subscribed_fields=${encodeURIComponent(fields)}`,
+      {},
+      { timeout: 15000 }
+    )
+  ];
+  if (pageId) {
+    attempts.push(() => axios.post(
+      `https://graph.facebook.com/v21.0/${encodeURIComponent(pageId)}/subscribed_apps`,
+      { subscribed_fields: fields },
+      { params: { access_token: cleanToken }, timeout: 15000 }
+    ));
+  }
+
+  for (const attempt of attempts) {
+    try {
+      await attempt();
+      subscribed = true;
+      break;
+    } catch (err: any) {
+      subscribeError = err.response?.data?.error?.message || err.message || 'subscribe failed';
+    }
+  }
+
+  let subscriptions: any = null;
+  try {
+    const subRes = await axios.get('https://graph.facebook.com/v21.0/me/subscribed_apps', {
+      params: { access_token: cleanToken },
+      timeout: 10000
+    });
+    subscriptions = subRes.data;
+  } catch (_) {}
+
+  return {
+    page: pageRes.data,
+    subscribed,
+    subscribeError: subscribed ? '' : subscribeError,
+    subscriptions
+  };
 }
 
 async function resolveBusinessForWebhook(cleanPageId: string, pathBizId?: string): Promise<{ businessData: any | null; bizId: string | null }> {
@@ -1248,6 +1336,31 @@ app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
+app.use((req, _res, next) => {
+  const resolved = resolveRequestPath({
+    path: req.path,
+    originalUrl: req.originalUrl,
+    url: req.url,
+    headers: req.headers as Record<string, unknown>
+  });
+  (req as any)._resolvedPath = resolved;
+
+  const currentPath = String(req.originalUrl || req.url || req.path || '').split('?')[0];
+  if (resolved && resolved !== '/' && resolved !== currentPath) {
+    const qsIndex = String(req.url || '').indexOf('?');
+    const qs = qsIndex >= 0 ? String(req.url).slice(qsIndex) : '';
+    req.url = resolved + qs;
+  }
+  next();
+});
+
+function webhookBusinessIdFromReq(req: express.Request): string | undefined {
+  return extractWebhookBusinessId((req as any)._resolvedPath || req.path, {
+    businessId: req.params.businessId,
+    '0': (req.params as any)['0']
+  });
+}
+
 // Test Connection Endpoint
 app.post('/api/test-connection', async (req, res) => {
   const { businessId, ownerId } = req.body;
@@ -1275,7 +1388,7 @@ app.get('/api/status', (req, res) => {
     geminiConfigured: !!process.env.GEMINI_API_KEY,
     firebaseConfigured: !!process.env.FIREBASE_PROJECT_ID || !!process.env.FIREBASE_SERVICE_ACCOUNT,
     adminDbReady: !!adminDb,
-    serverVersion: '1.3.0',
+    serverVersion: '1.4.0',
     timestamp: new Date().toISOString()
   });
 });
@@ -1414,7 +1527,9 @@ app.post('/api/ai/test', async (req, res) => {
   }
 });
 
-// Webhook Paths configuration
+// Webhook Paths configuration — kept as explicit aliases. Meta traffic is
+// ALSO intercepted below by query/body (Vercel rewrites often land on
+// `/api` or `/api/index.ts` instead of `/api/webhook`).
 const webhookPaths = [
   '/webhook',
   '/webhook/:businessId',
@@ -1427,88 +1542,96 @@ const webhookPaths = [
   '/api/messenger/webhook/*',
   '/messenger/webhook',
   '/messenger/webhook/:businessId',
-  '/messenger/webhook/*'
+  '/messenger/webhook/*',
+  '/api',
+  '/api/',
+  '/api/index',
+  '/api/index.ts',
+  '/api/index.js'
 ];
 
-// Consolidated Webhook Verification (GET)
-app.get(webhookPaths, async (req, res) => {
-  const mode = req.query['hub.mode'] || req.query['mode'];
-  const token = ((req.query['hub.verify_token'] || req.query['verify_token']) as string) || '';
-  const challenge = req.query['hub.challenge'] || req.query['challenge'];
-  const pathParts = req.path.split('/').filter(Boolean);
-  const rawBizId = req.params.businessId || (req.params as any)['0'] || (pathParts.length > 2 ? pathParts[pathParts.length - 1] : undefined);
-  const businessId = (rawBizId && rawBizId !== 'webhook' && rawBizId !== 'api' && rawBizId !== 'messenger') ? rawBizId : undefined;
+async function handleMessengerWebhookGet(req: express.Request, res: express.Response) {
+  if ((req as any)._messengerVerifyHandled) return;
+  (req as any)._messengerVerifyHandled = true;
 
-  console.log(`[Webhook GET Handshake] Path=${req.path}, Mode=${mode}, Token=${token}, Challenge=${challenge}, BizId=${businessId}`);
-  
-  if (mode === 'subscribe' && challenge) {
-    let authorized = false;
-    const universalTokens = [
-      'sellkori_verify_token',
-      'sellkori_token',
-      'sellkori',
-      'chatbyraju',
-      '1058370033',
-      'sendbyraju',
-      'raju',
-      'webhook'
-    ];
-    
-    const cleanToken = token.trim();
+  const { mode, token, challenge } = parseWebhookVerification(req.query as Record<string, unknown>);
+  const businessId = webhookBusinessIdFromReq(req);
+  const resolvedPath = (req as any)._resolvedPath || req.path;
 
-    if (!cleanToken || universalTokens.includes(cleanToken.toLowerCase())) {
-      authorized = true;
-    } else if (businessId && cleanToken === businessId) {
-      authorized = true;
-    } else if (businessId) {
-      // Lookup specific token for this business
-      try {
-        if (adminDb) {
-          const docSnap = await adminDb.collection('businesses').doc(businessId).get();
-          if (docSnap.exists) {
-            const data = docSnap.data();
-            const expected = data.messengerVerifyToken || data.verifyToken;
-            if (expected === cleanToken) authorized = true;
-          }
-        } else if (db) {
-          const docSnap = await getDoc(doc(db, 'businesses', businessId));
-          if (docSnap.exists()) {
-            const data = docSnap.data();
-            const expected = data.messengerVerifyToken || data.verifyToken;
-            if (expected === cleanToken) authorized = true;
-          }
-        }
-      } catch (e) { 
-        console.error('Verify Token DB lookup failed', e); 
-      }
+  console.log(`[Webhook GET Handshake] Path=${req.path}, Resolved=${resolvedPath}, Mode=${mode}, Token=${token}, Challenge=${challenge}, BizId=${businessId}`);
+
+  const reject = (reason: string) => {
+    console.warn(`[Webhook Handshake Failed] ${reason} Mode=${mode} Token=${token}`);
+    logActivity(businessId || 'system', 'WEBHOOK_FAILED', `Handshake failed (${reason}). Token: ${token}`, 'error', 'system').catch(() => {});
+    if (!res.headersSent) {
+      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+      res.status(403).send('Forbidden');
     }
+  };
 
-    // SECURITY NOTE: this used to unconditionally set authorized = true for
-    // ANY verify token once mode=subscribe was present — meaning the
-    // verify-token check above was decorative and anyone who knew (or
-    // guessed) your webhook URL could pass Meta's handshake. Removed.
-    // A request only succeeds now if it matched one of the known universal
-    // tokens, the business ID itself, or the business's configured
-    // messengerVerifyToken/verifyToken in Firestore.
+  if (mode !== 'subscribe' || !challenge) {
+    return reject('missing-subscribe-or-challenge');
+  }
 
-    if (authorized) {
-      console.log(`[Webhook Handshake Success] Responding with challenge: ${challenge}`);
-      await logActivity(businessId || 'system', 'WEBHOOK_VERIFIED', `Handshake successful. Token: ${token || 'none'}`, 'success', 'system').catch(() => {});
-      res.setHeader('Content-Type', 'text/plain');
-      return res.status(200).send(String(challenge));
+  let business: Record<string, unknown> | null = null;
+  let matchedByScan = false;
+  if (businessId) {
+    const loaded = await withTimeout(loadBusinessById(businessId), 2500, null);
+    if (loaded) business = loaded.data as Record<string, unknown>;
+  }
+  if (!business && token) {
+    const scanned = await withTimeout(findBusinessByVerifyToken(token), 2500, null);
+    if (scanned) {
+      business = scanned.data as Record<string, unknown>;
+      matchedByScan = true;
     }
   }
-  
-  console.warn(`[Webhook Handshake Failed] Mode=${mode}, Token=${token}`);
-  await logActivity(businessId || 'system', 'WEBHOOK_FAILED', `Handshake failed. Token: ${token}`, 'error', 'system').catch(() => {});
-  res.status(403).send('Forbidden');
+
+  const verdict = classifyWebhookToken({
+    token,
+    businessId,
+    business,
+    matchedByScan
+  });
+
+  if (!verdict.authorized) {
+    return reject(verdict.reason);
+  }
+
+  // Echo hub.challenge as raw text BEFORE any Firestore log. Meta times out
+  // the handshake in a few seconds; awaiting logs was a common verify failure.
+  res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+  res.setHeader('Pragma', 'no-cache');
+  res.status(200).send(String(challenge));
+  console.log(`[Webhook Handshake Success] reason=${verdict.reason} challenge=${challenge}`);
+  logActivity(
+    businessId || 'system',
+    'WEBHOOK_VERIFIED',
+    `Handshake successful (${verdict.reason}).`,
+    'success',
+    'system'
+  ).catch(() => {});
+}
+
+app.use((req, res, next) => {
+  if (req.method === 'GET' && isMetaWebhookVerification(req.query as Record<string, unknown>)) {
+    return handleMessengerWebhookGet(req, res);
+  }
+  if (req.method === 'POST' && isMetaPageWebhookPayload(req.body)) {
+    return handleMessengerWebhookPost(req, res);
+  }
+  next();
 });
 
+app.get(webhookPaths, handleMessengerWebhookGet);
+
 // Consolidated Messenger Message Handler (POST)
-app.post(webhookPaths, async (req, res) => {
-  const pathParts = req.path.split('/').filter(Boolean);
-  const rawBizId = req.params.businessId || (req.params as any)['0'] || (pathParts.length > 2 ? pathParts[pathParts.length - 1] : undefined);
-  const pathBizId = (rawBizId && rawBizId !== 'webhook' && rawBizId !== 'api' && rawBizId !== 'messenger') ? rawBizId : undefined;
+async function handleMessengerWebhookPost(req: any, res: any) {
+  if ((req as any)._messengerWebhookHandled) return;
+  (req as any)._messengerWebhookHandled = true;
+  const pathBizId = webhookBusinessIdFromReq(req);
   const body = req.body;
 
   // IMPORTANT: We used to ack Facebook immediately with res.send() and then
@@ -2190,9 +2313,24 @@ ${chatHistoryText || 'নতুন আলাপ'}
       // sending the AI reply. See note above.
       try { res.status(200).send('EVENT_RECEIVED'); } catch (_) {}
     }
+}
+
+app.post(webhookPaths, handleMessengerWebhookPost);
+
+app.get(['/api/messenger/health', '/api/webhook/health'], (_req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({
+    ok: true,
+    webhook: true,
+    adminDbReady: !!adminDb,
+    clientDbReady: !!db,
+    subscribeFields: PAGE_SUBSCRIBE_FIELDS,
+    serverVersion: '1.4.0',
+    timestamp: new Date().toISOString()
+  });
 });
 
-// Meta Graph API Token Health Test
+// Meta Graph API Token Health Test + page subscription
 app.post('/api/messenger/test-token', async (req, res) => {
   const { pageAccessToken } = req.body;
   if (!pageAccessToken || typeof pageAccessToken !== 'string') {
@@ -2200,10 +2338,14 @@ app.post('/api/messenger/test-token', async (req, res) => {
   }
 
   try {
-    const metaRes = await axios.get(`https://graph.facebook.com/v21.0/me?fields=id,name,category,link&access_token=${encodeURIComponent(pageAccessToken.trim())}`);
+    const result = await subscribePageToMessenger(pageAccessToken.trim());
     return res.json({
       success: true,
-      page: metaRes.data
+      page: result.page,
+      subscribed: result.subscribed,
+      subscribeError: result.subscribeError || undefined,
+      subscriptions: result.subscriptions,
+      subscribeFields: PAGE_SUBSCRIBE_FIELDS
     });
   } catch (err: any) {
     const errorData = err.response?.data?.error;
@@ -2211,6 +2353,30 @@ app.post('/api/messenger/test-token', async (req, res) => {
     return res.status(400).json({
       success: false,
       error: `ফেসবুক এরর: ${msg}`
+    });
+  }
+});
+
+app.post('/api/messenger/subscribe-page', async (req, res) => {
+  const { pageAccessToken } = req.body || {};
+  if (!pageAccessToken || typeof pageAccessToken !== 'string') {
+    return res.status(400).json({ success: false, error: 'Page Access Token প্রদান করুন।' });
+  }
+  try {
+    const result = await subscribePageToMessenger(pageAccessToken.trim());
+    return res.json({
+      success: true,
+      page: result.page,
+      subscribed: result.subscribed,
+      subscribeError: result.subscribeError || undefined,
+      subscriptions: result.subscriptions,
+      subscribeFields: PAGE_SUBSCRIBE_FIELDS
+    });
+  } catch (err: any) {
+    const errorData = err.response?.data?.error;
+    return res.status(400).json({
+      success: false,
+      error: errorData?.message || err.message || 'পেজ সাবস্ক্রাইব ব্যর্থ'
     });
   }
 });
