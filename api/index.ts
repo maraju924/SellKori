@@ -51,27 +51,36 @@ try {
       // Try to get Admin Firestore for the specific database ID
       adminDb = getAdminFirestore(adminApp, dbId && dbId !== '(default)' ? dbId : undefined);
       
-      // Verification test
-      try {
-        await adminDb.collection('businesses').limit(1).get();
-        console.log(`[Firebase] Admin SDK Verified on Database: ${dbId || '(default)'}`);
-      } catch (testErr: any) {
-        if (dbId && dbId !== '(default)') {
-          console.log(`[Firebase] Admin DB "${dbId}" access denied. Falling back to (default) database...`);
-          try {
+      // Verification test — IMPORTANT: this must NOT block module load with a
+      // top-level `await`. On a Vercel serverless cold start, the exported
+      // `app` isn't usable by the runtime until this whole module finishes
+      // evaluating; a slow/hanging Firestore call here delayed (or, under
+      // Vercel's execution time limit, sometimes killed) the very first
+      // request after any idle period — which matches "refresh and it
+      // sometimes works" behavior. We fire the check in the background
+      // instead and self-correct adminDb once it resolves.
+      adminDb.collection('businesses').limit(1).get()
+        .then(() => {
+          console.log(`[Firebase] Admin SDK Verified on Database: ${dbId || '(default)'}`);
+        })
+        .catch((testErr: any) => {
+          if (dbId && dbId !== '(default)') {
+            console.log(`[Firebase] Admin DB "${dbId}" access denied. Falling back to (default) database...`);
             const fallbackDb = getAdminFirestore(adminApp);
-            await fallbackDb.collection('businesses').limit(1).get();
-            adminDb = fallbackDb;
-            console.log('[Firebase] Admin SDK switched to (default) database.');
-          } catch (e2) {
-            console.warn('[Firebase] Admin SDK unusable on any database. Falling back to Client SDK only.');
+            fallbackDb.collection('businesses').limit(1).get()
+              .then(() => {
+                adminDb = fallbackDb;
+                console.log('[Firebase] Admin SDK switched to (default) database.');
+              })
+              .catch(() => {
+                console.warn('[Firebase] Admin SDK unusable on any database. Falling back to Client SDK only.');
+                adminDb = null;
+              });
+          } else {
+            console.warn('[Firebase] Admin SDK permission denied on (default) DB. Falling back to Client SDK.');
             adminDb = null;
           }
-        } else {
-          console.warn('[Firebase] Admin SDK permission denied on (default) DB. Falling back to Client SDK.');
-          adminDb = null;
-        }
-      }
+        });
     } catch (adminErr: any) {
       console.error('[Firebase] Admin Setup Error:', adminErr?.message);
       adminDb = null;
@@ -141,7 +150,7 @@ const responseSchema = {
     },
     reply: {
       type: SchemaType.STRING,
-      description: "The reply in Bengali language",
+      description: "The reply in Bengali language (concise, 1 to 3 sentences maximum)",
     },
     summary: {
       type: SchemaType.STRING,
@@ -154,6 +163,9 @@ const responseSchema = {
         phone: { type: SchemaType.STRING },
         address: { type: SchemaType.STRING },
         quantity: { type: SchemaType.STRING },
+        product_name: { type: SchemaType.STRING },
+        unit_price: { type: SchemaType.NUMBER },
+        has_full_order: { type: SchemaType.BOOLEAN }
       },
     },
     conversation_stage: {
@@ -170,6 +182,47 @@ const responseSchema = {
   },
   required: ["intent", "reply", "conversation_stage", "event_name", "summary"],
 };
+
+// Meta Webhook Message Deduplication Cache (Idempotency Engine)
+const processedMessagesCache = new Map<string, number>();
+function isDuplicateMessage(mid: string): boolean {
+  if (!mid) return false;
+  const now = Date.now();
+  if (processedMessagesCache.size > 2000) {
+    for (const [key, timestamp] of processedMessagesCache.entries()) {
+      if (now - timestamp > 10 * 60 * 1000) {
+        processedMessagesCache.delete(key);
+      }
+    }
+  }
+  if (processedMessagesCache.has(mid)) {
+    console.log(`[Webhook Deduplication] Skipping duplicate message ID: ${mid}`);
+    return true;
+  }
+  processedMessagesCache.set(mid, now);
+  return false;
+}
+
+// Send a product image to Messenger as an image attachment
+async function sendImageMessage(pageAccessToken: string, senderId: string, imageUrl: string) {
+  const cleanToken = String(pageAccessToken).trim();
+  const payload = {
+    recipient: { id: senderId },
+    messaging_type: 'RESPONSE',
+    message: {
+      attachment: {
+        type: 'image',
+        payload: { url: imageUrl, is_reusable: true }
+      }
+    }
+  };
+  try {
+    await axios.post(`https://graph.facebook.com/v21.0/me/messages?access_token=${encodeURIComponent(cleanToken)}`, payload, { timeout: 15000 });
+  } catch (err: any) {
+    console.warn('[Webhook] v21.0 image send failed, trying v18.0 fallback...', err.response?.data || err.message);
+    await axios.post(`https://graph.facebook.com/v18.0/me/messages?access_token=${encodeURIComponent(cleanToken)}`, payload, { timeout: 15000 });
+  }
+}
 
 // Helper to get effective Gemini Config (Admin DB or Environment)
 async function getEffectiveGeminiConfig() {
@@ -509,12 +562,16 @@ app.post('/api/ai/test', async (req, res) => {
 const webhookPaths = [
   '/webhook',
   '/webhook/:businessId',
+  '/webhook/*',
   '/api/webhook',
   '/api/webhook/:businessId',
+  '/api/webhook/*',
   '/api/messenger/webhook',
   '/api/messenger/webhook/:businessId',
+  '/api/messenger/webhook/*',
   '/messenger/webhook',
-  '/messenger/webhook/:businessId'
+  '/messenger/webhook/:businessId',
+  '/messenger/webhook/*'
 ];
 
 // Consolidated Webhook Verification (GET)
@@ -522,7 +579,9 @@ app.get(webhookPaths, async (req, res) => {
   const mode = req.query['hub.mode'] || req.query['mode'];
   const token = ((req.query['hub.verify_token'] || req.query['verify_token']) as string) || '';
   const challenge = req.query['hub.challenge'] || req.query['challenge'];
-  const { businessId } = req.params;
+  const pathParts = req.path.split('/').filter(Boolean);
+  const rawBizId = req.params.businessId || (req.params as any)['0'] || (pathParts.length > 2 ? pathParts[pathParts.length - 1] : undefined);
+  const businessId = (rawBizId && rawBizId !== 'webhook' && rawBizId !== 'api' && rawBizId !== 'messenger') ? rawBizId : undefined;
 
   console.log(`[Webhook GET Handshake] Path=${req.path}, Mode=${mode}, Token=${token}, Challenge=${challenge}, BizId=${businessId}`);
   
@@ -568,12 +627,14 @@ app.get(webhookPaths, async (req, res) => {
       }
     }
 
-    // Auto-authorize any Meta webhook challenge with subscribe mode
-    if (!authorized) {
-      console.log(`[Webhook Handshake] Auto-authorizing Meta handshake for token: "${cleanToken}"`);
-      authorized = true;
-    }
-    
+    // SECURITY NOTE: this used to unconditionally set authorized = true for
+    // ANY verify token once mode=subscribe was present — meaning the
+    // verify-token check above was decorative and anyone who knew (or
+    // guessed) your webhook URL could pass Meta's handshake. Removed.
+    // A request only succeeds now if it matched one of the known universal
+    // tokens, the business ID itself, or the business's configured
+    // messengerVerifyToken/verifyToken in Firestore.
+
     if (authorized) {
       console.log(`[Webhook Handshake Success] Responding with challenge: ${challenge}`);
       await logActivity(businessId || 'system', 'WEBHOOK_VERIFIED', `Handshake successful. Token: ${token || 'none'}`, 'success', 'system').catch(() => {});
@@ -589,15 +650,22 @@ app.get(webhookPaths, async (req, res) => {
 
 // Consolidated Messenger Message Handler (POST)
 app.post(webhookPaths, async (req, res) => {
-  const { businessId: pathBizId } = req.params;
+  const pathParts = req.path.split('/').filter(Boolean);
+  const rawBizId = req.params.businessId || (req.params as any)['0'] || (pathParts.length > 2 ? pathParts[pathParts.length - 1] : undefined);
+  const pathBizId = (rawBizId && rawBizId !== 'webhook' && rawBizId !== 'api' && rawBizId !== 'messenger') ? rawBizId : undefined;
   const body = req.body;
 
-  // Acknowledge immediately to prevent Facebook retries
-  res.status(200).send('EVENT_RECEIVED');
-
-  // Process in background
-  (async () => {
-    try {
+  // IMPORTANT: We used to ack Facebook immediately with res.send() and then
+  // process the message in a detached async IIFE "in the background".
+  // On Vercel serverless functions, the runtime is allowed to freeze/kill
+  // the function as soon as the HTTP response is flushed — there is no
+  // guarantee that code after res.send() keeps running. This was the root
+  // cause of the bot "sometimes replying, sometimes not": whether the
+  // background work finished before Vercel froze the instance was random.
+  // Fix: fully await processing and only respond once it's done. Facebook
+  // allows up to ~20s before it considers the webhook a timeout/retry,
+  // which is comfortably more than a Gemini call + Graph API send.
+  try {
       // Diagnostic log
       await logActivity(pathBizId || 'system', 'WEBHOOK_PROCESSED', `Webhook hit. Entries: ${body.entry?.length || 0}`, 'info', 'system', body);
 
@@ -614,6 +682,7 @@ app.post(webhookPaths, async (req, res) => {
           try {
             const senderId = String(webhookEvent.sender?.id || '').trim();
             const messageText = webhookEvent.message?.text || '';
+            const messageMid = String(webhookEvent.message?.mid || '').trim();
             const isPostback = !!webhookEvent.postback;
             const payload = webhookEvent.postback?.payload || '';
             
@@ -625,6 +694,12 @@ app.post(webhookPaths, async (req, res) => {
             // Skip echo/delivery/read/etc.
             if (webhookEvent.message?.is_echo || webhookEvent.delivery || webhookEvent.read) {
               console.log('[Webhook] Skipping non-message event');
+              continue;
+            }
+
+            // Deduplication Guard (Idempotency)
+            if (messageMid && isDuplicateMessage(messageMid)) {
+              console.log(`[Webhook] Duplicate message mid=${messageMid} ignored.`);
               continue;
             }
 
@@ -762,7 +837,27 @@ app.post(webhookPaths, async (req, res) => {
             }
 
             // Retrieve recent chat history for context (Robust multi-source)
+            // Two layers of memory:
+            //  1. Long-term summary (survives forever, from `customers.chatSummary`) —
+            //     so the bot still "remembers" a customer even if they come back
+            //     weeks later and the raw message window has scrolled past.
+            //  2. Short-term raw transcript (last N messages) for exact wording/context.
             let chatHistoryText = '';
+            let longTermSummary = '';
+            const HISTORY_WINDOW = 16; // was 8 — doubled so mid-length conversations don't lose context
+
+            try {
+              if (adminDb) {
+                const custSnap = await adminDb.collection('customers').doc(`${bizId}_${senderId}`).get();
+                if (custSnap.exists) longTermSummary = custSnap.data()?.chatSummary || '';
+              } else if (db) {
+                const custSnap = await getDoc(doc(db, 'customers', `${bizId}_${senderId}`));
+                if (custSnap.exists()) longTermSummary = custSnap.data()?.chatSummary || '';
+              }
+            } catch (sumErr) {
+              console.warn('[Webhook] Long-term summary load notice:', sumErr);
+            }
+
             try {
               // 1. Try reading the unified chats doc which has messages array
               let chatDocData: any = null;
@@ -775,7 +870,7 @@ app.post(webhookPaths, async (req, res) => {
               }
 
               if (chatDocData && Array.isArray(chatDocData.messages) && chatDocData.messages.length > 0) {
-                const recentMsgs = chatDocData.messages.slice(-8);
+                const recentMsgs = chatDocData.messages.slice(-HISTORY_WINDOW);
                 chatHistoryText = recentMsgs.map((m: any) => `${m.role === 'user' ? 'Customer' : 'Bot'}: ${m.text}`).join('\n');
               } else {
                 // 2. Fallback to chat_history collection query
@@ -783,12 +878,12 @@ app.post(webhookPaths, async (req, res) => {
                   const historySnap = await adminDb.collection('chat_history')
                     .where('businessId', '==', bizId)
                     .where('senderId', '==', senderId)
-                    .limit(10)
+                    .limit(HISTORY_WINDOW)
                     .get();
                   if (!historySnap.empty) {
                     const msgs = historySnap.docs.map((d: any) => d.data());
                     msgs.sort((a: any, b: any) => (a.timestamp?.seconds || 0) - (b.timestamp?.seconds || 0));
-                    chatHistoryText = msgs.slice(-8).map((m: any) => `${m.role === 'user' ? 'Customer' : 'Bot'}: ${m.text}`).join('\n');
+                    chatHistoryText = msgs.slice(-HISTORY_WINDOW).map((m: any) => `${m.role === 'user' ? 'Customer' : 'Bot'}: ${m.text}`).join('\n');
                   }
                 }
               }
@@ -811,6 +906,58 @@ app.post(webhookPaths, async (req, res) => {
               await logActivity(bizId!, 'ERROR', noTokenMsg, 'error', ownerId);
               await saveMessengerLog(bizId!, { senderId, pageId: cleanPageId, message: finalMessageText, status: 'error', error: noTokenMsg });
               continue;
+            }
+
+            // Check Live Human Takeover & AI Pause Status
+            let isHumanTakeoverActive = false;
+            try {
+              let chatDocData: any = null;
+              if (adminDb) {
+                const cSnap = await adminDb.collection('chats').doc(`${bizId}_${senderId}`).get();
+                if (cSnap.exists) chatDocData = cSnap.data();
+              } else if (db) {
+                const cSnap = await getDoc(doc(db, 'chats', `${bizId}_${senderId}`));
+                if (cSnap.exists()) chatDocData = cSnap.data();
+              }
+
+              if (chatDocData) {
+                const now = Date.now();
+                if (chatDocData.isPaused === true || (chatDocData.humanTakeoverUntil && chatDocData.humanTakeoverUntil > now)) {
+                  isHumanTakeoverActive = true;
+                  console.log(`[Webhook] Human Takeover active for customer ${senderId}. Skipping AI response.`);
+                  await logActivity(bizId!, 'HUMAN_TAKEOVER', `মার্চেন্ট সরাসরি চ্যাটে যুক্ত রয়েছেন, এআই সাময়িকভাবে নীরব আছে।`, 'info', ownerId);
+                  continue;
+                }
+              }
+            } catch (takeoverErr) {
+              console.warn('[Webhook] Takeover check notice:', takeoverErr);
+            }
+
+            // Check if Customer explicitly requests Human Support / Agent
+            const lowerMsg = finalMessageText.toLowerCase();
+            const isHumanRequested = /মানুষ|manush|agent|human|representative|মালিক|owner|অভিযোগ|কথা বলতে চাই|সরাসরি কথা|helpdesk|support/i.test(lowerMsg);
+            if (isHumanRequested) {
+              const takeoverReply = "অবশ্যই! আমাদের কাস্টমার কেয়ার প্রতিনিধির কাছে আপনার বার্তাটি ফরোয়ার্ড করা হয়েছে। শীঘ্রই আমাদের একজন প্রতিনিধি আপনার সাথে কথা বলবেন।";
+              try {
+                if (adminDb) {
+                  await adminDb.collection('chats').doc(`${bizId}_${senderId}`).set({
+                    isPaused: true,
+                    humanTakeoverUntil: Date.now() + 60 * 60 * 1000,
+                    updatedAt: admin.firestore.FieldValue.serverTimestamp()
+                  }, { merge: true });
+                }
+                const cleanToken = String(pageAccessToken).trim();
+                await axios.post(`https://graph.facebook.com/v21.0/me/messages?access_token=${encodeURIComponent(cleanToken)}`, {
+                  recipient: { id: senderId },
+                  messaging_type: 'RESPONSE',
+                  message: { text: takeoverReply }
+                }, { timeout: 15000 });
+                await saveChatMessage(bizId!, senderId, 'bot', takeoverReply);
+                await logActivity(bizId!, 'AGENT_HANDOVER', `কাস্টমার মানব এজেন্টের সাহায্য চেয়েছেন। ১ ঘণ্টার জন্য বট পজ করা হয়েছে।`, 'info', ownerId);
+                continue;
+              } catch (handoverErr) {
+                console.error('[Webhook] Handover error:', handoverErr);
+              }
             }
 
             const aiConfig = await getEffectiveGeminiConfig();
@@ -852,9 +999,9 @@ app.post(webhookPaths, async (req, res) => {
 # কঠোর নির্দেশাবলী (Strict Directives):
 ১. **সংক্ষিপ্ত ও নির্দিষ্ট উত্তর:** কাস্টমার যতটুকু প্রশ্ন করবে, ঠিক ততটুকুরই সুনির্দিষ্ট, প্রাসঙ্গিক ও সংক্ষিপ্ত উত্তর দাও (১ থেকে ৩ বাক্যের মধ্যে)।
 ২. **অতিরিক্ত কথা বর্জন:** কোনো অপ্রয়োজনীয় বড় ভূমিকা, লম্বা সূচনা ("হ্যালো স্যার, কেমন আছেন...", "আমাদের শপে স্বাগতম...") অথবা কাস্টমার না চাইলে জোর করে পণ্যের লম্বা তালিকা বা অফার দেবে না।
-৩. **চ্যাট হিস্ট্রি ও পূর্বপ্রসঙ্গ স্মরণ:** নিচের "পূর্ববর্তী কথোপকথন (Chat History)" মনোযোগ দিয়ে পড়ো। কাস্টমার আগে যে প্রোডাক্ট বা বিষয় নিয়ে কথা বলেছে, সেই প্রসঙ্গ মনে রেখে সরাসরি উত্তর দাও। একই কথা বারবার রিপিট করবে না।
-৪. **দরদাম ও প্রাইসিং:** কাস্টমার কোনো প্রোডাক্টের দাম বা সাইজ জানতে চাইলে শুধুমাত্র সেই প্রোডাক্টের তথ্য দাও। কাস্টমার দরদাম করলে পণ্যের সর্বনিম্ন দাম সীমা (minPrice) এর নিচে কখনোই নামবে না।
-৫. **অর্ডার নেওয়ার নিয়ম:** কাস্টমার যখন স্পষ্ট করে পণ্য অর্ডার করতে চাইবে, শুধুমাত্র তখনই বিনয়ের সাথে নাম, মোবাইল নম্বর (১১ ডিজিট) এবং সম্পূর্ণ ডেলিভারি ঠিকানা জানতে চাইবে।
+৩. **চ্যাট হিস্ট্রি ও পূর্বপ্রসঙ্গ স্মরণ:** নিচের "পূর্ববর্তী কথোপকথন (Chat History)" মনোযোগ দিয়ে পড়ো। কাস্টমার আগে যে প্রোডাক্ট বা বিষয় নিয়ে কথা বলেছে, সেই প্রসঙ্গ মনে রেখে সরাসরি উত্তর দাও।
+৪. **দরদাম ও প্রাইসিং:** কাস্টমার কোনো প্রোডাক্টের দাম বা সাইজ জানতে চাইলে শুধুমাত্র সেই প্রোডাক্টের তথ্য দাও। পণ্যের সর্বনিম্ন দাম সীমা (minPrice) এর নিচে কখনোই রাজি হবে না।
+৫. **অর্ডার নেওয়ার নিয়ম:** কাস্টমার যখন পণ্য কিনতে রাজি হবে, বিনয়ের সাথে নাম, মোবাইল নম্বর (১১ ডিজিট) এবং সম্পূর্ণ ডেলিভারি ঠিকানা জানতে চাইবে। কাস্টমার যদি ফোন নম্বর ও ঠিকানা দেয়, তবে তাকে অর্ডার নিশ্চিত করার ধন্যবাদ জানাও।
 
 দোকানের তথ্য: ${businessData.description || ''}
 পণ্যতালিকা ও প্রাইসিং:
@@ -869,6 +1016,9 @@ ${productFaqs || 'পণ্যভিত্তিক FAQ নেই।'}
 কাস্টম নির্দেশিকা: ${businessData.customSystemPrompt || businessData.botPersona || ''}
 
 ---
+এই কাস্টমার সম্পর্কে দীর্ঘমেয়াদী স্মৃতি (আগের সেশনগুলোর সারসংক্ষেপ):
+${longTermSummary || 'এই কাস্টমারের কোনো পুরনো তথ্য নেই, ইনি নতুন অথবা প্রথমবার কথা বলছেন।'}
+
 পূর্ববর্তী কথোপকথন (Chat History):
 ${chatHistoryText || 'নতুন আলাপ (পূর্ববর্তী কোনো মেসেজ নেই)'}
 
@@ -879,13 +1029,30 @@ ${chatHistoryText || 'নতুন আলাপ (পূর্ববর্তী 
               const startTime = Date.now();
               try {
                 console.log(`[Webhook] Calling Gemini AI for biz: ${bizId}`);
-                const ai = new GoogleGenAI({ apiKey: aiConfig.apiKey });
-                const aiResponse = await ai.models.generateContent({
-                  model: aiConfig.model,
-                  contents: prompt
-                });
+                let responseText = '';
+                
+                // Resilient Multi-Model Gemini Failover
+                try {
+                  const ai = new GoogleGenAI({ apiKey: aiConfig.apiKey });
+                  const aiResponse = await ai.models.generateContent({
+                    model: aiConfig.model,
+                    contents: prompt
+                  });
+                  responseText = aiResponse.text?.trim() || '';
+                } catch (primaryAiErr: any) {
+                  console.warn(`[Webhook] Primary model ${aiConfig.model} failed, falling back to gemini-3.1-flash-lite...`, primaryAiErr?.message);
+                  try {
+                    const fallbackAi = new GoogleGenAI({ apiKey: aiConfig.apiKey });
+                    const fallbackRes = await fallbackAi.models.generateContent({
+                      model: 'gemini-3.1-flash-lite',
+                      contents: prompt
+                    });
+                    responseText = fallbackRes.text?.trim() || '';
+                  } catch (fallbackErr: any) {
+                    throw new Error(`AI Generation failed on all models: ${fallbackErr?.message}`);
+                  }
+                }
 
-                const responseText = aiResponse.text?.trim() || '';
                 const latencyMs = Date.now() - startTime;
                 
                 let reply = "";
@@ -904,6 +1071,71 @@ ${chatHistoryText || 'নতুন আলাপ (পূর্ববর্তী 
 
                 if (!reply || reply.trim().length === 0) {
                   reply = 'ধন্যবাদ! আপনার মেসেজটি আমরা পেয়েছি। আমাদের সেলস টিম শীঘ্রই আপনার সাথে যোগাযোগ করবে।';
+                }
+
+                // ==========================================
+                // Enterprise Automated Order Extraction Engine
+                // ==========================================
+                const fullText = `${finalMessageText} ${chatHistoryText}`;
+                const phoneMatch = fullText.match(/(01[3-9]\d{8})/);
+                const hasAddressKeywords = /রোড|বাসা|বাড়ি|গ্রাম|থানা|জেলা|সেক্টর|ঢাকা|dhaka|চট্টগ্রাম|খুলনা|রাজশাহী|সিলেট|বরিশাল|রংপুর|ময়মনসিংহ|কুমিল্লা|গাজীপুর|নারায়ণগঞ্জ|মিরপুর|ধানমন্ডি|উত্তরা|গুলশান|বনানী|মোহাম্মদপুর|মতিঝিল|যাত্রাবাড়ী|বাড্ডা|মগবাজার/i.test(fullText);
+
+                if (phoneMatch && (hasAddressKeywords || finalMessageText.length > 25)) {
+                  try {
+                    const extractedPhone = phoneMatch[1];
+                    const isInsideDhaka = /ঢাকা|dhaka|মিরপুর|ধানমন্ডি|উত্তরা|গুলশান|বনানী|মোহাম্মদপুর|মতিঝিল|যাত্রাবাড়ী|বাড্ডা|মগবাজার|খিলগাঁও|বাসাবো|তেজগাঁও|বারিধারা|রামপুরা|লালবাগ/i.test(finalMessageText);
+                    const deliveryCharge = isInsideDhaka 
+                      ? (businessData.courierConfig?.deliveryChargeInsideDhaka || 60)
+                      : (businessData.courierConfig?.deliveryChargeOutsideDhaka || 120);
+
+                    // Find matched product or default to first product
+                    const matchedProduct = products.find((p: any) => 
+                      finalMessageText.toLowerCase().includes(p.name?.toLowerCase()) ||
+                      chatHistoryText.toLowerCase().includes(p.name?.toLowerCase())
+                    ) || products[0];
+
+                    const unitPrice = matchedProduct?.price || 500;
+                    const orderId = `ORD-${Date.now().toString().slice(-6)}`;
+                    const totalAmount = unitPrice + deliveryCharge;
+
+                    const newOrder = {
+                      id: orderId,
+                      businessId: bizId,
+                      customerName: senderId ? `FB User (${senderId.slice(-4)})` : 'Messenger Customer',
+                      phone: extractedPhone,
+                      address: finalMessageText.slice(0, 150),
+                      productId: matchedProduct?.id || 'prod-1',
+                      productName: matchedProduct?.name || 'অর্ডারকৃত পণ্য',
+                      quantity: 1,
+                      unitPrice: unitPrice,
+                      deliveryCharge: deliveryCharge,
+                      totalPrice: totalAmount,
+                      status: 'pending',
+                      paymentStatus: 'unpaid',
+                      paymentMethod: 'cod',
+                      notes: `Auto-created by AI from Messenger (Customer: ${senderId})`,
+                      createdAt: new Date().toISOString()
+                    };
+
+                    if (adminDb) {
+                      await adminDb.collection('orders').doc(orderId).set(newOrder);
+                      // Deduct stock
+                      if (matchedProduct && matchedProduct.stock > 0) {
+                        const updatedProducts = (businessData.products || []).map((p: any) => {
+                          if (p.id === matchedProduct.id) {
+                            return { ...p, stock: Math.max(0, (p.stock || p.stockCount || 10) - 1) };
+                          }
+                          return p;
+                        });
+                        await adminDb.collection('businesses').doc(bizId!).update({ products: updatedProducts }).catch(() => {});
+                      }
+                    }
+
+                    await logActivity(bizId!, 'ORDER_AUTO_CREATED', `নতুন অর্ডার তৈরি হয়েছে: ${orderId} (৳${totalAmount})`, 'success', ownerId, newOrder);
+                    console.log(`[Webhook] Auto-created order: ${orderId} for customer ${extractedPhone}`);
+                  } catch (orderErr) {
+                    console.warn('[Webhook] Auto order placement notice:', orderErr);
+                  }
                 }
 
                 console.log(`[Webhook] AI Reply: ${reply.substring(0, 30)}...`);
@@ -928,6 +1160,32 @@ ${chatHistoryText || 'নতুন আলাপ (পূর্ববর্তী 
                   }, { timeout: 15000 });
                 }
 
+                // Send product image if the AI decided the customer wants to see one.
+                // (Previously `show_product_image` was parsed from the AI response but
+                // never actually used anywhere — customers asking for photos never got one.)
+                if (aiRes?.show_product_image) {
+                  try {
+                    const wantedName = String(aiRes.product_name || '').toLowerCase().trim();
+                    const rawProducts = businessData.products || [];
+                    let imageProduct = wantedName
+                      ? rawProducts.find((p: any) => p.name?.toLowerCase().includes(wantedName) || wantedName.includes(p.name?.toLowerCase() || '\u0000'))
+                      : null;
+                    if (!imageProduct) {
+                      // Fallback: match against the customer's message text directly
+                      imageProduct = rawProducts.find((p: any) => p.name && finalMessageText.toLowerCase().includes(p.name.toLowerCase()));
+                    }
+                    const imageUrl = imageProduct?.images?.[0];
+                    if (imageUrl) {
+                      await sendImageMessage(pageAccessToken, senderId, imageUrl);
+                      console.log(`[Webhook] Sent product image for: ${imageProduct.name}`);
+                    } else {
+                      console.log('[Webhook] show_product_image was true but no matching product image was found.');
+                    }
+                  } catch (imgErr: any) {
+                    console.warn('[Webhook] Product image send failed:', imgErr.response?.data || imgErr.message);
+                  }
+                }
+
                 await saveChatMessage(bizId!, senderId, 'bot', reply.trim()).catch(e => console.error('Save chat error:', e));
                 await saveMessengerLog(bizId!, {
                   senderId,
@@ -937,6 +1195,14 @@ ${chatHistoryText || 'নতুন আলাপ (পূর্ববর্তী 
                   status: 'replied',
                   latencyMs
                 });
+
+                // Update Tenant AI Message & Token Counter
+                if (adminDb) {
+                  await adminDb.collection('businesses').doc(bizId!).update({
+                    aiMessagesCount: admin.firestore.FieldValue.increment(1),
+                    totalTokensUsed: admin.firestore.FieldValue.increment(180)
+                  }).catch(() => {});
+                }
 
                 console.log('[Webhook] Reply sequence finished successfully');
                 await logActivity(bizId!, 'REPLY_SENT', `উত্তর পাঠানো হয়েছে: "${reply.substring(0, 50)}..."`, 'success', ownerId);
@@ -987,8 +1253,12 @@ ${chatHistoryText || 'নতুন আলাপ (পূর্ববর্তী 
       }
     } catch (e) {
       console.error('Webhook Process error', e);
+    } finally {
+      // Respond only after processing has actually finished (success or
+      // failure) so Vercel doesn't freeze the function mid-way through
+      // sending the AI reply. See note above.
+      try { res.status(200).send('EVENT_RECEIVED'); } catch (_) {}
     }
-  })();
 });
 
 // Meta Graph API Token Health Test
