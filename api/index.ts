@@ -128,6 +128,14 @@ try {
 
 import { GoogleGenerativeAI, SchemaType } from '@google/generative-ai';
 import { GoogleGenAI, Type } from '@google/genai';
+import {
+  DUPLICATE_ORDER_WINDOW_MS,
+  extractBdPhone,
+  isRecentIdentityDuplicate,
+  normalizeClientIp,
+  normalizePhone,
+  trustedClientIp,
+} from '../src/lib/orderIdentity.ts';
 
 // Initialize AI
 const genAI = process.env.GEMINI_API_KEY ? new GoogleGenerativeAI(process.env.GEMINI_API_KEY) : null;
@@ -430,14 +438,8 @@ function sanitizeProductsForPrompt(products: any[] = []) {
   }));
 }
 
-function extractBdPhone(text?: string): string {
-  if (!text) return '';
-  const m = String(text).replace(/[\s-]/g, '').match(/(?:\+?88)?(01[3-9]\d{8})/);
-  return m ? m[1] : '';
-}
-
 function mergeLead(prev: any = {}, next: any = {}, extraText = '') {
-  const phone = extractBdPhone(next?.phone) || extractBdPhone(prev?.phone) || extractBdPhone(extraText) || '';
+  const phone = normalizePhone(next?.phone) || normalizePhone(prev?.phone) || extractBdPhone(extraText) || '';
   return {
     name: String(next?.name || prev?.name || '').trim(),
     phone,
@@ -449,11 +451,21 @@ function mergeLead(prev: any = {}, next: any = {}, extraText = '') {
 }
 
 function hasCompleteLead(lead: any) {
-  const phone = extractBdPhone(lead?.phone);
+  const phone = normalizePhone(lead?.phone);
   return Boolean(
     String(lead?.name || '').trim().length >= 2 &&
     phone.length === 11 &&
     String(lead?.address || '').trim().length >= 8
+  );
+}
+
+function clientIpFromReq(req: any): string {
+  return normalizeClientIp(
+    req?.headers?.['x-forwarded-for'] ||
+    req?.headers?.['x-real-ip'] ||
+    req?.ip ||
+    req?.socket?.remoteAddress ||
+    ''
   );
 }
 
@@ -582,25 +594,77 @@ async function saveOrderDoc(order: any) {
   }
 }
 
-async function findRecentDuplicateOrder(bizId: string, phone: string, productName?: string, windowMs = 2 * 60 * 60 * 1000) {
-  if (!bizId || !phone) return null;
-  const cutoff = Date.now() - windowMs;
-  const match = (data: any) => {
-    const ts = data.createdAtMs || (data.createdAt?.toMillis ? data.createdAt.toMillis() : Date.parse(data.createdAt || '') || 0);
-    const sameProduct = !productName || !data.productName || String(data.productName).toLowerCase() === String(productName).toLowerCase();
-    return ts >= cutoff && sameProduct && data.status !== 'cancelled';
-  };
+async function queryOrdersByField(bizId: string, field: string, value: string) {
+  if (!bizId || !value) return [] as any[];
   try {
     if (adminDb) {
-      const snap = await adminDb.collection('orders').where('businessId', '==', bizId).where('phone', '==', phone).limit(10).get();
-      const hit = snap.docs.find((d: any) => match(d.data()));
-      return hit ? { id: hit.id, ...hit.data() } : null;
+      const snap = await adminDb.collection('orders').where('businessId', '==', bizId).where(field, '==', value).limit(15).get();
+      return snap.docs.map((d: any) => ({ id: d.id, ...d.data() }));
     }
     if (db) {
-      const snap = await getDocs(query(collection(db, 'orders'), where('businessId', '==', bizId), where('phone', '==', phone), limit(10)));
-      const hit = snap.docs.find(d => match(d.data()));
-      return hit ? { id: hit.id, ...hit.data() } : null;
+      const snap = await getDocs(query(collection(db, 'orders'), where('businessId', '==', bizId), where(field, '==', value), limit(15)));
+      return snap.docs.map(d => ({ id: d.id, ...d.data() }));
     }
+  } catch (e) {
+    console.warn(`[queryOrdersByField] ${field}`, e);
+  }
+  return [];
+}
+
+const recentIdentityLocks = new Map<string, number>();
+
+function identityLockKeys(bizId: string, identity: { phone?: string; passengerId?: string; clientIp?: string }) {
+  const keys: string[] = [];
+  const phone = normalizePhone(identity.phone);
+  const passengerId = String(identity.passengerId || '').trim();
+  const ip = trustedClientIp(identity.clientIp);
+  if (phone) keys.push(`${bizId}:phone:${phone}`);
+  if (passengerId) keys.push(`${bizId}:passenger:${passengerId}`);
+  if (ip) keys.push(`${bizId}:ip:${ip}`);
+  return keys;
+}
+
+function claimOrderIdentity(bizId: string, identity: { phone?: string; passengerId?: string; clientIp?: string }, windowMs = DUPLICATE_ORDER_WINDOW_MS) {
+  const now = Date.now();
+  const keys = identityLockKeys(bizId, identity);
+  if (keys.length === 0) return true;
+  for (const [key, ts] of recentIdentityLocks) {
+    if (now - ts > windowMs) recentIdentityLocks.delete(key);
+  }
+  if (keys.some(k => {
+    const ts = recentIdentityLocks.get(k);
+    return Boolean(ts && now - ts < windowMs);
+  })) {
+    return false;
+  }
+  for (const k of keys) recentIdentityLocks.set(k, now);
+  return true;
+}
+
+async function findRecentDuplicateOrder(
+  bizId: string,
+  identity: { phone?: string; passengerId?: string; sessionId?: string; clientIp?: string },
+  windowMs = DUPLICATE_ORDER_WINDOW_MS
+) {
+  const phone = normalizePhone(identity.phone);
+  const passengerId = String(identity.passengerId || identity.sessionId || '').trim();
+  const clientIp = trustedClientIp(identity.clientIp);
+  if (!bizId || (!phone && !passengerId && !clientIp)) return null;
+
+  const incoming = { phone, passengerId, sessionId: passengerId, clientIp };
+  try {
+    const buckets = await Promise.all([
+      queryOrdersByField(bizId, 'phone', phone),
+      queryOrdersByField(bizId, 'sessionId', passengerId),
+      queryOrdersByField(bizId, 'passengerId', passengerId),
+      queryOrdersByField(bizId, 'clientIp', clientIp),
+    ]);
+    const seen = new Map<string, any>();
+    for (const row of buckets.flat()) {
+      if (row?.id) seen.set(row.id, row);
+    }
+    const hit = [...seen.values()].find(existing => isRecentIdentityDuplicate(existing, incoming, Date.now(), windowMs));
+    return hit || null;
   } catch (e) {
     console.warn('[findRecentDuplicateOrder]', e);
   }
@@ -886,6 +950,11 @@ app.post('/api/test-connection', async (req, res) => {
 
 app.get('/api/ping', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString(), adminDbReady: !!adminDb });
+});
+
+app.get('/api/client-ip', (req, res) => {
+  const clientIp = trustedClientIp(clientIpFromReq(req));
+  res.json({ clientIp });
 });
 
 app.get('/api/status', (req, res) => {
@@ -1325,6 +1394,8 @@ app.post(webhookPaths, async (req, res) => {
             let chatHistoryText = '';
             let longTermSummary = '';
             let savedLead: any = {};
+            let lastOrderAtMs = 0;
+            let lastOrderId = '';
             const HISTORY_WINDOW = 24;
 
             try {
@@ -1334,6 +1405,8 @@ app.post(webhookPaths, async (req, res) => {
                   const c = custSnap.data() || {};
                   longTermSummary = c.chatSummary || '';
                   savedLead = c.leadInfo || {};
+                  lastOrderAtMs = Number(c.lastOrderAtMs) || 0;
+                  lastOrderId = String(c.lastOrderId || '');
                 }
               } else if (db) {
                 const custSnap = await getDoc(doc(db, 'customers', `${bizId}_${senderId}`));
@@ -1341,6 +1414,8 @@ app.post(webhookPaths, async (req, res) => {
                   const c = custSnap.data() || {};
                   longTermSummary = c.chatSummary || '';
                   savedLead = c.leadInfo || {};
+                  lastOrderAtMs = Number(c.lastOrderAtMs) || 0;
+                  lastOrderId = String(c.lastOrderId || '');
                 }
               }
             } catch (sumErr) {
@@ -1617,9 +1692,17 @@ ${chatHistoryText || 'নতুন আলাপ'}
                 if (wantsOrder && hasCompleteLead(nextLead)) {
                   try {
                     const productName = nextLead.product_name || aiRes?.product_name || '';
-                    const duplicate = await findRecentDuplicateOrder(bizId!, nextLead.phone, productName);
-                    if (duplicate) {
-                      console.log(`[Webhook] Duplicate order skipped, existing ${duplicate.id}`);
+                    const identity = {
+                      phone: nextLead.phone,
+                      passengerId: senderId,
+                      sessionId: senderId,
+                    };
+                    const recentCustomerOrder = lastOrderAtMs && Date.now() - lastOrderAtMs < DUPLICATE_ORDER_WINDOW_MS
+                      ? { id: lastOrderId || 'recent-customer-order' }
+                      : null;
+                    const duplicate = recentCustomerOrder || await findRecentDuplicateOrder(bizId!, identity);
+                    if (duplicate || !claimOrderIdentity(bizId!, identity)) {
+                      console.log(`[Webhook] Duplicate order skipped for passenger ${senderId} / ${nextLead.phone}, existing ${duplicate?.id || 'in-memory lock'}`);
                     } else {
                     const isInsideDhaka = /ঢাকা|dhaka|মিরপুর|ধানমন্ডি|উত্তরা|গুলশান|বনানী|মোহাম্মদপুর|মতিঝিল|যাত্রাবাড়ী|বাড্ডা|মগবাজার|খিলগাঁও|বাসাবো|তেজগাঁও|বারিধারা|রামপুরা|লালবাগ/i.test(nextLead.address);
                     const deliveryCharge = isInsideDhaka 
@@ -1642,8 +1725,10 @@ ${chatHistoryText || 'নতুন আলাপ'}
                       businessId: bizId,
                       merchantId: ownerId || '',
                       sessionId: senderId,
+                      passengerId: senderId,
+                      clientIp: '',
                       customerName: nextLead.name || `FB User (${String(senderId).slice(-4)})`,
-                      phone: nextLead.phone,
+                      phone: normalizePhone(nextLead.phone),
                       address: nextLead.address,
                       productId: matchedProduct?.id || '',
                       productName: matchedProduct?.name || productName || 'অর্ডারকৃত পণ্য',
@@ -1660,6 +1745,8 @@ ${chatHistoryText || 'নতুন আলাপ'}
                     };
 
                     await saveOrderDoc(newOrder);
+                    lastOrderId = orderId;
+                    lastOrderAtMs = newOrder.createdAtMs;
 
                     if (matchedProduct && (matchedProduct.stock || matchedProduct.stockCount) > 0 && adminDb) {
                       const updatedProducts = (businessData.products || []).map((p: any) => {
@@ -1770,9 +1857,10 @@ ${chatHistoryText || 'নতুন আলাপ'}
                 console.log('[Webhook] Reply sequence finished successfully');
                 await logActivity(bizId!, 'REPLY_SENT', `উত্তর পাঠানো হয়েছে: "${reply.substring(0, 50)}..."`, 'success', ownerId);
 
-                const customerPayload = {
+                const customerPayload: any = {
                   businessId: bizId,
                   messengerId: senderId,
+                  passengerId: senderId,
                   name: nextLead.name || '',
                   phone: nextLead.phone || '',
                   address: nextLead.address || '',
@@ -1781,6 +1869,8 @@ ${chatHistoryText || 'নতুন আলাপ'}
                   leadInfo: nextLead,
                   updatedAt: adminDb ? admin.firestore.FieldValue.serverTimestamp() : serverTimestamp(),
                 };
+                if (lastOrderId) customerPayload.lastOrderId = lastOrderId;
+                if (lastOrderAtMs) customerPayload.lastOrderAtMs = lastOrderAtMs;
                 if (adminDb) {
                   await adminDb.collection('customers').doc(`${bizId}_${senderId}`).set(customerPayload, { merge: true }).catch(() => {});
                 } else if (db) {

@@ -119,8 +119,9 @@ export function MerchantTestChat({ business }: MerchantTestChatProps) {
           business,
           collected: nextCollected,
           productName: nextCollected.product_name || aiResponse.product_name,
-          sessionId: `test-${business.id}`,
+          sessionId: `test-${business.id}-${Date.now()}`,
           source: 'Test chat simulator',
+          skipDuplicateCheck: true,
         });
         if (saved) {
           setOrderPlacedId(saved.id);

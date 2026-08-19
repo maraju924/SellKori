@@ -24,6 +24,7 @@ import { BusinessConfig, Order } from '../../types';
 import { db } from '../../lib/firebase';
 import { doc, updateDoc } from 'firebase/firestore';
 import { toast } from 'sonner';
+import { orderCreatedAtMs, orderIdentityKey, passengerIdOf } from '../../lib/orderIdentity';
 
 interface MerchantOrdersProps {
   business: BusinessConfig;
@@ -33,15 +34,48 @@ interface MerchantOrdersProps {
 export function MerchantOrders({ business, orders }: MerchantOrdersProps) {
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
+  const [hideDuplicates, setHideDuplicates] = useState(true);
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
   const [isBookingCourier, setIsBookingCourier] = useState<string | null>(null);
 
-  const filteredOrders = orders.filter(o => {
-    const matchesSearch = 
+  const duplicateCountById = (() => {
+    const groups = new Map<string, Order[]>();
+    for (const order of orders) {
+      const key = orderIdentityKey(order);
+      const list = groups.get(key) || [];
+      list.push(order);
+      groups.set(key, list);
+    }
+    const counts = new Map<string, number>();
+    for (const list of groups.values()) {
+      if (list.length < 2) continue;
+      for (const order of list) counts.set(order.id, list.length);
+    }
+    return counts;
+  })();
+
+  const uniqueOrders = (() => {
+    const latest = new Map<string, Order>();
+    const sorted = [...orders].sort((a, b) => orderCreatedAtMs(b) - orderCreatedAtMs(a));
+    for (const order of sorted) {
+      const key = orderIdentityKey(order);
+      if (!latest.has(key)) latest.set(key, order);
+    }
+    return [...latest.values()];
+  })();
+
+  const sourceOrders = hideDuplicates ? uniqueOrders : orders;
+  const hiddenDuplicateCount = Math.max(0, orders.length - uniqueOrders.length);
+
+  const filteredOrders = sourceOrders.filter(o => {
+    const passenger = passengerIdOf(o);
+    const matchesSearch =
       o.customerName?.toLowerCase().includes(searchTerm.toLowerCase()) ||
       o.phone?.includes(searchTerm) ||
       o.id?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      o.productName?.toLowerCase().includes(searchTerm.toLowerCase());
+      o.productName?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      passenger.includes(searchTerm) ||
+      (o.clientIp || '').includes(searchTerm);
 
     const matchesStatus = statusFilter === 'all' || o.status === statusFilter;
     return matchesSearch && matchesStatus;
@@ -99,11 +133,22 @@ export function MerchantOrders({ business, orders }: MerchantOrdersProps) {
               অর্ডার ও পার্সেল ম্যানেজমেন্ট
             </h2>
             <p className="text-xs text-zinc-500">
-              এআই কর্তৃক কনফার্মকৃত সকল গ্রাহক অর্ডার এবং ১-ক্লিক স্টেডফাস্ট কুরিয়ার বুকিং
+              এআই কর্তৃক কনফার্মকৃত সকল গ্রাহক অর্ডার এবং ১-ক্লিক স্টেডফাস্ট কুরিয়ার বুকিং। একই আইপি, প্যাসেঞ্জার আইডি বা মোবাইল হলে নতুন ডুপ্লিকেট অর্ডার জমা হয় না।
             </p>
           </div>
 
           <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setHideDuplicates(v => !v)}
+              className={`px-3 py-1.5 rounded-xl text-[11px] font-bold transition-all ${
+                hideDuplicates
+                  ? 'bg-orange-50 text-orange-700 border border-orange-200'
+                  : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400'
+              }`}
+            >
+              {hideDuplicates ? 'ডুপ্লিকেট লুকানো' : 'সব অর্ডার'}
+            </button>
             <span className="text-xs font-bold text-zinc-500">মোট: {orders.length} টি</span>
           </div>
         </div>
@@ -143,6 +188,11 @@ export function MerchantOrders({ business, orders }: MerchantOrdersProps) {
             ))}
           </div>
         </div>
+        {hideDuplicates && hiddenDuplicateCount > 0 && (
+          <p className="text-[11px] text-orange-700 bg-orange-50 dark:bg-orange-950/40 dark:text-orange-300 rounded-xl px-3 py-2">
+            একই মোবাইল/প্যাসেঞ্জার আইডি থেকে {hiddenDuplicateCount} টি পুরনো ডুপ্লিকেট অর্ডার লুকানো আছে। সব দেখতে উপরের বাটন টগল করুন।
+          </p>
+        )}
       </div>
 
       {/* Orders Grid / Table */}
@@ -177,6 +227,11 @@ export function MerchantOrders({ business, orders }: MerchantOrdersProps) {
                   }`}>
                     {ord.status}
                   </span>
+                  {duplicateCountById.get(ord.id) ? (
+                    <span className="px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase bg-rose-100 text-rose-800 dark:bg-rose-950/60 dark:text-rose-300">
+                      ডুপ্লিকেট ×{duplicateCountById.get(ord.id)}
+                    </span>
+                  ) : null}
                 </div>
 
                 <div className="flex items-center gap-2">
@@ -205,6 +260,13 @@ export function MerchantOrders({ business, orders }: MerchantOrdersProps) {
                     <Phone className="w-3.5 h-3.5 text-orange-500" />
                     {ord.phone}
                   </p>
+                  {(passengerIdOf(ord) || ord.clientIp) && (
+                    <p className="text-[10px] font-mono text-zinc-400 break-all">
+                      {passengerIdOf(ord) ? `PID: ${passengerIdOf(ord)}` : ''}
+                      {passengerIdOf(ord) && ord.clientIp ? ' · ' : ''}
+                      {ord.clientIp ? `IP: ${ord.clientIp}` : ''}
+                    </p>
+                  )}
                   <p className="flex items-start gap-1.5 text-zinc-600 dark:text-zinc-400">
                     <MapPin className="w-3.5 h-3.5 text-orange-500 shrink-0 mt-0.5" />
                     <span className="line-clamp-2">{ord.address}</span>

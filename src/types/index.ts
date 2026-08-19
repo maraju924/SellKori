@@ -142,6 +142,9 @@ export interface Order {
   id: string;
   merchantId: string;
   businessId: string;
+  sessionId?: string;
+  passengerId?: string;
+  clientIp?: string;
   customerName: string;
   phone: string;
   address: string;
@@ -155,6 +158,7 @@ export interface Order {
   courierTrackingId?: string;
   courierStatus?: string;
   createdAt: any;
+  createdAtMs?: number;
 }
 
 export interface Customer {

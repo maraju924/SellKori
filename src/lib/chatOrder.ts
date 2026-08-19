@@ -1,6 +1,13 @@
 import { AIResponse, BusinessConfig, Product } from '../types';
 import { db } from './firebase';
 import { collection, doc, getDocs, query, setDoc, serverTimestamp, where } from 'firebase/firestore';
+import {
+  DUPLICATE_ORDER_WINDOW_MS,
+  isRecentIdentityDuplicate,
+  normalizePhone,
+} from './orderIdentity';
+
+export { extractBdPhone, normalizePhone } from './orderIdentity';
 
 export interface CollectedOrderInfo {
   name?: string;
@@ -9,22 +16,6 @@ export interface CollectedOrderInfo {
   quantity?: string;
   product_name?: string;
   negotiated_price?: string;
-}
-
-const BD_PHONE_RE = /(?:\+?88)?(01[3-9]\d{8})/;
-
-export function extractBdPhone(text?: string | null): string {
-  if (!text) return '';
-  const m = String(text).replace(/[\s-]/g, '').match(BD_PHONE_RE);
-  return m ? m[1] : '';
-}
-
-export function normalizePhone(phone?: string | null): string {
-  if (!phone) return '';
-  const digits = String(phone).replace(/\D/g, '');
-  if (digits.length === 13 && digits.startsWith('880')) return digits.slice(2);
-  if (digits.length === 11 && digits.startsWith('01')) return digits;
-  return extractBdPhone(phone);
 }
 
 export function mergeOrderData(
@@ -98,28 +89,50 @@ export function buildCustomerContext(collected: CollectedOrderInfo, extra?: stri
   return extra ? `${known}\n${extra}` : known;
 }
 
-export async function hasRecentDuplicateOrder(
-  businessId: string,
-  phone: string,
-  productName?: string,
-  windowMs = 2 * 60 * 60 * 1000
-): Promise<boolean> {
-  if (!businessId || !phone) return false;
+export async function fetchClientIp(): Promise<string> {
+  try {
+    const res = await fetch('/api/client-ip');
+    const data = await res.json().catch(() => ({}));
+    return String(data?.clientIp || '');
+  } catch {
+    return '';
+  }
+}
+
+async function queryOrdersByField(businessId: string, field: string, value: string) {
+  if (!businessId || !value) return [] as any[];
   try {
     const snap = await getDocs(
-      query(collection(db, 'orders'), where('businessId', '==', businessId), where('phone', '==', phone))
+      query(collection(db, 'orders'), where('businessId', '==', businessId), where(field, '==', value))
     );
-    const cutoff = Date.now() - windowMs;
-    return snap.docs.some(d => {
-      const data = d.data() as any;
-      const ts = data.createdAtMs || (data.createdAt?.toMillis?.() ? data.createdAt.toMillis() : Date.parse(data.createdAt || '') || 0);
-      const sameProduct = !productName || !data.productName || String(data.productName).toLowerCase() === productName.toLowerCase();
-      const notCancelled = data.status !== 'cancelled';
-      return ts >= cutoff && sameProduct && notCancelled;
-    });
+    return snap.docs.map(d => ({ id: d.id, ...d.data() }));
   } catch {
-    return false;
+    return [];
   }
+}
+
+export async function hasRecentDuplicateOrder(
+  businessId: string,
+  identity: { phone?: string; sessionId?: string; passengerId?: string; clientIp?: string },
+  windowMs = DUPLICATE_ORDER_WINDOW_MS
+): Promise<boolean> {
+  if (!businessId) return false;
+  const phone = normalizePhone(identity.phone);
+  const passengerId = String(identity.passengerId || identity.sessionId || '').trim();
+  const clientIp = String(identity.clientIp || '').trim();
+  if (!phone && !passengerId && !clientIp) return false;
+
+  const buckets = await Promise.all([
+    queryOrdersByField(businessId, 'phone', phone),
+    queryOrdersByField(businessId, 'sessionId', passengerId),
+    queryOrdersByField(businessId, 'passengerId', passengerId),
+    queryOrdersByField(businessId, 'clientIp', clientIp),
+  ]);
+  const seen = new Map<string, any>();
+  for (const row of buckets.flat()) {
+    if (row?.id) seen.set(row.id, row);
+  }
+  return [...seen.values()].some(existing => isRecentIdentityDuplicate(existing, identity, Date.now(), windowMs));
 }
 
 export async function saveConfirmedOrder(params: {
@@ -127,14 +140,21 @@ export async function saveConfirmedOrder(params: {
   collected: CollectedOrderInfo;
   productName?: string;
   sessionId?: string;
+  clientIp?: string;
   source?: string;
+  skipDuplicateCheck?: boolean;
 }): Promise<{ id: string } | null> {
   const { business, collected, sessionId, source } = params;
   const phone = normalizePhone(collected.phone);
   const productName = params.productName || collected.product_name || '';
+  const passengerId = String(sessionId || '').trim();
+  const clientIp = String(params.clientIp || '').trim();
   if (!hasCompleteOrder({ ...collected, phone })) return null;
 
-  if (await hasRecentDuplicateOrder(business.id, phone, productName)) {
+  if (
+    !params.skipDuplicateCheck &&
+    (await hasRecentDuplicateOrder(business.id, { phone, sessionId: passengerId, passengerId, clientIp }))
+  ) {
     return null;
   }
 
@@ -147,7 +167,9 @@ export async function saveConfirmedOrder(params: {
     id: orderId,
     businessId: business.id,
     merchantId: business.ownerId,
-    sessionId: sessionId || '',
+    sessionId: passengerId,
+    passengerId,
+    clientIp,
     customerName: collected.name || 'সম্মানিত গ্রাহক',
     phone,
     address: collected.address || '',

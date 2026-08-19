@@ -104,6 +104,8 @@ export interface Order {
   businessId: string;
   merchantId?: string;
   sessionId?: string;
+  passengerId?: string;
+  clientIp?: string;
   customerName: string;
   phone: string;
   address: string;
@@ -120,6 +122,7 @@ export interface Order {
   courierConsignmentId?: string;
   notes?: string;
   createdAt?: any;
+  createdAtMs?: number;
 }
 
 export interface Customer {

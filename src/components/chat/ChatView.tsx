@@ -28,6 +28,7 @@ import {
   shouldPlaceOrder,
   saveConfirmedOrder,
   maybeAutoBookSteadfast,
+  fetchClientIp,
   CollectedOrderInfo,
 } from '../../lib/chatOrder';
 
@@ -173,6 +174,7 @@ export function ChatView() {
           collected: nextCollected,
           productName: nextCollected.product_name || aiResponse.product_name,
           sessionId,
+          clientIp: await fetchClientIp(),
           source: 'Public chat',
         });
         if (saved) {
