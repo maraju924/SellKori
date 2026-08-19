@@ -46,16 +46,24 @@ export function MerchantOverview({
   const pendingOrders = orders.filter(o => o.status === 'pending');
   const deliveredOrders = orders.filter(o => o.status === 'delivered');
 
-  // Chart Sample Simulation Data
-  const chartData = [
-    { name: 'শনিবার', sales: totalSales * 0.1, orders: 4, messages: 45 },
-    { name: 'রবিবার', sales: totalSales * 0.15, orders: 7, messages: 68 },
-    { name: 'সোমবার', sales: totalSales * 0.12, orders: 5, messages: 52 },
-    { name: 'মঙ্গলবার', sales: totalSales * 0.18, orders: 9, messages: 84 },
-    { name: 'বুধবার', sales: totalSales * 0.22, orders: 11, messages: 110 },
-    { name: 'বৃহস্পতিবার', sales: totalSales * 0.13, orders: 6, messages: 72 },
-    { name: 'শুক্রবার', sales: totalSales * 0.1, orders: 8, messages: 95 },
-  ];
+  // Real daily sales for the last 7 days, computed from actual orders
+  const dayNames = ['রবিবার', 'সোমবার', 'মঙ্গলবার', 'বুধবার', 'বৃহস্পতিবার', 'শুক্রবার', 'শনিবার'];
+  const chartData = Array.from({ length: 7 }, (_, i) => {
+    const d = new Date();
+    d.setHours(0, 0, 0, 0);
+    d.setDate(d.getDate() - (6 - i));
+    const dayStart = d.getTime();
+    const dayEnd = dayStart + 24 * 60 * 60 * 1000;
+    const dayOrders = orders.filter(o => {
+      const t = (o as any).createdAtMs || (o as any).createdAt?.toMillis?.() || 0;
+      return t >= dayStart && t < dayEnd;
+    });
+    return {
+      name: dayNames[d.getDay()],
+      sales: dayOrders.reduce((s, o) => s + (o.totalPrice || 0), 0),
+      orders: dayOrders.length,
+    };
+  });
 
   return (
     <div className="space-y-6">
@@ -254,21 +262,27 @@ export function MerchantOverview({
 
             <div className="space-y-3 text-xs">
               <div className="flex justify-between items-center p-3 bg-zinc-50 dark:bg-zinc-800/60 rounded-2xl">
-                <span className="text-zinc-600 dark:text-zinc-400 font-medium">এআই রিপ্লাই রেট:</span>
-                <span className="font-black text-emerald-600">১০০% (ইনস্ট্যান্ট)</span>
+                <span className="text-zinc-600 dark:text-zinc-400 font-medium">এআই স্ট্যাটাস:</span>
+                <span className={`font-black ${shouldRunAi(business.features) ? 'text-emerald-600' : 'text-red-500'}`}>
+                  {shouldRunAi(business.features) ? 'সক্রিয় (২৪/৭)' : 'সুইচবোর্ডে বন্ধ'}
+                </span>
               </div>
               <div className="flex justify-between items-center p-3 bg-zinc-50 dark:bg-zinc-800/60 rounded-2xl">
-                <span className="text-zinc-600 dark:text-zinc-400 font-medium">দরদাম সফলতার হার:</span>
-                <span className="font-black text-orange-600">৮৭.৪%</span>
+                <span className="text-zinc-600 dark:text-zinc-400 font-medium">ডেলিভারি সফলতা:</span>
+                <span className="font-black text-orange-600">
+                  {totalOrdersCount > 0 ? `${Math.round((deliveredOrders.length / totalOrdersCount) * 100)}% (${deliveredOrders.length}/${totalOrdersCount})` : 'এখনো অর্ডার নেই'}
+                </span>
               </div>
               <div className="flex justify-between items-center p-3 bg-zinc-50 dark:bg-zinc-800/60 rounded-2xl">
                 <span className="text-zinc-600 dark:text-zinc-400 font-medium">মেটা CAPI ইভেন্ট সিঙ্ক:</span>
-                <span className="font-black text-indigo-600">Active (9.4/10)</span>
+                <span className={`font-black ${business.facebookConfig?.pixelId && business.facebookConfig?.accessToken ? 'text-indigo-600' : 'text-zinc-400'}`}>
+                  {business.facebookConfig?.pixelId && business.facebookConfig?.accessToken ? 'সক্রিয়' : 'সেটআপ প্রয়োজন'}
+                </span>
               </div>
               <div className="flex justify-between items-center p-3 bg-zinc-50 dark:bg-zinc-800/60 rounded-2xl">
-                <span className="text-zinc-600 dark:text-zinc-400 font-medium">স্টেডফাস্ট কুরিয়ার:</span>
+                <span className="text-zinc-600 dark:text-zinc-400 font-medium">স্টেডফাস্ট কুরিয়ার:</span>
                 <span className="font-black text-emerald-600">
-                  {business.courierConfig?.steadfastApiKey ? 'সংযুক্ত' : 'সেটআপ প্রয়োজন'}
+                  {business.courierConfig?.steadfastApiKey ? 'সংযুক্ত' : 'সেটআপ প্রয়োজন'}
                 </span>
               </div>
             </div>

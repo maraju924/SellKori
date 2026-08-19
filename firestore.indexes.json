@@ -39,6 +39,22 @@
         { "fieldPath": "businessId", "order": "ASCENDING" },
         { "fieldPath": "clientIp", "order": "ASCENDING" }
       ]
+    },
+    {
+      "collectionGroup": "messenger_logs",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "businessId", "order": "ASCENDING" },
+        { "fieldPath": "timestamp", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "customers",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "businessId", "order": "ASCENDING" },
+        { "fieldPath": "lastIncomingAtMs", "order": "DESCENDING" }
+      ]
     }
   ],
   "fieldOverrides": []

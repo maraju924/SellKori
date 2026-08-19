@@ -23,7 +23,8 @@ import {
   Globe, 
   TrendingUp, 
   Sliders, 
-  Share2 
+  Share2,
+  Users
 } from 'lucide-react';
 import { db } from '../../lib/firebase';
 import { BusinessConfig, Order, UserProfile } from '../../types';
@@ -147,7 +148,12 @@ export function MerchantPanel({ user, profile }: MerchantPanelProps) {
           verificationStatus: 'pending',
           createdAt: serverTimestamp()
         };
-        setDoc(doc(db, 'businesses', newId), initialConfig);
+        // Show the new store immediately; surface create failures instead of
+        // leaving a permanent blank screen.
+        setBusiness(initialConfig);
+        setDoc(doc(db, 'businesses', newId), initialConfig).catch((err) => {
+          console.error('[MerchantPanel] Failed to create initial business:', err);
+        });
       }
       setLoading(false);
     });
@@ -188,17 +194,24 @@ export function MerchantPanel({ user, profile }: MerchantPanelProps) {
     };
   }, [business?.id]);
 
-  const isAdmin = profile?.role === 'admin' || user?.email === 'maraju924@gmail.com';
+  const isAdmin = profile?.role === 'admin' || profile?.email === 'maraju924@gmail.com' || user?.email === 'maraju924@gmail.com';
 
   const searchableItems = [
     ...(isAdmin ? [{ id: 'admin-portal', title: 'সুপার অ্যাডমিন পোর্টাল', desc: 'মার্চেন্ট ভেরিফিকেশন ও সিস্টেম কন্ট্রোল', icon: Sliders, href: '/admin' }] : []),
-    { id: 'analytics', title: 'ওভারভিউ ও অ্যানালিটিক্স', desc: 'দৈনিক সেলস গ্রাফ ও মোট বিক্রয়', icon: TrendingUp },
-    { id: 'orders', title: 'অর্ডার তালিকা ও মেমো', desc: 'গ্রাহকের অর্ডার ও কুরিয়ার ট্র্যাকিং', icon: Package },
+    { id: 'analytics', title: 'ওভারভিউ ও অ্যানালিটিক্স', desc: 'দৈনিক সেলস গ্রাফ ও মোট বিক্রয়', icon: TrendingUp },
+    { id: 'orders', title: 'অর্ডার তালিকা ও মেমো', desc: 'গ্রাহকের অর্ডার ও কুরিয়ার ট্র্যাকিং', icon: Package },
     { id: 'products', title: 'পণ্য ক্যাটালগ ও মূল্য সীমা', desc: 'প্রোডাক্ট যোগ ও মিনিমাম প্রাইজ লক', icon: Tag },
+    { id: 'customers', title: 'গ্রাহক সিআরএম ও লিডস', desc: 'কাস্টমার তালিকা, অ্যাড সোর্স ও লিড স্টেজ', icon: Users },
     { id: 'ai-control', title: 'এআই সেলস ব্রেন', desc: 'পারসোনা, ভাষা ও বার্গেইনিং সেন্সিটিভিটি', icon: Bot },
     { id: 'test-chat', title: 'লাইভ চ্যাট সিমুলেটর', desc: 'এআই-এর সাথে কথা বলে টেস্ট করুন', icon: Zap },
+    { id: 'messenger', title: 'ফেসবুক মেসেঞ্জার ওয়েবহুক', desc: 'পেজ কানেকশন, মাল্টি-পেজ ও অ্যাড ম্যাপিং', icon: Globe },
+    { id: 'broadcasting', title: 'টার্গেটেড ব্রডকাস্টিং', desc: 'কাস্টমারদের ইনবক্সে ক্যাম্পেইন পাঠান', icon: Zap },
+    { id: 'faqs', title: 'পলিসি ও নলেজবেস', desc: 'FAQ ও ডেলিভারি পলিসি', icon: Tag },
+    { id: 'features', title: 'সিস্টেম ফিচার সুইচ', desc: 'সব ফিচার চালু/বন্ধ কন্ট্রোল', icon: Sliders },
+    { id: 'info', title: 'স্টোর প্রোফাইল ও ব্র্যান্ডিং', desc: 'দোকানের নাম, লোগো ও ঠিকানা', icon: Tag },
     { id: 'facebook', title: 'মেটা পিক্সেল ও CAPI', desc: 'কনভার্সন এপিআই ও ইভেন্ট সেটআপ', icon: Globe },
-    { id: 'billing', title: 'টোকেন ওয়ালেট ও রিচার্জ', desc: 'এআই ব্যালেন্স ও পেমেন্ট হিস্ট্রি', icon: Sliders },
+    { id: 'integrations', title: 'কুরিয়ার ও এপিআই গেটওয়ে', desc: 'স্টেডফাস্ট কুরিয়ার সংযোগ', icon: Package },
+    { id: 'billing', title: 'টোকেন ওয়ালেট ও রিচার্জ', desc: 'এআই ব্যালেন্স ও পেমেন্ট হিস্ট্রি', icon: Sliders },
   ];
 
   const filteredCommands = searchableItems.filter(item => 
