@@ -16,7 +16,7 @@ import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 import { Badge } from '../ui/badge';
 import { BusinessConfig, Message } from '../../types';
-import { getAIResponse } from '../../lib/gemini';
+import { requestAIResponse } from '../../lib/chatApi';
 import { toast } from 'sonner';
 import { mergeFeatures, shouldRunAi } from '../../lib/featureFlags';
 import {
@@ -105,15 +105,13 @@ export function MerchantTestChat({ business }: MerchantTestChatProps) {
         ? `সাম্প্রতিক টেস্ট অর্ডার ইতিমধ্যে কনফার্ম (ID: ${orderPlacedId})। আবার অর্ডার নিতে বলবেন না।`
         : '';
 
-      const aiResponse = await getAIResponse(
-        textToSend,
-        historyStr,
-        business,
-        buildCustomerContext(liveCollected, recentOrderNote || 'Sandbox test mode'),
-        undefined,
-        undefined,
-        chatSummary
-      );
+      const aiResponse = await requestAIResponse({
+        userMessage: textToSend,
+        chatHistory: historyStr,
+        businessConfig: business,
+        customerContext: buildCustomerContext(liveCollected, recentOrderNote || 'Sandbox test mode'),
+        chatSummary,
+      });
 
       const nextCollected = mergeOrderData(liveCollected, {
         ...aiResponse.order_data,

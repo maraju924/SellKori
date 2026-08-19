@@ -16,13 +16,11 @@ import {
   Trash2,
   User,
 } from 'lucide-react';
-import { doc, getDoc } from 'firebase/firestore';
 import { toast } from 'sonner';
 
 import { Button } from '../ui/button';
 import type { BusinessConfig, Message, Product } from '../../types';
-import { db } from '../../lib/firebase';
-import { getAIResponse } from '../../lib/gemini';
+import { fetchPublicBusiness, requestAIResponse } from '../../lib/chatApi';
 import { isFeatureEnabled, mergeFeatures, shouldRunAi } from '../../lib/featureFlags';
 import {
   buildCustomerContext,
@@ -109,15 +107,13 @@ export function ChatView() {
     let active = true;
     const fetchBusiness = async () => {
       try {
-        const snap = await getDoc(doc(db, 'businesses', businessId));
+        const resolvedBusiness = await fetchPublicBusiness(businessId);
         if (!active) return;
-        if (!snap.exists()) {
+        if (!resolvedBusiness) {
           setBusiness(null);
           return;
         }
 
-        const data = snap.data() as BusinessConfig;
-        const resolvedBusiness = { ...data, id: data.id || snap.id || businessId };
         setBusiness(resolvedBusiness);
 
         const restored = loadChatSession(localStorage, businessId);
@@ -243,15 +239,13 @@ export function ChatView() {
         ? `সাম্প্রতিক অর্ডার ইতিমধ্যে কনফার্ম হয়েছে (ID: ${orderPlacedId})। একই অর্ডার আবার নিতে বলবেন না।`
         : 'Public Customer Chat Session';
 
-      const aiResponse = await getAIResponse(
-        cleanText,
-        history,
-        business,
-        buildCustomerContext(liveCollected, recentOrderNote),
-        undefined,
-        undefined,
+      const aiResponse = await requestAIResponse({
+        userMessage: cleanText,
+        chatHistory: history,
+        businessConfig: business,
+        customerContext: buildCustomerContext(liveCollected, recentOrderNote),
         chatSummary,
-      );
+      });
 
       if (aiResponse.errorCode) {
         throw new Error(aiResponse.errorCode);

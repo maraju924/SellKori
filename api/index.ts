@@ -167,6 +167,7 @@ import {
   normalizePhone,
   trustedClientIp,
 } from '../src/lib/orderIdentity.ts';
+import { getAIResponse as generateChatResponse } from '../src/lib/gemini.ts';
 
 // Initialize AI
 const genAI = process.env.GEMINI_API_KEY ? new GoogleGenerativeAI(process.env.GEMINI_API_KEY) : null;
@@ -773,36 +774,36 @@ async function getEffectiveGeminiConfig() {
 
   try {
     if (adminDb) {
+      const sysSnap = await adminDb.collection('system').doc('settings').get();
+      if (sysSnap.exists) {
+        const d = sysSnap.data();
+        if (d.geminiApiKey) apiKey = d.geminiApiKey;
+        if (d.defaultAiModel) model = d.defaultAiModel;
+        if (d.aiTemperature) temperature = Number(d.aiTemperature);
+        if (d.aiMaxTokens) maxTokens = Number(d.aiMaxTokens);
+      }
       const publicSnap = await adminDb.collection('system_config').doc('public').get();
       if (publicSnap.exists) {
         const d = publicSnap.data();
+        if (d.defaultAiModel) model = d.defaultAiModel;
+        if (d.aiTemperature) temperature = Number(d.aiTemperature);
+        if (d.aiMaxTokens) maxTokens = Number(d.aiMaxTokens);
+      }
+    } else if (db) {
+      const sysSnap = await getDoc(doc(db, 'system', 'settings'));
+      if (sysSnap.exists()) {
+        const d = sysSnap.data();
         if (d.geminiApiKey) apiKey = d.geminiApiKey;
         if (d.defaultAiModel) model = d.defaultAiModel;
         if (d.aiTemperature) temperature = Number(d.aiTemperature);
         if (d.aiMaxTokens) maxTokens = Number(d.aiMaxTokens);
-      } else {
-        const sysSnap = await adminDb.collection('system').doc('settings').get();
-        if (sysSnap.exists) {
-          const d = sysSnap.data();
-          if (d.geminiApiKey) apiKey = d.geminiApiKey;
-          if (d.defaultAiModel) model = d.defaultAiModel;
-        }
       }
-    } else if (db) {
       const publicSnap = await getDoc(doc(db, 'system_config', 'public'));
       if (publicSnap.exists()) {
         const d = publicSnap.data();
-        if (d.geminiApiKey) apiKey = d.geminiApiKey;
         if (d.defaultAiModel) model = d.defaultAiModel;
         if (d.aiTemperature) temperature = Number(d.aiTemperature);
         if (d.aiMaxTokens) maxTokens = Number(d.aiMaxTokens);
-      } else {
-        const sysSnap = await getDoc(doc(db, 'system', 'settings'));
-        if (sysSnap.exists()) {
-          const d = sysSnap.data();
-          if (d.geminiApiKey) apiKey = d.geminiApiKey;
-          if (d.defaultAiModel) model = d.defaultAiModel;
-        }
       }
     }
   } catch (e) {
@@ -1361,6 +1362,167 @@ function webhookBusinessIdFromReq(req: express.Request): string | undefined {
   });
 }
 
+const publicChatRateLimit = new Map<string, { count: number; resetAt: number }>();
+const PUBLIC_CHAT_WINDOW_MS = 60_000;
+const PUBLIC_CHAT_REQUESTS_PER_WINDOW = 15;
+
+function consumePublicChatQuota(key: string) {
+  const now = Date.now();
+  const current = publicChatRateLimit.get(key);
+  if (!current || current.resetAt <= now) {
+    publicChatRateLimit.set(key, { count: 1, resetAt: now + PUBLIC_CHAT_WINDOW_MS });
+    return { allowed: true, retryAfterSeconds: 0 };
+  }
+  if (current.count >= PUBLIC_CHAT_REQUESTS_PER_WINDOW) {
+    return {
+      allowed: false,
+      retryAfterSeconds: Math.max(1, Math.ceil((current.resetAt - now) / 1000)),
+    };
+  }
+  current.count += 1;
+  if (publicChatRateLimit.size > 5_000) {
+    for (const [entryKey, entry] of publicChatRateLimit) {
+      if (entry.resetAt <= now) publicChatRateLimit.delete(entryKey);
+    }
+  }
+  return { allowed: true, retryAfterSeconds: 0 };
+}
+
+function sanitizePublicBusiness(id: string, data: any) {
+  const products = Array.isArray(data.products) ? data.products : [];
+  const faqs = Array.isArray(data.faqs) ? data.faqs : [];
+  return {
+    id,
+    ownerId: '',
+    name: String(data.name || 'Store'),
+    description: String(data.description || '').slice(0, 1_000),
+    phone: String(data.phone || '').slice(0, 30),
+    address: String(data.address || '').slice(0, 300),
+    logoUrl: String(data.logoUrl || '').slice(0, 2_000),
+    products: products
+      .filter((product: any) => product?.isAvailable !== false)
+      .slice(0, 100)
+      .map((product: any) => ({
+        id: String(product.id || ''),
+        name: String(product.name || '').slice(0, 200),
+        price: Number(product.price) || 0,
+        pricingTiers: Array.isArray(product.pricingTiers)
+          ? product.pricingTiers.slice(0, 10).map((tier: any) => ({
+              quantity: Math.max(1, Number(tier.quantity) || 1),
+              price: Number(tier.price) || 0,
+              label: String(tier.label || '').slice(0, 100),
+            }))
+          : [],
+        description: String(product.description || '').slice(0, 1_000),
+        specs: String(product.specs || '').slice(0, 500),
+        stock: Math.max(0, Number(product.stock) || 0),
+        category: String(product.category || '').slice(0, 100),
+        images: Array.isArray(product.images) ? product.images.slice(0, 8) : [],
+        reviewImages: Array.isArray(product.reviewImages) ? product.reviewImages.slice(0, 8) : [],
+        isAvailable: product.isAvailable !== false,
+      })),
+    faqs: faqs
+      .filter((faq: any) => faq?.isActive !== false)
+      .slice(0, 100)
+      .map((faq: any) => ({
+        id: String(faq.id || ''),
+        type: faq.type === 'product' ? 'product' : 'general',
+        question: String(faq.question || '').slice(0, 500),
+        answer: String(faq.answer || '').slice(0, 1_500),
+        category: String(faq.category || '').slice(0, 100),
+        productId: String(faq.productId || ''),
+        productName: String(faq.productName || '').slice(0, 200),
+        isActive: faq.isActive !== false,
+      })),
+    features: data.features || {},
+    courierConfig: {
+      deliveryChargeInsideDhaka: Number(data.courierConfig?.deliveryChargeInsideDhaka) || 0,
+      deliveryChargeOutsideDhaka: Number(data.courierConfig?.deliveryChargeOutsideDhaka) || 0,
+    },
+    status: data.status,
+    plan: data.plan,
+    verificationStatus: data.verificationStatus,
+  };
+}
+
+app.get('/api/chat/business/:businessId', async (req, res) => {
+  const businessId = String(req.params.businessId || '').trim();
+  if (!businessId || businessId.length > 128 || /[\/\u0000-\u001f]/.test(businessId)) {
+    return res.status(400).json({ error: 'Invalid business ID' });
+  }
+  const business = await loadBusinessById(businessId);
+  if (!business || business.data?.status === 'suspended') {
+    return res.status(404).json({ error: 'Store not found' });
+  }
+  res.setHeader('Cache-Control', 'public, max-age=60, stale-while-revalidate=300');
+  return res.json(sanitizePublicBusiness(business.id, business.data));
+});
+
+app.post('/api/chat/respond', async (req, res) => {
+  const businessId = String(req.body?.businessId || '').trim();
+  const message = String(req.body?.message || '').trim();
+  if (!businessId || businessId.length > 128 || /[\/\u0000-\u001f]/.test(businessId)) {
+    return res.status(400).json({ code: 'INVALID_BUSINESS', error: 'সঠিক স্টোর আইডি প্রয়োজন।' });
+  }
+  if (!message || message.length > 1_000) {
+    return res.status(400).json({ code: 'INVALID_MESSAGE', error: '১ থেকে ১০০০ অক্ষরের মেসেজ প্রয়োজন।' });
+  }
+
+  const clientIp = trustedClientIp(clientIpFromReq(req)) || 'unknown';
+  const quota = consumePublicChatQuota(`${businessId}:${clientIp}`);
+  if (!quota.allowed) {
+    res.setHeader('Retry-After', String(quota.retryAfterSeconds));
+    return res.status(429).json({
+      code: 'RATE_LIMITED',
+      error: 'খুব দ্রুত অনেক মেসেজ পাঠানো হয়েছে। একটু পর আবার চেষ্টা করুন।',
+    });
+  }
+
+  try {
+    const business = await loadBusinessById(businessId);
+    if (!business || business.data?.status === 'suspended') {
+      return res.status(404).json({ code: 'STORE_NOT_FOUND', error: 'স্টোরটি পাওয়া যায়নি।' });
+    }
+
+    const aiConfig = await getEffectiveGeminiConfig();
+    const hasMerchantKey = Boolean(
+      business.data?.useOwnApiKey
+      && String(business.data?.customGeminiApiKey || '').trim(),
+    );
+    if (!hasMerchantKey && !aiConfig.apiKey) {
+      return res.status(503).json({
+        code: 'AI_NOT_CONFIGURED',
+        error: 'AI সহকারী এখন কনফিগার করা নেই।',
+      });
+    }
+
+    const response = await generateChatResponse(
+      message,
+      String(req.body?.history || '').slice(-30_000),
+      { ...business.data, id: business.id },
+      String(req.body?.customerContext || '').slice(0, 8_000),
+      undefined,
+      aiConfig.apiKey,
+      String(req.body?.chatSummary || '').slice(0, 8_000),
+    );
+
+    if (response.errorCode) {
+      return res.status(502).json({
+        code: response.errorCode,
+        error: 'AI সহকারী এই মুহূর্তে উত্তর দিতে পারছে না।',
+      });
+    }
+    res.setHeader('Cache-Control', 'no-store');
+    return res.json({ response });
+  } catch (error: any) {
+    console.error('[Public Chat API]', error?.message || error);
+    return res.status(500).json({
+      code: 'CHAT_FAILED',
+      error: 'AI উত্তর তৈরি করা যায়নি।',
+    });
+  }
+});
+
 // Test Connection Endpoint
 app.post('/api/test-connection', async (req, res) => {
   const { businessId, ownerId } = req.body;
@@ -1376,6 +1538,27 @@ app.post('/api/test-connection', async (req, res) => {
 
 app.get('/api/ping', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString(), adminDbReady: !!adminDb });
+});
+
+app.get('/api/public/config', async (_req, res) => {
+  try {
+    let data: any = {};
+    if (adminDb) {
+      const snap = await adminDb.collection('system_config').doc('public').get();
+      if (snap.exists) data = snap.data() || {};
+    } else if (db) {
+      const snap = await getDoc(doc(db, 'system_config', 'public'));
+      if (snap.exists()) data = snap.data() || {};
+    }
+    res.setHeader('Cache-Control', 'public, max-age=60, stale-while-revalidate=300');
+    return res.json({
+      globalAnnouncement: String(data.globalAnnouncement || data.announcement || '').slice(0, 500),
+      maintenanceMode: Boolean(data.maintenanceMode),
+    });
+  } catch (error: any) {
+    console.error('[Public Config]', error?.message || error);
+    return res.status(500).json({ error: 'Public configuration unavailable' });
+  }
 });
 
 app.get('/api/client-ip', (req, res) => {
