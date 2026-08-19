@@ -18,6 +18,7 @@ import { Badge } from '../ui/badge';
 import { BusinessConfig, Message } from '../../types';
 import { getAIResponse } from '../../lib/gemini';
 import { toast } from 'sonner';
+import { mergeFeatures, shouldRunAi } from '../../lib/featureFlags';
 import {
   mergeOrderData,
   extractBdPhone,
@@ -26,6 +27,7 @@ import {
   saveConfirmedOrder,
   CollectedOrderInfo,
 } from '../../lib/chatOrder';
+import { isFeatureEnabled } from '../../lib/featureFlags';
 
 interface MerchantTestChatProps {
   business: BusinessConfig;
@@ -58,6 +60,26 @@ export function MerchantTestChat({ business }: MerchantTestChatProps) {
   const handleSend = async (overrideText?: string) => {
     const textToSend = overrideText || input;
     if (!textToSend.trim() || isLoading) return;
+
+    if (!shouldRunAi(business.features)) {
+      const offline = mergeFeatures(business.features).offlineMessage
+        || 'ধন্যবাদ! আমাদের সেলস টিম শীঘ্রই আপনার মেসেজের উত্তর দিবে।';
+      const userMsg: Message = {
+        id: `msg-${Date.now()}`,
+        role: 'user',
+        content: textToSend,
+        timestamp: Date.now()
+      };
+      setMessages(prev => [...prev, userMsg, {
+        id: `msg-${Date.now() + 1}`,
+        role: 'assistant',
+        content: offline,
+        timestamp: Date.now()
+      }]);
+      setInput('');
+      toast.message('এআই সুইচবোর্ডে বন্ধ বা নীরব সময় চলছে');
+      return;
+    }
 
     const userMsg: Message = {
       id: `msg-${Date.now()}`,
@@ -114,7 +136,7 @@ export function MerchantTestChat({ business }: MerchantTestChatProps) {
 
       setMessages(prev => [...prev, assistantMsg]);
 
-      if (shouldPlaceOrder(aiResponse, nextCollected, Boolean(orderPlacedId))) {
+      if (isFeatureEnabled(business.features, 'autoOrderEnabled') && shouldPlaceOrder(aiResponse, nextCollected, Boolean(orderPlacedId))) {
         const saved = await saveConfirmedOrder({
           business,
           collected: nextCollected,
@@ -218,8 +240,8 @@ export function MerchantTestChat({ business }: MerchantTestChatProps) {
                     p.name.toLowerCase().includes((msg.aiMetadata?.product_name || '').toLowerCase())
                   ) || business.products?.[0];
                   if (!matched) return null;
-                  const productImgs = msg.aiMetadata?.show_product_image ? (matched.images || []).slice(0, 4) : [];
-                  const reviewImgs = msg.aiMetadata?.show_review_images ? (matched.reviewImages || []).slice(0, 4) : [];
+                  const productImgs = isFeatureEnabled(business.features, 'imageDisplayEnabled') && msg.aiMetadata?.show_product_image ? (matched.images || []).slice(0, 4) : [];
+                  const reviewImgs = isFeatureEnabled(business.features, 'reviewImagesEnabled') && msg.aiMetadata?.show_review_images ? (matched.reviewImages || []).slice(0, 4) : [];
                   if (!productImgs.length && !reviewImgs.length) return null;
                   return (
                     <div className="mt-3 pt-3 border-t border-zinc-100 dark:border-zinc-700 space-y-2">

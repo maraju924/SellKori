@@ -15,6 +15,7 @@ import { Textarea } from '../ui/textarea';
 import { Badge } from '../ui/badge';
 import { BusinessConfig } from '../../types';
 import { toast } from 'sonner';
+import { isFeatureEnabled } from '../../lib/featureFlags';
 
 interface MerchantBroadcastingProps {
   business: BusinessConfig;
@@ -25,8 +26,13 @@ export function MerchantBroadcasting({ business }: MerchantBroadcastingProps) {
   const [message, setMessage] = useState('');
   const [targetAudience, setTargetAudience] = useState<'all' | 'hot_leads' | 'buyers'>('all');
   const [isSending, setIsSending] = useState(false);
+  const broadcastingOn = isFeatureEnabled(business.features, 'broadcastingEnabled');
 
   const handleSendBroadcast = async () => {
+    if (!broadcastingOn) {
+      toast.error('ব্রডকাস্টিং সুইচবোর্ডে বন্ধ আছে');
+      return;
+    }
     if (!title.trim() || !message.trim()) {
       toast.error('ক্যাম্পেইনের টাইটেল এবং মেসেজ লিখুন');
       return;
@@ -60,6 +66,9 @@ export function MerchantBroadcasting({ business }: MerchantBroadcastingProps) {
             <Badge className="bg-orange-100 text-orange-800 dark:bg-orange-950/60 dark:text-orange-300 border-none font-bold text-xs">
               Smart Remarketing
             </Badge>
+            {!broadcastingOn && (
+              <Badge className="bg-rose-100 text-rose-700 border-none font-bold text-xs">সুইচবোর্ডে বন্ধ</Badge>
+            )}
           </div>
           <p className="text-xs text-zinc-500 mt-1">
             অতীতের কাস্টমার বা যারা চ্যাটে দামাদামি করেও কেনেনি, তাদের কাছে নতুন অফার বা ডিসকাউন্ট পাঠান।
@@ -117,7 +126,7 @@ export function MerchantBroadcasting({ business }: MerchantBroadcastingProps) {
 
           <Button
             onClick={handleSendBroadcast}
-            disabled={isSending}
+            disabled={isSending || !broadcastingOn}
             className="w-full bg-linear-to-r from-orange-600 to-amber-500 hover:from-orange-700 text-white font-black text-xs rounded-2xl h-11 shadow-md shadow-orange-600/20"
           >
             <Send className="w-4 h-4 mr-1.5" />

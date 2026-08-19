@@ -19,6 +19,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '../ui
 import { Button } from '../ui/button';
 import { Badge } from '../ui/badge';
 import { BusinessConfig, Order } from '../../types';
+import { countEnabled, shouldRunAi } from '../../lib/featureFlags';
 import { 
   ResponsiveContainer, 
   AreaChart, 
@@ -66,10 +67,14 @@ export function MerchantOverview({
             <span>স্বাগতম, {business.name || 'মার্চেন্ট'}!</span>
           </div>
           <h2 className="text-2xl md:text-3xl font-black tracking-tight leading-tight">
-            আপনার এআই সেলসম্যান ২৪/৭ সক্রিয় রয়েছে
+            {shouldRunAi(business.features)
+              ? 'আপনার এআই সেলসম্যান ২৪/৭ সক্রিয় রয়েছে'
+              : 'এআই এখন সুইচবোর্ড অনুযায়ী অফলাইন'}
           </h2>
           <p className="text-orange-100 text-xs md:text-sm max-w-xl leading-relaxed">
-            ফেসবুক মেসেঞ্জারে কাস্টমারদের সাথে দরদাম করা, তথ্য জানানো এবং অর্ডার মেমো তৈরিতে কোনো বিরতি নেই।
+            {shouldRunAi(business.features)
+              ? 'ফেসবুক মেসেঞ্জারে কাস্টমারদের সাথে দরদাম করা, তথ্য জানানো এবং অর্ডার মেমো তৈরিতে কোনো বিরতি নেই।'
+              : 'ফিচার সুইচবোর্ড থেকে এআই, অর্ডার, ছবি ও কুরিয়ার আবার চালু করতে পারেন।'}
           </p>
         </div>
 
@@ -82,6 +87,12 @@ export function MerchantOverview({
             টেস্ট সিমুলেটর
           </Button>
           <Button
+            onClick={() => onNavigateTab('features')}
+            className="bg-zinc-950/40 hover:bg-zinc-950/60 text-white font-bold text-xs px-4 py-2.5 rounded-2xl border border-white/20"
+          >
+            কন্ট্রোল সেন্টার
+          </Button>
+          <Button
             onClick={() => onNavigateTab('products')}
             className="bg-zinc-950/40 hover:bg-zinc-950/60 text-white font-bold text-xs px-4 py-2.5 rounded-2xl border border-white/20"
           >
@@ -90,6 +101,31 @@ export function MerchantOverview({
           </Button>
         </div>
       </div>
+
+      {(() => {
+        const stats = countEnabled(business.features);
+        const live = shouldRunAi(business.features);
+        return (
+          <button
+            type="button"
+            onClick={() => onNavigateTab('features')}
+            className="w-full bg-white dark:bg-zinc-900 border border-zinc-200/80 dark:border-zinc-800 rounded-3xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-left hover:border-orange-300 dark:hover:border-orange-800 transition-colors"
+          >
+            <div className="flex items-center gap-3">
+              <div className={`w-10 h-10 rounded-2xl flex items-center justify-center ${live ? 'bg-emerald-50 text-emerald-600 dark:bg-emerald-950/50' : 'bg-rose-50 text-rose-600 dark:bg-rose-950/40'}`}>
+                <Bot className="w-5 h-5" />
+              </div>
+              <div>
+                <div className="text-sm font-black text-zinc-900 dark:text-white">ফিচার সুইচবোর্ড</div>
+                <div className="text-[11px] text-zinc-500">
+                  {stats.on}/{stats.total} মডিউল সক্রিয় · {live ? 'এআই লাইভ' : 'এআই অফলাইন'}
+                </div>
+              </div>
+            </div>
+            <span className="text-[11px] font-black text-orange-600">কন্ট্রোল খুলুন →</span>
+          </button>
+        );
+      })()}
 
       {/* 4 Primary KPI Cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 md:gap-5">
