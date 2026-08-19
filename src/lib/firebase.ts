@@ -10,7 +10,7 @@ import { getStorage } from 'firebase/storage';
 import firebaseConfig from '../../firebase-applet-config.json';
 
 // Firebase configuration with environment variable support for Vercel
-const viteEnv = import.meta.env || {};
+const viteEnv = (import.meta.env || {}) as Record<string, string | undefined>;
 const firebaseConfigData = {
   apiKey: viteEnv.VITE_FIREBASE_API_KEY || firebaseConfig.apiKey,
   authDomain: viteEnv.VITE_FIREBASE_AUTH_DOMAIN || firebaseConfig.authDomain,
