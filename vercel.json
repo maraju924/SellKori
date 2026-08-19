@@ -1,36 +1,13 @@
 {
   "version": 2,
-  "functions": {
-    "api/index.ts": {
-      "maxDuration": 60
-    },
-    "api/webhook/index.ts": {
-      "maxDuration": 60
-    },
-    "api/webhook/[businessId].ts": {
-      "maxDuration": 60
-    }
-  },
   "rewrites": [
     {
-      "source": "/api/((?!webhook).*)",
-      "destination": "/api"
+      "source": "/api/(.*)",
+      "destination": "/api/index.ts"
     },
     {
-      "source": "/webhook",
-      "destination": "/api/webhook"
-    },
-    {
-      "source": "/webhook/:businessId",
-      "destination": "/api/webhook/:businessId"
-    },
-    {
-      "source": "/messenger/webhook",
-      "destination": "/api/webhook"
-    },
-    {
-      "source": "/messenger/webhook/:businessId",
-      "destination": "/api/webhook/:businessId"
+      "source": "/webhook(.*)",
+      "destination": "/api/index.ts"
     },
     {
       "source": "/((?!api|webhook|assets|favicon.ico).*)",
