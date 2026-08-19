@@ -35,6 +35,7 @@ import { db } from '../../lib/firebase';
 import { doc, updateDoc, collection, query, where, orderBy, limit, onSnapshot, getDocs } from 'firebase/firestore';
 import { toast } from 'sonner';
 import { cleanFirestoreData } from '../../lib/utils';
+import { parseJsonResponse } from '../../lib/safeJson';
 
 interface MerchantMessengerLiveProps {
   business: BusinessConfig;
@@ -145,7 +146,7 @@ export function MerchantMessengerLive({ business }: MerchantMessengerLiveProps) 
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ pageAccessToken: pageAccessToken.trim() })
           });
-          const subData = await subRes.json();
+          const subData = await parseJsonResponse(subRes);
           if (subRes.ok && subData.page?.id && !pageId) setPageId(subData.page.id);
           if (subRes.ok && subData.subscribed) {
             toast.success('সেটিংস সেভ হয়েছে এবং পেজ ওয়েবহুকে সাবস্ক্রাইব করা হয়েছে!');
@@ -240,7 +241,7 @@ export function MerchantMessengerLive({ business }: MerchantMessengerLiveProps) 
         body: JSON.stringify({ pageAccessToken: pageAccessToken.trim() })
       });
 
-      const data = await res.json();
+      const data = await parseJsonResponse(res);
       if (res.ok && data.success) {
         const subscribed = data.subscribed !== false;
         setTokenStatus({
@@ -291,7 +292,7 @@ export function MerchantMessengerLive({ business }: MerchantMessengerLiveProps) 
         })
       });
 
-      const data = await res.json();
+      const data = await parseJsonResponse(res);
       if (res.ok && data.success) {
         setSimulationResult({
           success: true,

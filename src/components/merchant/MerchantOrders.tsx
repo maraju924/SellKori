@@ -59,6 +59,7 @@ import { db } from '../../lib/firebase';
 import { doc, setDoc, updateDoc, serverTimestamp } from 'firebase/firestore';
 import { toast } from 'sonner';
 import { cleanFirestoreData, finiteNumber } from '../../lib/utils';
+import { parseJsonResponse } from '../../lib/safeJson';
 import { normalizePhone } from '../../lib/chatOrder';
 import { latestOrdersByIdentity, passengerIdOf } from '../../lib/orderIdentity';
 import {
@@ -517,7 +518,7 @@ export function MerchantOrders({ business, orders }: MerchantOrdersProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ orderId: order.id, businessId: business.id }),
       });
-      const data = await res.json().catch(() => ({}));
+      const data = await parseJsonResponse(res).catch((e: Error) => ({ error: e.message }));
       if (!res.ok || !data.success) {
         toast.error(data.error || 'কুরিয়ার বুকিং ব্যর্থ হয়েছে');
         return;
@@ -584,7 +585,7 @@ export function MerchantOrders({ business, orders }: MerchantOrdersProps) {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ orderId: order.id, businessId: business.id }),
         });
-        const data = await res.json().catch(() => ({}));
+        const data = await parseJsonResponse(res).catch(() => ({}));
         if (res.ok && data.success) ok += 1;
         else fail += 1;
       } catch {

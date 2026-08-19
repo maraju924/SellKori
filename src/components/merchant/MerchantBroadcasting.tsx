@@ -14,6 +14,7 @@ import { Badge } from '../ui/badge';
 import { BusinessConfig, BroadcastingCampaign, BroadcastAudience } from '../../types';
 import { toast } from 'sonner';
 import { isFeatureEnabled } from '../../lib/featureFlags';
+import { parseJsonResponse } from '../../lib/safeJson';
 import {
   DEFAULT_COMMENT_INBOX_MESSAGE,
   DEFAULT_COMMENT_KEYWORDS,
@@ -114,7 +115,7 @@ export function MerchantBroadcasting({ business }: MerchantBroadcastingProps) {
           targetAudience
         })
       });
-      const data = await res.json();
+      const data = await parseJsonResponse(res);
       if (!res.ok || !data.success) {
         throw new Error(data.error || 'প্রিভিউ নেওয়া যায়নি');
       }
@@ -162,7 +163,7 @@ export function MerchantBroadcasting({ business }: MerchantBroadcastingProps) {
           targetAudience
         })
       });
-      const data = await res.json();
+      const data = await parseJsonResponse(res);
       if (!res.ok || !data.success) {
         throw new Error(data.error || 'ব্রডকাস্ট পাঠানো যায়নি');
       }
