@@ -960,7 +960,183 @@ async function getEffectiveGeminiConfig() {
     model = 'gemini-3.7-flash';
   }
 
+  if (!apiKey) {
+    // Fall back to the multi-key pool so the platform keeps running as long
+    // as ANY provider key exists.
+    const pool = await getAiPool();
+    apiKey = pool.geminiKeys.find(k => k.enabled)?.key || pool.openRouterKey || pool.openAiKey || '';
+  }
+
   return { apiKey: (apiKey || '').trim(), model, temperature, maxTokens };
+}
+
+// ---------------------------------------------------------------------------
+// AI Provider Pool with automatic failover.
+// The super admin can register MANY Gemini keys plus one OpenRouter and one
+// OpenAI key. When a key hits its quota (429 / RESOURCE_EXHAUSTED) it is put
+// on cooldown and the next key takes over automatically — so free-tier keys
+// can be chained and a single dead key never stops the bots.
+// ---------------------------------------------------------------------------
+interface PooledGeminiKey { key: string; label: string; enabled: boolean }
+interface AiPool {
+  geminiKeys: PooledGeminiKey[];
+  openRouterKey: string;
+  openRouterModel: string;
+  openAiKey: string;
+  openAiModel: string;
+}
+
+let aiPoolCache: { pool: AiPool; at: number } | null = null;
+const AI_POOL_CACHE_MS = 60 * 1000;
+
+async function getAiPool(): Promise<AiPool> {
+  if (aiPoolCache && Date.now() - aiPoolCache.at < AI_POOL_CACHE_MS) return aiPoolCache.pool;
+  const pool: AiPool = {
+    geminiKeys: [],
+    openRouterKey: '',
+    openRouterModel: 'openrouter/auto',
+    openAiKey: '',
+    openAiModel: 'gpt-4o-mini',
+  };
+  try {
+    let d: any = null;
+    if (adminDb) {
+      const s = await adminDb.collection('system').doc('settings').get();
+      if (s.exists) d = s.data();
+    } else if (db) {
+      const s = await getDoc(doc(db, 'system', 'settings'));
+      if (s.exists()) d = s.data();
+    }
+    if (d) {
+      if (Array.isArray(d.geminiKeys)) {
+        pool.geminiKeys = d.geminiKeys
+          .map((k: any) => ({
+            key: String(k?.key || '').trim(),
+            label: String(k?.label || '').trim() || 'Gemini Key',
+            enabled: k?.enabled !== false,
+          }))
+          .filter((k: PooledGeminiKey) => k.key);
+      }
+      if (d.openRouterKey) pool.openRouterKey = String(d.openRouterKey).trim();
+      if (d.openRouterModel) pool.openRouterModel = String(d.openRouterModel).trim();
+      if (d.openAiKey) pool.openAiKey = String(d.openAiKey).trim();
+      if (d.openAiModel) pool.openAiModel = String(d.openAiModel).trim();
+      // Legacy single-key field keeps working as an extra pool member
+      const legacy = String(d.geminiApiKey || '').trim();
+      if (legacy && !pool.geminiKeys.some(k => k.key === legacy)) {
+        pool.geminiKeys.push({ key: legacy, label: 'Legacy Key', enabled: true });
+      }
+    }
+  } catch (e: any) {
+    console.warn('[AI Pool] config load notice:', e?.message);
+  }
+  const envKey = String(process.env.GEMINI_API_KEY || '').trim();
+  if (envKey && !pool.geminiKeys.some(k => k.key === envKey)) {
+    pool.geminiKeys.push({ key: envKey, label: 'ENV Key', enabled: true });
+  }
+  aiPoolCache = { pool, at: Date.now() };
+  return pool;
+}
+
+// key (or provider key) -> cooldown-until timestamp
+const aiKeyCooldownUntil = new Map<string, number>();
+const AI_QUOTA_COOLDOWN_MS = 15 * 60 * 1000;
+const AI_AUTH_COOLDOWN_MS = 6 * 60 * 60 * 1000;
+
+function aiKeyAvailable(key: string): boolean {
+  return (aiKeyCooldownUntil.get(key) || 0) < Date.now();
+}
+
+function classifyAiError(err: any): 'quota' | 'auth' | 'other' {
+  const status = Number(err?.response?.status || err?.status || 0);
+  const msg = String(err?.response?.data?.error?.message || err?.message || '').toLowerCase();
+  if (status === 429 || msg.includes('resource_exhausted') || msg.includes('quota') || msg.includes('rate limit') || msg.includes('exceeded')) return 'quota';
+  if (status === 401 || status === 403 || msg.includes('api key not valid') || msg.includes('api_key_invalid') || msg.includes('permission')) return 'auth';
+  return 'other';
+}
+
+function cooldownAiKey(key: string, kind: 'quota' | 'auth', label: string) {
+  const ms = kind === 'auth' ? AI_AUTH_COOLDOWN_MS : AI_QUOTA_COOLDOWN_MS;
+  aiKeyCooldownUntil.set(key, Date.now() + ms);
+  console.warn(`[AI Pool] Key "${label}" on cooldown (${kind}) for ${Math.round(ms / 60000)} min — rotating to next key.`);
+}
+
+interface AiGenerateOptions {
+  parts: any[];           // Gemini multimodal parts (text + media)
+  textPrompt: string;     // text-only version for OpenRouter/OpenAI fallback
+  model: string;
+  schema?: any;
+  temperature?: number;
+  maxTokens?: number;
+}
+
+async function aiGenerate(opts: AiGenerateOptions): Promise<{ text: string; provider: string; keyLabel: string }> {
+  const pool = await getAiPool();
+  const models = Array.from(new Set([opts.model, 'gemini-3.1-flash-lite'].filter(Boolean)));
+  let lastErr: any = null;
+
+  for (const gk of pool.geminiKeys) {
+    if (!gk.enabled || !aiKeyAvailable(gk.key)) continue;
+    for (const modelName of models) {
+      try {
+        const ai = new GoogleGenAI({ apiKey: gk.key });
+        const config: any = {
+          temperature: opts.temperature ?? 0.6,
+          maxOutputTokens: opts.maxTokens ?? 1024,
+        };
+        if (opts.schema) {
+          config.responseMimeType = 'application/json';
+          config.responseSchema = opts.schema;
+        }
+        const r = await ai.models.generateContent({
+          model: modelName,
+          contents: [{ role: 'user', parts: opts.parts }],
+          config,
+        });
+        const text = r.text?.trim() || '';
+        if (text) return { text, provider: 'gemini', keyLabel: gk.label };
+      } catch (err: any) {
+        lastErr = err;
+        const kind = classifyAiError(err);
+        if (kind === 'quota' || kind === 'auth') {
+          cooldownAiKey(gk.key, kind, gk.label);
+          break; // this key is done — move to the next key
+        }
+        // 'other' (e.g. unsupported media on this model): try the next model
+      }
+    }
+  }
+
+  // Text-only fallback providers (OpenAI-compatible chat completions)
+  const jsonInstruction = opts.schema
+    ? '\n\nCRITICAL: Respond with ONLY one valid JSON object using exactly the fields described above. No markdown, no extra text.'
+    : '';
+  const fallbackProviders = [
+    { name: 'openrouter', key: pool.openRouterKey, base: 'https://openrouter.ai/api/v1', model: pool.openRouterModel },
+    { name: 'openai', key: pool.openAiKey, base: 'https://api.openai.com/v1', model: pool.openAiModel },
+  ];
+  for (const p of fallbackProviders) {
+    if (!p.key || !aiKeyAvailable(p.key)) continue;
+    try {
+      const r = await axios.post(`${p.base}/chat/completions`, {
+        model: p.model,
+        messages: [{ role: 'user', content: opts.textPrompt + jsonInstruction }],
+        temperature: opts.temperature ?? 0.6,
+        max_tokens: opts.maxTokens ?? 1024,
+      }, {
+        headers: { Authorization: `Bearer ${p.key}` },
+        timeout: 30000,
+      });
+      const text = String(r.data?.choices?.[0]?.message?.content || '').trim();
+      if (text) return { text, provider: p.name, keyLabel: p.name };
+    } catch (err: any) {
+      lastErr = err;
+      const kind = classifyAiError(err);
+      if (kind === 'quota' || kind === 'auth') cooldownAiKey(p.key, kind, p.name);
+    }
+  }
+
+  throw lastErr || new Error('সব AI প্রোভাইডার ব্যর্থ হয়েছে — অ্যাডমিন প্যানেলে API Key যাচাই করুন।');
 }
 
 function sanitizeProductsForPrompt(products: any[] = []) {
@@ -1832,19 +2008,32 @@ app.post('/api/chat/respond', async (req, res) => {
       });
     }
 
-    const response = await generateChatResponse(
-      message,
-      String(req.body?.history || '').slice(-30_000),
-      { ...business.data, id: business.id },
-      String(req.body?.customerContext || '').slice(0, 8_000),
-      undefined,
+    // Try up to 3 keys from the pool so one exhausted free-tier key never
+    // takes the public chat down.
+    const pool = await getAiPool();
+    const candidateKeys = [
       aiConfig.apiKey,
-      String(req.body?.chatSummary || '').slice(0, 8_000),
-    );
+      ...pool.geminiKeys.filter(k => k.enabled && aiKeyAvailable(k.key)).map(k => k.key),
+    ].filter((k, i, arr) => k && arr.indexOf(k) === i).slice(0, 3);
 
-    if (response.errorCode) {
+    let response: any = null;
+    for (const candidateKey of candidateKeys) {
+      response = await generateChatResponse(
+        message,
+        String(req.body?.history || '').slice(-30_000),
+        { ...business.data, id: business.id },
+        String(req.body?.customerContext || '').slice(0, 8_000),
+        undefined,
+        candidateKey,
+        String(req.body?.chatSummary || '').slice(0, 8_000),
+      );
+      if (!response.errorCode) break;
+      cooldownAiKey(candidateKey, 'quota', 'chat-pool');
+    }
+
+    if (!response || response.errorCode) {
       return res.status(502).json({
-        code: response.errorCode,
+        code: response?.errorCode || 'AI_UNAVAILABLE',
         error: 'AI সহকারী এই মুহূর্তে উত্তর দিতে পারছে না।',
       });
     }
@@ -2513,38 +2702,23 @@ ${chatHistoryText || 'নতুন আলাপ'}
               }
 
               try {
-                console.log(`[Webhook] Calling Gemini AI for biz: ${bizId}${downloadedMedia.length ? ` with ${downloadedMedia.length} media part(s)` : ''}`);
+                console.log(`[Webhook] Calling AI pool for biz: ${bizId}${downloadedMedia.length ? ` with ${downloadedMedia.length} media part(s)` : ''}`);
                 let responseText = '';
-                
-                const generateJson = async (modelName: string, parts: any[]) => {
-                  const ai = new GoogleGenAI({ apiKey: aiConfig.apiKey });
-                  const aiResponse = await ai.models.generateContent({
-                    model: modelName,
-                    contents: [{ role: 'user', parts }],
-                    config: {
-                      responseMimeType: 'application/json',
-                      responseSchema: webhookResponseSchema,
-                      temperature: aiConfig.temperature,
-                      maxOutputTokens: aiConfig.maxTokens,
-                    }
-                  });
-                  return aiResponse.text?.trim() || '';
-                };
 
-                try {
-                  responseText = await generateJson(aiConfig.model, geminiParts);
-                } catch (primaryAiErr: any) {
-                  console.warn(`[Webhook] Primary model ${aiConfig.model} failed, falling back to gemini-3.1-flash-lite...`, primaryAiErr?.message);
-                  try {
-                    responseText = await generateJson('gemini-3.1-flash-lite', geminiParts);
-                  } catch (fallbackErr: any) {
-                    if (geminiParts.length > 1) {
-                      console.warn('[Webhook] Multimodal fallback failed, retrying text-only JSON...', fallbackErr?.message);
-                      responseText = await generateJson('gemini-3.1-flash-lite', [{ text: prompt }]);
-                    } else {
-                      throw new Error(`AI Generation failed on all models: ${fallbackErr?.message}`);
-                    }
-                  }
+                // Multi-key pool with automatic failover: every enabled Gemini
+                // key is tried (quota-hit keys rotate out), then OpenRouter,
+                // then OpenAI as text-only fallbacks.
+                const aiResult = await aiGenerate({
+                  parts: geminiParts,
+                  textPrompt: prompt,
+                  model: aiConfig.model,
+                  schema: webhookResponseSchema,
+                  temperature: aiConfig.temperature,
+                  maxTokens: aiConfig.maxTokens,
+                });
+                responseText = aiResult.text;
+                if (aiResult.provider !== 'gemini') {
+                  console.log(`[Webhook] Reply served by fallback provider: ${aiResult.provider}`);
                 }
 
                 const latencyMs = Date.now() - startTime;
@@ -2894,6 +3068,211 @@ app.get(['/api/messenger/health', '/api/webhook/health'], (_req, res) => {
 });
 
 // Meta Graph API Token Health Test + page subscription
+// ---------------------------------------------------------------------------
+// ZiniPay billing — the gateway API key belongs to the SUPER ADMIN only
+// (system/settings.zinipayApiKey). Merchants recharge their token wallet
+// through these endpoints and never see the gateway credentials.
+// ---------------------------------------------------------------------------
+const ZINIPAY_BASE = 'https://api.zinipay.com';
+
+async function getBillingSettings() {
+  let zinipayApiKey = '';
+  let tokenRatePerLakh = 20;
+  try {
+    let d: any = null;
+    if (adminDb) {
+      const s = await adminDb.collection('system').doc('settings').get();
+      if (s.exists) d = s.data();
+    } else if (db) {
+      const s = await getDoc(doc(db, 'system', 'settings'));
+      if (s.exists()) d = s.data();
+    }
+    if (d) {
+      zinipayApiKey = String(d.zinipayApiKey || '').trim();
+      if (d.tokenRatePerLakh) tokenRatePerLakh = Number(d.tokenRatePerLakh) || 20;
+    }
+  } catch (e: any) {
+    console.warn('[Billing] settings load notice:', e?.message);
+  }
+  return { zinipayApiKey, tokenRatePerLakh };
+}
+
+async function savePaymentDoc(payment: any) {
+  if (adminDb) {
+    try {
+      await adminDb.collection('payments').doc(payment.id).set({
+        ...payment,
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      }, { merge: true });
+      return;
+    } catch (e: any) {
+      console.error('[Billing] admin payment write failed, client fallback:', e?.message);
+    }
+  }
+  if (db) {
+    await setDoc(doc(db, 'payments', payment.id), { ...payment, createdAt: serverTimestamp() }, { merge: true });
+    return;
+  }
+  throw new Error('No Firestore connection to save payment');
+}
+
+async function loadPaymentDoc(valId: string): Promise<any | null> {
+  try {
+    if (adminDb) {
+      const s = await adminDb.collection('payments').doc(valId).get();
+      if (s.exists) return { id: s.id, ...s.data() };
+    }
+  } catch (_) {}
+  try {
+    if (db) {
+      const s = await getDoc(doc(db, 'payments', valId));
+      if (s.exists()) return { id: s.id, ...s.data() };
+    }
+  } catch (_) {}
+  return null;
+}
+
+// Credits the merchant's token wallet server-side (Admin SDK only — client
+// SDK from the server is unauthenticated and rules would deny it). Returns
+// true when credited so the caller can mark the payment as settled.
+async function creditPaymentTokens(payment: any): Promise<boolean> {
+  if (!payment?.businessId || !payment?.tokens) return false;
+  if (adminDb) {
+    try {
+      await adminDb.collection('businesses').doc(payment.businessId).update({
+        tokenBalance: admin.firestore.FieldValue.increment(Number(payment.tokens) || 0),
+      });
+      return true;
+    } catch (e: any) {
+      console.warn('[Billing] admin credit failed (client will settle):', e?.message);
+    }
+  }
+  return false;
+}
+
+async function settleZinipayPayment(valId: string): Promise<{ paid: boolean; credited: boolean; payment: any | null; status?: string }> {
+  const payment = await loadPaymentDoc(valId);
+  if (!payment) return { paid: false, credited: false, payment: null, status: 'not_found' };
+  if (payment.status === 'paid') {
+    return { paid: true, credited: payment.credited === true, payment };
+  }
+  const { zinipayApiKey } = await getBillingSettings();
+  if (!zinipayApiKey) return { paid: false, credited: false, payment, status: 'gateway_not_configured' };
+
+  const verifyRes = await axios.post(`${ZINIPAY_BASE}/v1/payment/verify`, { invoice_id: valId }, {
+    headers: { 'Content-Type': 'application/json', 'zini-api-key': zinipayApiKey },
+    timeout: 20000,
+  });
+  const v = verifyRes.data || {};
+  const completed = String(v.status || '').toUpperCase() === 'COMPLETED';
+  if (!completed) return { paid: false, credited: false, payment, status: String(v.status || 'PENDING') };
+
+  const credited = await creditPaymentTokens(payment);
+  await savePaymentDoc({
+    ...payment,
+    status: 'paid',
+    credited,
+    transactionId: String(v.transaction_id || ''),
+    paymentMethod: String(v.payment_method || ''),
+    paidAtMs: Date.now(),
+  });
+  await logActivity(payment.businessId, 'PAYMENT_RECEIVED', `৳${payment.amount} পেমেন্ট সফল (${v.payment_method || 'zinipay'}) — ${Number(payment.tokens).toLocaleString()} টোকেন${credited ? ' যুক্ত হয়েছে' : ' যুক্ত হবে ড্যাশবোর্ড খুললেই'}।`, 'success', payment.ownerId);
+  return { paid: true, credited, payment: { ...payment, credited } };
+}
+
+app.post('/api/billing/create-payment', async (req, res) => {
+  const businessId = String(req.body?.businessId || '').trim();
+  const amount = Math.round(Number(req.body?.amount) || 0);
+  if (!businessId || amount < 10 || amount > 200000) {
+    return res.status(400).json({ success: false, error: 'সঠিক স্টোর আইডি ও পরিমাণ দিন (১০-২০০০০০ টাকা)' });
+  }
+  try {
+    const loaded = await loadBusinessById(businessId);
+    if (!loaded) return res.status(404).json({ success: false, error: 'স্টোর পাওয়া যায়নি' });
+
+    const { zinipayApiKey, tokenRatePerLakh } = await getBillingSettings();
+    if (!zinipayApiKey) {
+      return res.status(400).json({ success: false, error: 'পেমেন্ট গেটওয়ে এখনো চালু হয়নি। অ্যাডমিনের সাথে যোগাযোগ করুন।' });
+    }
+
+    const tokens = Math.round((amount / Math.max(1, tokenRatePerLakh)) * 100000);
+    const valId = `PAY-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
+    const host = String(req.headers['x-forwarded-host'] || req.headers.host || '');
+    const origin = `https://${host}`;
+
+    const createRes = await axios.post(`${ZINIPAY_BASE}/v1/payment/create`, {
+      cus_name: String(loaded.data?.name || 'SellKori Merchant').slice(0, 80),
+      cus_email: String(req.body?.email || 'merchant@sellkori.app').slice(0, 120),
+      amount,
+      metadata: { businessId, valId, tokens },
+      redirect_url: `${origin}/?payment=verify&valId=${encodeURIComponent(valId)}`,
+      cancel_url: `${origin}/?payment=cancelled`,
+      val_id: valId,
+      webhook_url: `${origin}/api/billing/zinipay-webhook`,
+    }, {
+      headers: { 'Content-Type': 'application/json', 'zini-api-key': zinipayApiKey },
+      timeout: 20000,
+    });
+
+    const paymentUrl = String(createRes.data?.payment_url || '');
+    if (!paymentUrl) {
+      return res.status(502).json({ success: false, error: createRes.data?.message || 'পেমেন্ট লিংক তৈরি করা যায়নি' });
+    }
+
+    await savePaymentDoc({
+      id: valId,
+      businessId,
+      ownerId: loaded.data?.ownerId || '',
+      amount,
+      tokens,
+      status: 'pending',
+      credited: false,
+      paymentUrl,
+      createdAtMs: Date.now(),
+    });
+
+    return res.json({ success: true, paymentUrl, valId, tokens, amount });
+  } catch (err: any) {
+    const msg = err.response?.data?.message || err.message || 'পেমেন্ট তৈরি ব্যর্থ';
+    console.error('[Billing] create-payment error:', err.response?.data || err.message);
+    return res.status(500).json({ success: false, error: msg });
+  }
+});
+
+app.post('/api/billing/verify', async (req, res) => {
+  const valId = String(req.body?.valId || req.body?.invoice_id || '').trim();
+  if (!valId) return res.status(400).json({ success: false, error: 'Payment ID দিন' });
+  try {
+    const result = await settleZinipayPayment(valId);
+    if (!result.payment) return res.status(404).json({ success: false, error: 'পেমেন্ট রেকর্ড পাওয়া যায়নি' });
+    return res.json({
+      success: true,
+      paid: result.paid,
+      credited: result.credited,
+      status: result.status || (result.paid ? 'COMPLETED' : 'PENDING'),
+      tokens: result.payment.tokens,
+      amount: result.payment.amount,
+      businessId: result.payment.businessId,
+    });
+  } catch (err: any) {
+    const msg = err.response?.data?.message || err.message || 'ভেরিফিকেশন ব্যর্থ';
+    return res.status(500).json({ success: false, error: msg });
+  }
+});
+
+// ZiniPay server-to-server callback
+app.post('/api/billing/zinipay-webhook', async (req, res) => {
+  const valId = String(req.body?.val_id || req.body?.invoice_id || req.body?.metadata?.valId || '').trim();
+  if (valId) {
+    try {
+      await settleZinipayPayment(valId);
+    } catch (e: any) {
+      console.error('[Billing] webhook settle error:', e?.message);
+    }
+  }
+  return res.status(200).json({ received: true });
+});
+
 // Fire a CAPI test event so the merchant can verify Pixel + token in one click
 app.post('/api/capi/test', async (req, res) => {
   const pixelId = String(req.body?.pixelId || '').trim();
@@ -3015,7 +3394,6 @@ app.post('/api/messenger/simulate-message', async (req, res) => {
 
   const startTime = Date.now();
   try {
-    const ai = new GoogleGenAI({ apiKey: aiConfig.apiKey });
     const products = (businessData.products || []).map((p: any) => ({
       name: p.name,
       price: p.price,
@@ -3051,10 +3429,14 @@ ${simHistory || 'নতুন আলাপ'}
 
 টু-দ্য-পয়েন্ট উত্তর:`;
 
-    const response = await ai.models.generateContent({
+    const aiResult = await aiGenerate({
+      parts: [{ text: prompt }],
+      textPrompt: prompt,
       model: aiConfig.model,
-      contents: prompt
+      temperature: aiConfig.temperature,
+      maxTokens: aiConfig.maxTokens,
     });
+    const response = { text: aiResult.text } as { text?: string };
 
     const reply = response.text?.trim() || 'ধন্যবাদ! আপনার মেসেজ পেয়েছি।';
     const latencyMs = Date.now() - startTime;
