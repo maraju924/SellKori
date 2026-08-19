@@ -282,7 +282,12 @@ export function MerchantPanel({ user, profile }: MerchantPanelProps) {
           )}
 
           {activeTab === 'products' && (
-            <MerchantProducts business={business} />
+            <MerchantProducts
+              business={business}
+              onProductsChange={(products) =>
+                setBusiness(prev => (prev ? { ...prev, products } : prev))
+              }
+            />
           )}
 
           {activeTab === 'customers' && (

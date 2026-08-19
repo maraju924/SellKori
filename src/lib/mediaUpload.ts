@@ -98,3 +98,25 @@ export async function persistImageList(
   }
   return out;
 }
+
+/**
+ * Best-effort image persist for product saves. A single failed upload must not
+ * abort the whole catalog write — keep a public URL if we already have one.
+ */
+export async function persistImageListBestEffort(
+  urls: string[],
+  businessId: string,
+  kind: 'product' | 'review' = 'product'
+): Promise<string[]> {
+  const out: string[] = [];
+  for (const url of urls) {
+    if (!url) continue;
+    try {
+      out.push(await persistImageDataUrl(url, businessId, kind));
+    } catch (err) {
+      console.warn('[mediaUpload] Skipping image that could not be hosted:', err);
+      if (isPublicHttpUrl(url)) out.push(url);
+    }
+  }
+  return out;
+}

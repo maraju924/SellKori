@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { 
   Tag, 
   Plus, 
@@ -38,62 +38,30 @@ import {
 } from '../ui/dialog';
 import { BusinessConfig, Product, ProductTier } from '../../types';
 import { db } from '../../lib/firebase';
-import { doc, getDoc, updateDoc, serverTimestamp } from 'firebase/firestore';
+import { doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore';
 import { toast } from 'sonner';
 import { compressImageFile } from '../../lib/imageUtils';
-import { persistImageDataUrl, persistImageList } from '../../lib/mediaUpload';
-import { cleanFirestoreData, finiteNumber } from '../../lib/utils';
+import { persistImageDataUrl, persistImageListBestEffort } from '../../lib/mediaUpload';
+import { finiteNumber } from '../../lib/utils';
+import {
+  asProductList,
+  findSavedProduct,
+  normalizeTier,
+  prepareProductsForWrite,
+  productLooksUpdated,
+  readInputValue,
+  replaceEditedProduct,
+  sameProductId,
+  sanitizeProduct,
+  stripInlineDataUrls
+} from '../../lib/productCatalog';
 
 interface MerchantProductsProps {
   business: BusinessConfig;
+  onProductsChange?: (products: Product[]) => void;
 }
 
-function sameProductId(a?: string | number | null, b?: string | number | null): boolean {
-  if (a == null || b == null) return false;
-  const left = String(a).trim();
-  const right = String(b).trim();
-  return left.length > 0 && left === right;
-}
-
-function normalizeTier(tier: Partial<ProductTier>, fallbackPrice = 0): ProductTier {
-  const price = finiteNumber(tier.price, fallbackPrice);
-  return {
-    quantity: Math.max(1, Math.round(finiteNumber(tier.quantity, 1))),
-    price,
-    minPrice: finiteNumber(tier.minPrice, price),
-    label: tier.label || undefined
-  };
-}
-
-function replaceEditedProduct(
-  list: Product[],
-  payload: Product,
-  editing: Product,
-  editingIndex: number | null
-): Product[] {
-  const byId = list.findIndex(p => sameProductId(p.id, editing.id) || sameProductId(p.id, payload.id));
-  if (byId >= 0) {
-    return list.map((p, i) => (i === byId ? payload : p));
-  }
-
-  if (editingIndex != null && editingIndex >= 0 && editingIndex < list.length) {
-    return list.map((p, i) => (i === editingIndex ? payload : p));
-  }
-
-  const editingName = (editing.name || '').trim();
-  const byName = editingName
-    ? list.filter(p => (p.name || '').trim() === editingName)
-    : [];
-  if (byName.length === 1) {
-    const idx = list.findIndex(p => (p.name || '').trim() === editingName);
-    return list.map((p, i) => (i === idx ? payload : p));
-  }
-
-  // Last resort: still persist the merchant's edits instead of silently no-op.
-  return [...list, payload];
-}
-
-export function MerchantProducts({ business }: MerchantProductsProps) {
+export function MerchantProducts({ business, onProductsChange }: MerchantProductsProps) {
   const [searchTerm, setSearchTerm] = useState('');
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
@@ -129,6 +97,24 @@ export function MerchantProducts({ business }: MerchantProductsProps) {
   const productFileInputRef = useRef<HTMLInputElement>(null);
   const reviewFileInputRef = useRef<HTMLInputElement>(null);
   const savingRef = useRef(false);
+  const [localProducts, setLocalProducts] = useState<Product[] | null>(null);
+
+  const catalog = localProducts ?? asProductList(business.products);
+
+  useEffect(() => {
+    if (!localProducts) return;
+    const incoming = asProductList(business.products);
+    if (incoming.length !== localProducts.length) return;
+    const snapshotCaughtUp = localProducts.every(local =>
+      productLooksUpdated(findSavedProduct(incoming, local), local)
+    );
+    if (snapshotCaughtUp) setLocalProducts(null);
+  }, [business.products, localProducts]);
+
+  const publishCatalog = (products: Product[]) => {
+    setLocalProducts(products);
+    onProductsChange?.(products);
+  };
 
   const openAddModal = () => {
     setEditingProduct(null);
@@ -152,7 +138,6 @@ export function MerchantProducts({ business }: MerchantProductsProps) {
   };
 
   const openEditModal = (prod: Product) => {
-    const catalog = business.products || [];
     const idx = catalog.findIndex(p => p === prod || sameProductId(p.id, prod.id));
     setEditingProduct(prod);
     setEditingIndex(idx >= 0 ? idx : null);
@@ -242,7 +227,7 @@ export function MerchantProducts({ business }: MerchantProductsProps) {
     const updated = [...pricingTiers];
     updated[index] = {
       ...updated[index],
-      [field]: field === 'label' ? value : Number(value)
+      [field]: field === 'label' ? String(value ?? '') : finiteNumber(value, 0)
     };
     setPricingTiers(updated);
   };
@@ -321,6 +306,23 @@ export function MerchantProducts({ business }: MerchantProductsProps) {
     setReviewImages(reviewImages.filter((_, i) => i !== index));
   };
 
+  const writeCatalog = async (products: Product[]) => {
+    const bizRef = doc(db, 'businesses', business.id);
+    let payload = prepareProductsForWrite(products);
+    try {
+      await setDoc(bizRef, { products: payload, updatedAt: serverTimestamp() }, { merge: true });
+    } catch (err: any) {
+      const message = String(err?.message || err || '');
+      if (/exceed|too large|1 MiB|1MB|payload/i.test(message)) {
+        payload = prepareProductsForWrite(stripInlineDataUrls(payload));
+        await setDoc(bizRef, { products: payload, updatedAt: serverTimestamp() }, { merge: true });
+      } else {
+        throw err;
+      }
+    }
+    return payload;
+  };
+
   const handleSaveProduct = async (e?: React.FormEvent | React.MouseEvent) => {
     e?.preventDefault?.();
     e?.stopPropagation?.();
@@ -380,16 +382,14 @@ export function MerchantProducts({ business }: MerchantProductsProps) {
     savingRef.current = true;
     setIsSubmitting(true);
     try {
-      // Re-host leftover data-URLs so the business document stays under Firestore's 1MB cap.
-      const hostedImages = await persistImageList(images, business.id, 'product');
-      const hostedReviews = await persistImageList(reviewImages, business.id, 'review');
+      const hostedImages = await persistImageListBestEffort(images, business.id, 'product');
+      const hostedReviews = await persistImageListBestEffort(reviewImages, business.id, 'review');
 
       const productId = (editingProduct?.id && String(editingProduct.id).trim())
         ? String(editingProduct.id)
         : `prod-${Date.now()}`;
 
-      const productPayload: Product = {
-        ...(editingProduct || {}),
+      const productPayload = sanitizeProduct({
         id: productId,
         name: name.trim(),
         price: finalPrice,
@@ -402,46 +402,31 @@ export function MerchantProducts({ business }: MerchantProductsProps) {
         images: hostedImages,
         reviewImages: hostedReviews,
         isAvailable: editingProduct?.isAvailable ?? true
-      };
+      });
 
       const bizRef = doc(db, 'businesses', business.id);
       const latestSnap = await getDoc(bizRef);
       const latestData = latestSnap.exists() ? latestSnap.data() : null;
-      const currentProducts: Product[] = Array.isArray(latestData?.products)
-        ? latestData!.products
-        : (business.products || []);
+      const currentProducts = asProductList(latestData?.products ?? catalog);
 
       let updatedProducts: Product[];
       if (editingProduct) {
-        updatedProducts = replaceEditedProduct(currentProducts, productPayload, editingProduct, editingIndex);
+        const replaced = replaceEditedProduct(currentProducts, productPayload, editingProduct, editingIndex);
+        updatedProducts = replaced.products;
       } else {
         updatedProducts = [...currentProducts, productPayload];
       }
 
-      // Convert leftover inline photos on *other* products so this write is not rejected for size.
-      const hostedCatalog: Product[] = [];
-      for (const prod of updatedProducts) {
-        if (prod.id === productPayload.id) {
-          hostedCatalog.push(productPayload);
-          continue;
-        }
-        hostedCatalog.push({
-          ...prod,
-          id: prod.id || `prod-${Date.now()}-${hostedCatalog.length}`,
-          images: await persistImageList(prod.images || [], business.id, 'product'),
-          reviewImages: await persistImageList(prod.reviewImages || [], business.id, 'review')
-        });
-      }
+      const savedProducts = await writeCatalog(updatedProducts);
+      publishCatalog(savedProducts);
 
-      const cleanedProducts = cleanFirestoreData(hostedCatalog);
-
-      if (latestSnap.exists()) {
-        await updateDoc(bizRef, {
-          products: cleanedProducts,
-          updatedAt: serverTimestamp()
-        });
-      } else {
-        throw new Error('স্টোর ডকুমেন্ট খুঁজে পাওয়া যায়নি। পেজ রিফ্রেশ করে আবার চেষ্টা করুন।');
+      const verifySnap = await getDoc(bizRef);
+      const verifiedList = asProductList(verifySnap.data()?.products ?? savedProducts);
+      const saved = findSavedProduct(verifiedList, productPayload);
+      if (!productLooksUpdated(saved, productPayload)) {
+        const forced = replaceEditedProduct(verifiedList, productPayload, editingProduct || productPayload, editingIndex);
+        const retried = await writeCatalog(forced.products);
+        publishCatalog(retried);
       }
 
       toast.success(editingProduct ? 'প্রোডাক্ট সফলভাবে আপডেট হয়েছে!' : 'নতুন প্রোডাক্ট সফলভাবে যুক্ত হয়েছে!', {
@@ -476,15 +461,10 @@ export function MerchantProducts({ business }: MerchantProductsProps) {
     try {
       const bizRef = doc(db, 'businesses', business.id);
       const latestSnap = await getDoc(bizRef);
-      const latestProducts: Product[] = Array.isArray(latestSnap.data()?.products)
-        ? latestSnap.data()!.products
-        : (business.products || []);
+      const latestProducts = asProductList(latestSnap.data()?.products ?? catalog);
       const updatedProducts = latestProducts.filter(p => !sameProductId(p.id, prodId));
-      const cleanedProducts = cleanFirestoreData(updatedProducts);
-      await updateDoc(bizRef, {
-        products: cleanedProducts,
-        updatedAt: serverTimestamp()
-      });
+      const saved = await writeCatalog(updatedProducts);
+      publishCatalog(saved);
       toast.success('প্রোডাক্ট মুছে ফেলা হয়েছে');
     } catch (e: any) {
       console.error('[Delete Product Error]', e);
@@ -492,8 +472,8 @@ export function MerchantProducts({ business }: MerchantProductsProps) {
     }
   };
 
-  const filteredProducts = (business.products || []).filter(p =>
-    p.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+  const filteredProducts = catalog.filter(p =>
+    (p.name || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
     p.description?.toLowerCase().includes(searchTerm.toLowerCase()) ||
     p.category?.toLowerCase().includes(searchTerm.toLowerCase())
   );
@@ -722,9 +702,10 @@ export function MerchantProducts({ business }: MerchantProductsProps) {
       {/* Comprehensive Add / Edit Product Modal */}
       <Dialog
         open={isModalOpen}
+        disablePointerDismissal={isSubmitting}
         onOpenChange={(open) => {
-          if (isSubmitting) return;
-          setIsModalOpen(open);
+          if (!open && (isSubmitting || savingRef.current)) return;
+          setIsModalOpen(!!open);
         }}
       >
         <DialogContent
@@ -761,8 +742,9 @@ export function MerchantProducts({ business }: MerchantProductsProps) {
                   পণ্যের নাম (Product Name) *
                 </label>
                 <Input
+                  name="productName"
                   value={name}
-                  onChange={e => setName(e.target.value)}
+                  onChange={e => setName(readInputValue(e))}
                   placeholder="যেমন: প্রিমিয়াম কটন পাঞ্জাবি / অরজিনাল ওয়্যারলেস এয়ারবাডস"
                   className="h-11 rounded-2xl text-xs font-semibold"
                 />
@@ -773,7 +755,7 @@ export function MerchantProducts({ business }: MerchantProductsProps) {
                   <label className="font-bold text-zinc-700 dark:text-zinc-300">ক্যাটাগরি</label>
                   <Input
                     value={category}
-                    onChange={e => setCategory(e.target.value)}
+                    onChange={e => setCategory(readInputValue(e))}
                     placeholder="যেমন: ফ্যাশন, গ্যাজেট, বিউটি"
                     className="h-10 rounded-xl text-xs"
                   />
@@ -782,8 +764,9 @@ export function MerchantProducts({ business }: MerchantProductsProps) {
                   <label className="font-bold text-zinc-700 dark:text-zinc-300">স্টক পরিমাণ (In Stock Quantity)</label>
                   <Input
                     type="number"
+                    name="stock"
                     value={stock || ''}
-                    onChange={e => setStock(Number(e.target.value))}
+                    onChange={e => setStock(finiteNumber(readInputValue(e), 0))}
                     placeholder="যেমন: 50"
                     className="h-10 rounded-xl text-xs font-mono font-bold"
                   />
@@ -910,7 +893,7 @@ export function MerchantProducts({ business }: MerchantProductsProps) {
                             </label>
                             <Input
                               value={tier.label || ''}
-                              onChange={e => handleUpdateTier(idx, 'label', e.target.value)}
+                              onChange={e => handleUpdateTier(idx, 'label', readInputValue(e))}
                               placeholder={`যেমন: ${tier.quantity} পিস স্পেশাল কম্বো / মেগা বান্ডেল`}
                               className="h-10 rounded-xl text-xs font-semibold bg-zinc-50/60 dark:bg-zinc-800/60 border-zinc-200 dark:border-zinc-700"
                             />
@@ -924,7 +907,7 @@ export function MerchantProducts({ business }: MerchantProductsProps) {
                                 type="number"
                                 min="1"
                                 value={tier.quantity || ''}
-                                onChange={e => handleUpdateTier(idx, 'quantity', e.target.value)}
+                                onChange={e => handleUpdateTier(idx, 'quantity', readInputValue(e))}
                                 className="h-10 rounded-xl font-bold text-xs"
                               />
                             </div>
@@ -935,7 +918,7 @@ export function MerchantProducts({ business }: MerchantProductsProps) {
                                 type="number"
                                 min="1"
                                 value={tier.price || ''}
-                                onChange={e => handleUpdateTier(idx, 'price', e.target.value)}
+                                onChange={e => handleUpdateTier(idx, 'price', readInputValue(e))}
                                 placeholder="যেমন: 800"
                                 className="h-10 rounded-xl font-bold text-xs"
                               />
@@ -950,7 +933,7 @@ export function MerchantProducts({ business }: MerchantProductsProps) {
                                 type="number"
                                 min="1"
                                 value={tier.minPrice || ''}
-                                onChange={e => handleUpdateTier(idx, 'minPrice', e.target.value)}
+                                onChange={e => handleUpdateTier(idx, 'minPrice', readInputValue(e))}
                                 placeholder="যেমন: 750"
                                 className="h-10 rounded-xl font-black text-orange-600 dark:text-orange-400 border-orange-300 dark:border-orange-800 text-xs"
                               />
@@ -978,7 +961,7 @@ export function MerchantProducts({ business }: MerchantProductsProps) {
                     <Input
                       type="number"
                       value={singlePrice || ''}
-                      onChange={e => setSinglePrice(Number(e.target.value))}
+                      onChange={e => setSinglePrice(finiteNumber(readInputValue(e), 0))}
                       placeholder="যেমন: 1500"
                       className="h-10 rounded-xl font-bold text-xs"
                     />
@@ -992,7 +975,7 @@ export function MerchantProducts({ business }: MerchantProductsProps) {
                     <Input
                       type="number"
                       value={singleMinPrice || ''}
-                      onChange={e => setSingleMinPrice(Number(e.target.value))}
+                      onChange={e => setSingleMinPrice(finiteNumber(readInputValue(e), 0))}
                       placeholder="যেমন: 1350"
                       className="h-10 rounded-xl font-black text-orange-600 border-orange-300 dark:border-orange-800 text-xs"
                     />
@@ -1181,23 +1164,23 @@ export function MerchantProducts({ business }: MerchantProductsProps) {
             </div>
           </div>
 
-          <DialogFooter className="mx-0 mb-0 gap-2 px-6 py-4 shrink-0 rounded-b-3xl border-t border-zinc-100 dark:border-zinc-800">
+          <DialogFooter className="mx-0 mb-0 z-10 relative gap-2 px-6 py-4 shrink-0 rounded-b-3xl border-t border-zinc-100 dark:border-zinc-800">
             <Button
               type="button"
               variant="outline"
+              disabled={isSubmitting}
               onClick={() => setIsModalOpen(false)}
               className="rounded-2xl text-xs font-bold h-11 px-5"
             >
               বাতিল
             </Button>
-            <Button
+            <button
               type="submit"
-              onClick={handleSaveProduct}
               disabled={isSubmitting || isUploadingImages || isUploadingReviews}
-              className="bg-linear-to-r from-orange-600 to-amber-500 hover:from-orange-700 hover:to-amber-600 text-white rounded-2xl text-xs font-black px-6 h-11 shadow-md shadow-orange-600/20"
+              className="inline-flex items-center justify-center bg-linear-to-r from-orange-600 to-amber-500 hover:from-orange-700 hover:to-amber-600 text-white rounded-2xl text-xs font-black px-6 h-11 shadow-md shadow-orange-600/20 disabled:opacity-50 disabled:pointer-events-none"
             >
               {isSubmitting ? 'সংরক্ষণ হচ্ছে...' : (editingProduct ? 'আপডেট সেভ করুন' : 'প্রোডাক্ট সংরক্ষণ করুন')}
-            </Button>
+            </button>
           </DialogFooter>
           </form>
         </DialogContent>
