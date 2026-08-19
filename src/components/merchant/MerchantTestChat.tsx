@@ -9,16 +9,23 @@ import {
   ShoppingBag, 
   User,
   Sparkles,
-  ArrowRight
+  ArrowRight,
+  ShieldCheck
 } from 'lucide-react';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 import { Badge } from '../ui/badge';
 import { BusinessConfig, Message } from '../../types';
 import { getAIResponse } from '../../lib/gemini';
-import { db } from '../../lib/firebase';
-import { doc, setDoc, serverTimestamp } from 'firebase/firestore';
 import { toast } from 'sonner';
+import {
+  mergeOrderData,
+  extractBdPhone,
+  buildCustomerContext,
+  shouldPlaceOrder,
+  saveConfirmedOrder,
+  CollectedOrderInfo,
+} from '../../lib/chatOrder';
 
 interface MerchantTestChatProps {
   business: BusinessConfig;
@@ -36,6 +43,8 @@ export function MerchantTestChat({ business }: MerchantTestChatProps) {
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [chatSummary, setChatSummary] = useState('');
+  const [collected, setCollected] = useState<CollectedOrderInfo>({});
+  const [orderPlacedId, setOrderPlacedId] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const scrollToBottom = () => {
@@ -62,16 +71,34 @@ export function MerchantTestChat({ business }: MerchantTestChatProps) {
     setIsLoading(true);
 
     try {
-      const historyStr = messages.slice(-6).map(m => `${m.role}: ${m.content}`).join('\n');
+      const liveCollected = mergeOrderData(collected, {
+        phone: extractBdPhone(textToSend) || collected.phone,
+      });
+      const historyStr = [...messages, userMsg]
+        .slice(-24)
+        .map(m => `${m.role === 'user' ? 'Customer' : 'Bot'}: ${m.content}`)
+        .join('\n');
+
+      const recentOrderNote = orderPlacedId
+        ? `সাম্প্রতিক টেস্ট অর্ডার ইতিমধ্যে কনফার্ম (ID: ${orderPlacedId})। আবার অর্ডার নিতে বলবেন না।`
+        : '';
+
       const aiResponse = await getAIResponse(
         textToSend,
         historyStr,
         business,
-        'Sandbox test mode',
+        buildCustomerContext(liveCollected, recentOrderNote || 'Sandbox test mode'),
         undefined,
         undefined,
         chatSummary
       );
+
+      const nextCollected = mergeOrderData(liveCollected, {
+        ...aiResponse.order_data,
+        product_name: aiResponse.order_data?.product_name || aiResponse.product_name || liveCollected.product_name,
+        phone: extractBdPhone(textToSend) || aiResponse.order_data?.phone || liveCollected.phone,
+      });
+      setCollected(nextCollected);
 
       if (aiResponse.summary) {
         setChatSummary(aiResponse.summary);
@@ -87,37 +114,20 @@ export function MerchantTestChat({ business }: MerchantTestChatProps) {
 
       setMessages(prev => [...prev, assistantMsg]);
 
-      // If simulated order happened in test chat
-      if (aiResponse.event_name === 'Purchase' && !aiResponse.need_more_info) {
-        const orderId = `test-ord-${Date.now()}`;
-        const qty = parseInt(aiResponse.order_data.quantity) || 1;
-        const matchedProduct = business.products?.find(p => 
-          p.name.toLowerCase().includes((aiResponse.product_name || '').toLowerCase())
-        );
-        const unitPrice = aiResponse.order_data.negotiated_price
-          ? Number(aiResponse.order_data.negotiated_price.replace(/[^0-9]/g, ''))
-          : (matchedProduct?.price || 1000);
-
-        const newOrder: any = {
-          id: orderId,
-          businessId: business.id,
-          merchantId: business.ownerId,
-          customerName: aiResponse.order_data.name || 'টেস্ট কাস্টমার',
-          phone: aiResponse.order_data.phone || '01700000000',
-          address: aiResponse.order_data.address || 'ঢাকা',
-          quantity: qty,
-          productName: aiResponse.product_name || matchedProduct?.name || 'জেনারেল প্রোডাক্ট',
-          unitPrice,
-          totalPrice: unitPrice * qty,
-          status: 'pending',
-          paymentStatus: 'unpaid',
-          createdAt: serverTimestamp()
-        };
-
-        await setDoc(doc(db, 'orders', orderId), newOrder);
-        toast.success(`সিমুলেটরে টেস্ট অর্ডার তৈরি হয়েছে!`, {
-          description: `অর্ডার পেইজে গিয়ে আপনি এই ইনভয়েসটি দেখতে পারেন।`
+      if (shouldPlaceOrder(aiResponse, nextCollected, Boolean(orderPlacedId))) {
+        const saved = await saveConfirmedOrder({
+          business,
+          collected: nextCollected,
+          productName: nextCollected.product_name || aiResponse.product_name,
+          sessionId: `test-${business.id}`,
+          source: 'Test chat simulator',
         });
+        if (saved) {
+          setOrderPlacedId(saved.id);
+          toast.success(`সিমুলেটরে টেস্ট অর্ডার তৈরি হয়েছে!`, {
+            description: `অর্ডার পেইজে গিয়ে আপনি এই ইনভয়েসটি দেখতে পারেন।`
+          });
+        }
       }
     } catch (e) {
       toast.error('এআই রেসপন্স তৈরিতে সমস্যা হয়েছে');
@@ -136,6 +146,8 @@ export function MerchantTestChat({ business }: MerchantTestChatProps) {
       }
     ]);
     setChatSummary('');
+    setCollected({});
+    setOrderPlacedId('');
     toast.success('চ্যাট সিমুলেটর রিসেট করা হয়েছে');
   };
 
@@ -199,6 +211,39 @@ export function MerchantTestChat({ business }: MerchantTestChatProps) {
                 }`}
               >
                 {msg.content}
+
+                {msg.role === 'assistant' && (msg.aiMetadata?.show_product_image || msg.aiMetadata?.show_review_images) && (() => {
+                  const matched = business.products?.find(p =>
+                    p.name.toLowerCase().includes((msg.aiMetadata?.product_name || '').toLowerCase())
+                  ) || business.products?.[0];
+                  if (!matched) return null;
+                  const productImgs = msg.aiMetadata?.show_product_image ? (matched.images || []).slice(0, 4) : [];
+                  const reviewImgs = msg.aiMetadata?.show_review_images ? (matched.reviewImages || []).slice(0, 4) : [];
+                  if (!productImgs.length && !reviewImgs.length) return null;
+                  return (
+                    <div className="mt-3 pt-3 border-t border-zinc-100 dark:border-zinc-700 space-y-2">
+                      {productImgs.length > 0 && (
+                        <div className="grid grid-cols-2 gap-2">
+                          {productImgs.map((img, idx) => (
+                            <img key={idx} src={img} alt={matched.name} className="rounded-xl w-full h-20 object-cover" referrerPolicy="no-referrer" />
+                          ))}
+                        </div>
+                      )}
+                      {reviewImgs.length > 0 && (
+                        <div className="space-y-1">
+                          <p className="text-[10px] font-bold text-amber-600 flex items-center gap-1">
+                            <ShieldCheck className="w-3 h-3" /> কাস্টমার রিভিউ
+                          </p>
+                          <div className="grid grid-cols-2 gap-2">
+                            {reviewImgs.map((img, idx) => (
+                              <img key={`r-${idx}`} src={img} alt="review" className="rounded-xl w-full h-20 object-cover border border-amber-200" referrerPolicy="no-referrer" />
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
               </div>
 
               {/* Event Badge preview */}

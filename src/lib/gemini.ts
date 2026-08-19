@@ -4,9 +4,28 @@
  */
 
 import { GoogleGenAI, Type } from "@google/genai";
-import { AIResponse, BusinessConfig } from "../types";
+import { AIResponse, BusinessConfig, Product } from "../types";
 import { db } from "./firebase";
 import { doc, getDoc, collection, addDoc, serverTimestamp } from "firebase/firestore";
+
+/** Strip huge base64 payloads so the model actually sees chat history + customer memory. */
+export function sanitizeProductsForAI(products?: Product[]) {
+  return (products || []).map((p) => ({
+    id: p.id,
+    name: p.name,
+    price: p.price,
+    minPrice: p.minPrice || p.price,
+    pricingTiers: p.pricingTiers || [],
+    description: (p.description || '').slice(0, 400),
+    specs: (p.specs || '').slice(0, 250),
+    stock: p.stock ?? 0,
+    category: p.category || 'General',
+    hasImages: (p.images || []).length > 0,
+    imageCount: (p.images || []).length,
+    hasReviewImages: (p.reviewImages || []).length > 0,
+    reviewImageCount: (p.reviewImages || []).length,
+  }));
+}
 
 export interface GeminiModelInfo {
   id: string;
@@ -361,7 +380,15 @@ export async function getAIResponse(
       },
       show_product_image: {
         type: Type.BOOLEAN,
-        description: "Set to true ONLY if the customer explicitly asks to see a picture/image/photo of a product, or if they are asking about price/details for the first time. Set to false for general conversation or order processing.",
+        description: "Set to true if the customer asks to see a picture/image/photo of a product, or if they are asking about price/details for the first time.",
+      },
+      show_review_images: {
+        type: Type.BOOLEAN,
+        description: "Set to true if the customer asks for reviews, customer photos, delivery proof, feedback screenshots, or unboxing photos.",
+      },
+      should_create_order: {
+        type: Type.BOOLEAN,
+        description: "Set true ONLY when name + 11-digit phone + full address + product are all known AND the customer has confirmed they want the order. Never true if an order was already placed recently in Customer Context.",
       },
       product_name: {
         type: Type.STRING,
@@ -383,6 +410,7 @@ export async function getAIResponse(
           address: { type: Type.STRING },
           quantity: { type: Type.STRING },
           negotiated_price: { type: Type.STRING, description: "The final agreed unit price after bargaining" },
+          product_name: { type: Type.STRING },
         },
       },
       conversation_stage: {
@@ -412,7 +440,7 @@ export async function getAIResponse(
         description: "Suggest 1-2 related products if relevant to the user query or past behavior",
       },
     },
-    required: ["intent", "reply", "conversation_stage", "event_name", "need_more_info", "confidence", "summary"],
+    required: ["intent", "reply", "conversation_stage", "event_name", "need_more_info", "confidence", "summary", "should_create_order"],
   };
 
   // Separate FAQs into general and product-specific
@@ -426,7 +454,7 @@ export async function getAIResponse(
 
 Business Name: ${businessConfig.name}
 ${businessConfig.description ? `Business Info: ${businessConfig.description}` : ''}
-Products Data: ${JSON.stringify(businessConfig.products || [])}
+Products Data: ${JSON.stringify(sanitizeProductsForAI(businessConfig.products))}
 
 General Store FAQs (সাধারণ পলিসি):
 ${JSON.stringify(generalFaqs)}
@@ -434,7 +462,7 @@ ${JSON.stringify(generalFaqs)}
 Product-Specific FAQs (পণ্যভিত্তিক প্রশ্নোত্তর):
 ${JSON.stringify(productFaqs)}
 
-${customerContext ? `Customer Context: ${customerContext}` : ''}
+${customerContext ? `Customer Context (CRITICAL — treat as already known facts): ${customerContext}` : ''}
 ${chatSummary ? `Previous Conversation Summary: ${chatSummary}` : ''}
 
 ## ১. প্রাইসিং, কোয়ান্টিটি বান্ডেল ও দরদাম পলিসি (Tiered Pricing & Bargaining Rules) - CRITICAL
@@ -447,7 +475,7 @@ ${chatSummary ? `Previous Conversation Summary: ${chatSummary}` : ''}
 - প্রতিটি প্রোডাক্টের 'stockCount' বা 'stock' চেক করো। 
 - যদি স্টক ০ হয়, তবে কাস্টমারকে নম্রভাবে জানাও যে প্রোডাক্টটি বর্তমানে আউট অফ স্টক এবং তাকে একটি সংশ্লিষ্ট (related) প্রোডাক্ট সাজেস্ট করো।
 - 'show_product_image' তখনই true করো যখন কাস্টমার ছবি দেখতে চায় বা প্রথমবার পণ্য সম্পর্কে বিস্তারিত জানতে চায় এবং প্রোডাক্টটি স্টকে আছে।
-- কাস্টমার যদি প্রোডাক্টের রিভিউ, কাস্টমার ফিডব্যাক বা ডেলিভারি প্রুফ দেখতে চায়, তবে তাকে আশ্বস্ত করে পজিটিভ রিভিউ ও সন্তুষ্ট কাস্টমারদের ফিডব্যাকের কথা জানাও।
+- কাস্টমার যদি প্রোডাক্টের রিভিউ, কাস্টমার ফিডব্যাক, আনবক্সিং বা ডেলিভারি প্রুফ দেখতে চায়, তবে 'show_review_images: true' করো এবং পজিটিভ রিভিউর কথা জানাও। প্রোডাক্টে reviewImageCount > 0 থাকলে ছবি পাঠানো হবে।
 
 ## ১.২ নলেজবেস ও প্রশ্নোত্তর পলিসি (General & Product-Based FAQ Matching)
 - **সাধারণ পলিসি প্রশ্ন:** কাস্টমার যদি ডেলিভারি সময়/চার্জ, ক্যাশ অন ডেলিভারি, পার্সেল চেক করা, রিটার্ন বা এক্সচেঞ্জ নিয়ে প্রশ্ন করে, তবে 'General Store FAQs' থেকে নির্ভুল তথ্য প্রদান করো।
@@ -463,12 +491,14 @@ ${chatSummary ? `Previous Conversation Summary: ${chatSummary}` : ''}
    - যারা শুধু হাই-হ্যালো বলছে তারা "Cold Lead" (new_lead)।
 ৫. **Delivery Status Check:** কাস্টমার যদি তার অর্ডারের খোঁজ জানতে চায়, তবে "Customer Context" সেকশনটি চেক করো। সেখানে কাস্টমারের সাম্প্রতিক অর্ডারের লিস্ট এবং তাদের 'Status' দেওয়া থাকবে।
 ৬. **Recommendations:** কাস্টমারের ইন্টারেস্ট অনুযায়ী ১-২টি সংশ্লিষ্ট প্রোডাক্ট সাজেস্ট করো।
-৭. **Order Extraction:** অর্ডারের জন্য নাম, মোবাইল নাম্বার (১১ ডিজিট) এবং পূর্ণাঙ্গ ঠিকানা সংগ্রহ করো।
-৮. **Summary Update:** প্রতিটি টার্নে "summary" ফিল্ডে সম্পূর্ণ চ্যাট হিস্টোরির একটি আপডেট করা সামারি প্রদান করো।
+৭. **Order Extraction:** অর্ডারের জন্য নাম, মোবাইল নাম্বার (১১ ডিজিট) এবং পূর্ণাঙ্গ ঠিকানা সংগ্রহ করো। Customer Context-এ যা আগেই আছে তা order_data-তে কপি করো — হারিয়ে যেতে দিও না।
+৮. **কখনোই জানা তথ্য আবার চাইবে না:** Customer Context-এ নাম/ফোন/ঠিকানা থাকলে সেগুলো আর জিজ্ঞেস করবে না। সাম্প্রতিক অর্ডার থাকলে তাকে আবার অর্ডার করতে বলবে না; স্ট্যাটাস জানাবে।
+৯. **Order Confirm:** নাম+ফোন+ঠিকানা+পণ্য সব জানা এবং কাস্টমার কনফার্ম করলে should_create_order: true, conversation_stage: order_completed, event_name: Purchase, need_more_info: false।
+১০. **Summary Update:** প্রতিটি টার্নে "summary" ফিল্ডে সম্পূর্ণ চ্যাট হিস্টোরির একটি আপডেট করা সামারি প্রদান করো (নাম, ফোন, ঠিকানা, পণ্য, অর্ডার স্ট্যাটাস সহ)।
 
 ## ৩. কথা বলার ধরন ও কঠোর নিয়মাবলী (Tone, Voice & Strict Directives)
 - **সংক্ষিপ্ত ও টু-দ্য-পয়েন্ট উত্তর:** কাস্টমার যা জানতে চেয়েছে ঠিক ততটুকুরই সুনির্দিষ্ট, প্রাসঙ্গিক ও সংক্ষিপ্ত উত্তর দাও (১-৩ লাইনের মধ্যে)। অপ্রয়োজনীয় কোনো লম্বা ভূমিকা, অতিরিক্ত সালাম/ভাষণ বা না চাওয়া বড় তথ্য তালিকা দেবে না।
-- **প্রসঙ্গ ও হিস্ট্রি স্মরণ:** পূর্বের চ্যাট হিস্ট্রি দেখে কাস্টমার কোন পণ্যের কথা বলছে তা মনে রেখে সরাসরি উত্তর দাও। একই কথা বারবার রিপিট করবে না।
+- **প্রসঙ্গ ও হিস্ট্রি স্মরণ:** পূর্বের চ্যাট হিস্ট্রি ও Customer Context দেখে কাস্টমার কোন পণ্যের কথা বলছে তা মনে রেখে সরাসরি উত্তর দাও। একই কথা বা একই তথ্য (মোবাইল/নাম/ঠিকানা) বারবার চাইবে না।
 - **অতিরিক্ত কথা বর্জন:** কাস্টমার নিজে থেকে না চাইলে জোর করে কোনো বাড়তি অফার বা অপ্রাসঙ্গিক কথা বলবে না।
 - **ভাষা:** কাস্টমার যে ভাষায় কথা বলবে (বাংলা/ইংরেজি), তুমিও সেই ভাষায় কথা বলো। তবে ডিফল্ট হিসেবে সুন্দর প্রমিত বাংলা ব্যবহার করো।
 - **সম্বোধন:** কাস্টমারকে "স্যার/ম্যাম" বা "আপনি" বলে সম্মান দিয়ে কথা বলবে।
@@ -479,14 +509,22 @@ ${chatSummary ? `Previous Conversation Summary: ${chatSummary}` : ''}
 - অর্ডার শেষ করার আগে একবার সব ডিটেইলস (পণ্যের নাম, পরিমাণ, দাম এবং ঠিকানা) সামারি আকারে জানাবে।
 `;
 
+  const memoryGuard = `
+CRITICAL MEMORY RULES:
+- Never re-ask for name, phone or address if they already appear in Customer Context or chat history.
+- If a recent order exists in Customer Context, do not ask the customer to place the same order again. Confirm/status instead.
+- Always copy known name/phone/address/product into order_data every turn so they are not lost.
+- When the customer asks for reviews/proof photos, set show_review_images=true.
+`;
+
   const systemInstruction = businessConfig.customSystemPrompt 
-    ? `${businessConfig.customSystemPrompt}\n\nContext:\nBusiness Name: ${businessConfig.name}\n${businessConfig.description ? `Business Info: ${businessConfig.description}\n` : ''}Products Data: ${JSON.stringify(businessConfig.products || [])}\nFAQs: ${JSON.stringify(businessConfig.faqs || [])}\n${customerContext ? `Customer Context: ${customerContext}` : ''}${chatSummary ? `\nPrevious Conversation Summary: ${chatSummary}` : ''}`
+    ? `${businessConfig.customSystemPrompt}\n\n${memoryGuard}\nContext:\nBusiness Name: ${businessConfig.name}\n${businessConfig.description ? `Business Info: ${businessConfig.description}\n` : ''}Products Data: ${JSON.stringify(sanitizeProductsForAI(businessConfig.products))}\nFAQs: ${JSON.stringify(businessConfig.faqs || [])}\n${customerContext ? `Customer Context: ${customerContext}` : ''}${chatSummary ? `\nPrevious Conversation Summary: ${chatSummary}` : ''}`
     : defaultPrompt;
 
   const startTime = Date.now();
 
   try {
-    const parts: any[] = [{ text: `Previous Chat (Last 5 messages): ${chatHistory}\nUser Message: ${userMessage}` }];
+    const parts: any[] = [{ text: `Previous Chat History:\n${chatHistory || '(no prior messages)'}\n\nUser Message: ${userMessage}` }];
     if (audioData) {
       parts.push(audioData);
     }
@@ -544,6 +582,8 @@ ${chatSummary ? `Previous Conversation Summary: ${chatSummary}` : ''}
       intent: 'unknown',
       product_name: '',
       show_product_image: false,
+      show_review_images: false,
+      should_create_order: false,
       reply: 'দুঃখিত, আমি এই মুহূর্তে আপনাকে সাহায্য করতে পারছি না। অনুগ্রহ করে একটু পর আবার চেষ্টা করুন অথবা শপ অ্যাডমিনের সাথে যোগাযোগ করুন।',
       summary: chatSummary || '',
       order_data: { name: '', phone: '', address: '', quantity: '' },

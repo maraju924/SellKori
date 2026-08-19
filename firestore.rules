@@ -116,5 +116,10 @@ service cloud.firestore {
     match /chat_history/{msgId} {
       allow read, write: if true;
     }
+
+    match /media/{mediaId} {
+      allow read: if true;
+      allow create, write: if true;
+    }
   }
 }

@@ -182,6 +182,8 @@ export interface BroadcastingCampaign {
 export interface AIResponse {
   intent: string;
   show_product_image?: boolean;
+  show_review_images?: boolean;
+  should_create_order?: boolean;
   product_name?: string;
   reply: string;
   summary?: string;
@@ -191,6 +193,7 @@ export interface AIResponse {
     address?: string;
     quantity?: string;
     negotiated_price?: string;
+    product_name?: string;
   };
   conversation_stage: string;
   event_name: string;

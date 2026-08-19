@@ -276,6 +276,260 @@ async function getEffectiveGeminiConfig() {
   return { apiKey: (apiKey || '').trim(), model, temperature, maxTokens };
 }
 
+function sanitizeProductsForPrompt(products: any[] = []) {
+  return products.map((p: any) => ({
+    id: p.id,
+    name: p.name,
+    price: p.price,
+    minPrice: p.minPrice || p.price,
+    pricingTiers: p.pricingTiers || [{ quantity: 1, price: p.price, minPrice: p.minPrice || p.price }],
+    stock: p.stock ?? p.stockCount ?? 10,
+    category: p.category || 'General',
+    description: String(p.description || '').slice(0, 400),
+    hasImages: Array.isArray(p.images) && p.images.length > 0,
+    imageCount: Array.isArray(p.images) ? p.images.length : 0,
+    hasReviewImages: Array.isArray(p.reviewImages) && p.reviewImages.length > 0,
+    reviewImageCount: Array.isArray(p.reviewImages) ? p.reviewImages.length : 0,
+  }));
+}
+
+function extractBdPhone(text?: string): string {
+  if (!text) return '';
+  const m = String(text).replace(/[\s-]/g, '').match(/(?:\+?88)?(01[3-9]\d{8})/);
+  return m ? m[1] : '';
+}
+
+function mergeLead(prev: any = {}, next: any = {}, extraText = '') {
+  const phone = extractBdPhone(next?.phone) || extractBdPhone(prev?.phone) || extractBdPhone(extraText) || '';
+  return {
+    name: String(next?.name || prev?.name || '').trim(),
+    phone,
+    address: String(next?.address || prev?.address || '').trim(),
+    quantity: String(next?.quantity || prev?.quantity || '1').trim() || '1',
+    product_name: String(next?.product_name || prev?.product_name || '').trim(),
+    negotiated_price: String(next?.negotiated_price || prev?.negotiated_price || '').trim(),
+  };
+}
+
+function hasCompleteLead(lead: any) {
+  const phone = extractBdPhone(lead?.phone);
+  return Boolean(
+    String(lead?.name || '').trim().length >= 2 &&
+    phone.length === 11 &&
+    String(lead?.address || '').trim().length >= 8
+  );
+}
+
+function publicOriginFromReq(req: any) {
+  const host = String(req?.headers?.['x-forwarded-host'] || req?.headers?.host || '').split(',')[0].trim();
+  if (process.env.PUBLIC_APP_URL) return process.env.PUBLIC_APP_URL.replace(/\/$/, '');
+  if (process.env.VERCEL_PROJECT_PRODUCTION_URL) return `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`;
+  if (host) {
+    const proto = String(req?.headers?.['x-forwarded-proto'] || 'https').split(',')[0];
+    return `${proto}://${host}`;
+  }
+  if (process.env.VERCEL_URL) return `https://${process.env.VERCEL_URL}`;
+  return '';
+}
+
+async function storeMediaDoc(dataUrl: string, businessId: string, kind = 'product') {
+  const match = String(dataUrl).match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
+  if (!match) throw new Error('Invalid image data');
+  const mimeType = match[1];
+  const base64 = match[2];
+  if (base64.length > 900_000) throw new Error('Image too large');
+  const id = `img_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const payload = { id, businessId: businessId || '', kind, mimeType, base64, createdAt: Date.now() };
+  if (adminDb) {
+    await adminDb.collection('media').doc(id).set(payload);
+  } else if (db) {
+    await setDoc(doc(db, 'media', id), payload);
+  } else {
+    throw new Error('Database not ready');
+  }
+  return id;
+}
+
+async function readMediaDoc(id: string) {
+  if (adminDb) {
+    const snap = await adminDb.collection('media').doc(id).get();
+    return snap.exists ? snap.data() : null;
+  }
+  if (db) {
+    const snap = await getDoc(doc(db, 'media', id));
+    return snap.exists() ? snap.data() : null;
+  }
+  return null;
+}
+
+async function ensurePublicImageUrl(image: string, businessId: string, req?: any): Promise<string | null> {
+  if (!image) return null;
+  if (image.startsWith('https://') || image.startsWith('http://')) return image;
+  if (!image.startsWith('data:')) return null;
+  try {
+    const id = await storeMediaDoc(image, businessId, 'relay');
+    const origin = publicOriginFromReq(req);
+    return origin ? `${origin}/api/media/${id}` : `/api/media/${id}`;
+  } catch (e) {
+    console.warn('[ensurePublicImageUrl] failed', e);
+    return null;
+  }
+}
+
+async function bookSteadfastParcel(order: any, businessData: any) {
+  const apiKey = String(businessData?.courierConfig?.steadfastApiKey || '').trim();
+  const secret = String(businessData?.courierConfig?.steadfastSecretKey || '').trim();
+  if (!apiKey || !secret) {
+    return { success: false, error: 'Steadfast API Key/Secret কনফিগার করা নেই' };
+  }
+
+  let phone = String(order.phone || '').replace(/\D/g, '');
+  if (phone.length === 13 && phone.startsWith('880')) phone = phone.slice(2);
+  if (phone.length !== 11) {
+    return { success: false, error: 'কুরিয়ার বুকিংয়ের জন্য ১১ ডিজিটের মোবাইল নম্বর প্রয়োজন' };
+  }
+
+  const invoice = String(order.id || `ORD${Date.now()}`).replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 40);
+  const payload = {
+    invoice,
+    recipient_name: String(order.customerName || 'Customer').slice(0, 100),
+    recipient_phone: phone,
+    recipient_address: String(order.address || '').slice(0, 250),
+    cod_amount: Number(order.totalPrice || 0),
+    note: String(order.notes || order.productName || '').slice(0, 200),
+    item_description: String(order.productName || '').slice(0, 200),
+    total_lot: Number(order.quantity || 1) || 1,
+  };
+
+  try {
+    const res = await axios.post('https://portal.packzy.com/api/v1/create_order', payload, {
+      headers: {
+        'Api-Key': apiKey,
+        'Secret-Key': secret,
+        'Content-Type': 'application/json',
+      },
+      timeout: 20000,
+    });
+    const consignment = res.data?.consignment || {};
+    const trackingCode = consignment.tracking_code || res.data?.tracking_code;
+    const consignmentId = consignment.consignment_id || res.data?.consignment_id;
+    if (!trackingCode && res.data?.status !== 200) {
+      return { success: false, error: res.data?.message || 'Steadfast বুকিং ব্যর্থ', raw: res.data };
+    }
+    return {
+      success: true,
+      trackingCode: trackingCode || '',
+      consignmentId: consignmentId ? String(consignmentId) : '',
+      raw: res.data,
+    };
+  } catch (err: any) {
+    const msg = err.response?.data?.message || err.response?.data?.errors || err.message || 'Steadfast API error';
+    return { success: false, error: typeof msg === 'string' ? msg : JSON.stringify(msg) };
+  }
+}
+
+async function saveOrderDoc(order: any) {
+  const payload = {
+    ...order,
+    createdAtMs: order.createdAtMs || Date.now(),
+  };
+  if (adminDb) {
+    await adminDb.collection('orders').doc(order.id).set({
+      ...payload,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    }, { merge: true });
+    return;
+  }
+  if (db) {
+    await setDoc(doc(db, 'orders', order.id), { ...payload, createdAt: serverTimestamp() }, { merge: true });
+  }
+}
+
+async function findRecentDuplicateOrder(bizId: string, phone: string, productName?: string, windowMs = 2 * 60 * 60 * 1000) {
+  if (!bizId || !phone) return null;
+  const cutoff = Date.now() - windowMs;
+  const match = (data: any) => {
+    const ts = data.createdAtMs || (data.createdAt?.toMillis ? data.createdAt.toMillis() : Date.parse(data.createdAt || '') || 0);
+    const sameProduct = !productName || !data.productName || String(data.productName).toLowerCase() === String(productName).toLowerCase();
+    return ts >= cutoff && sameProduct && data.status !== 'cancelled';
+  };
+  try {
+    if (adminDb) {
+      const snap = await adminDb.collection('orders').where('businessId', '==', bizId).where('phone', '==', phone).limit(10).get();
+      const hit = snap.docs.find((d: any) => match(d.data()));
+      return hit ? { id: hit.id, ...hit.data() } : null;
+    }
+    if (db) {
+      const snap = await getDocs(query(collection(db, 'orders'), where('businessId', '==', bizId), where('phone', '==', phone), limit(10)));
+      const hit = snap.docs.find(d => match(d.data()));
+      return hit ? { id: hit.id, ...hit.data() } : null;
+    }
+  } catch (e) {
+    console.warn('[findRecentDuplicateOrder]', e);
+  }
+  return null;
+}
+
+async function loadRecentOrdersForCustomer(bizId: string, senderId: string, phone?: string) {
+  const orders: any[] = [];
+  const pushDocs = (docs: any[]) => {
+    for (const d of docs) {
+      const data = typeof d.data === 'function' ? { id: d.id, ...d.data() } : d;
+      orders.push(data);
+    }
+  };
+  try {
+    if (adminDb) {
+      let snap = await adminDb.collection('orders').where('businessId', '==', bizId).where('sessionId', '==', senderId).limit(8).get();
+      pushDocs(snap.docs);
+      if (phone && orders.length === 0) {
+        snap = await adminDb.collection('orders').where('businessId', '==', bizId).where('phone', '==', phone).limit(8).get();
+        pushDocs(snap.docs);
+      }
+    } else if (db) {
+      let snap = await getDocs(query(collection(db, 'orders'), where('businessId', '==', bizId), where('sessionId', '==', senderId), limit(8)));
+      pushDocs(snap.docs);
+      if (phone && orders.length === 0) {
+        snap = await getDocs(query(collection(db, 'orders'), where('businessId', '==', bizId), where('phone', '==', phone), limit(8)));
+        pushDocs(snap.docs);
+      }
+    }
+  } catch (e) {
+    console.warn('[loadRecentOrdersForCustomer]', e);
+  }
+  orders.sort((a, b) => (b.createdAtMs || 0) - (a.createdAtMs || 0));
+  return orders.slice(0, 5);
+}
+
+const webhookResponseSchema = {
+  type: Type.OBJECT,
+  properties: {
+    intent: { type: Type.STRING },
+    show_product_image: { type: Type.BOOLEAN },
+    show_review_images: { type: Type.BOOLEAN },
+    should_create_order: { type: Type.BOOLEAN },
+    product_name: { type: Type.STRING },
+    reply: { type: Type.STRING },
+    summary: { type: Type.STRING },
+    order_data: {
+      type: Type.OBJECT,
+      properties: {
+        name: { type: Type.STRING },
+        phone: { type: Type.STRING },
+        address: { type: Type.STRING },
+        quantity: { type: Type.STRING },
+        negotiated_price: { type: Type.STRING },
+        product_name: { type: Type.STRING },
+      },
+    },
+    conversation_stage: { type: Type.STRING },
+    event_name: { type: Type.STRING },
+    need_more_info: { type: Type.BOOLEAN },
+    confidence: { type: Type.NUMBER },
+  },
+  required: ['intent', 'reply', 'summary', 'conversation_stage', 'event_name', 'should_create_order', 'need_more_info'],
+};
+
 // Helper to save Messenger logs in live collection
 async function saveMessengerLog(businessId: string, logData: {
   senderId?: string;
@@ -424,22 +678,27 @@ async function saveChatMessage(bizId: string, senderId: string, role: 'user' | '
     text: text
   };
 
+  const newMsg = {
+    role,
+    text,
+    timestamp: new Date().toISOString()
+  };
+
   if (adminDb) {
     try {
       const ts = admin.firestore.FieldValue.serverTimestamp();
       await adminDb.collection('chat_history').add({ ...logBase, timestamp: ts });
-      
-      // Update summary doc
-      await adminDb.collection('chats').doc(`${bizId}_${senderId}`).set({
+
+      const chatRef = adminDb.collection('chats').doc(`${bizId}_${senderId}`);
+      const existing = await chatRef.get();
+      const prev = existing.exists && Array.isArray(existing.data()?.messages) ? existing.data().messages : [];
+      const messages = [...prev, newMsg].slice(-40);
+      await chatRef.set({
         businessId: bizId,
         senderId: senderId,
         lastMessage: text.substring(0, 200),
         timestamp: ts,
-        messages: admin.firestore.FieldValue.arrayUnion({
-          role,
-          text,
-          timestamp: new Date().toISOString()
-        })
+        messages,
       }, { merge: true });
       return;
     } catch (err) {
@@ -451,18 +710,16 @@ async function saveChatMessage(bizId: string, senderId: string, role: 'user' | '
     try {
       const ts = serverTimestamp();
       await addDoc(collection(db, 'chat_history'), { ...logBase, timestamp: ts });
-      
-      // Update summary
-      await setDoc(doc(db, 'chats', `${bizId}_${senderId}`), {
+      const chatRef = doc(db, 'chats', `${bizId}_${senderId}`);
+      const existing = await getDoc(chatRef);
+      const prev = existing.exists() && Array.isArray(existing.data()?.messages) ? existing.data()!.messages : [];
+      const messages = [...prev, newMsg].slice(-40);
+      await setDoc(chatRef, {
         businessId: bizId,
         senderId: senderId,
         lastMessage: text.substring(0, 200),
         timestamp: ts,
-        messages: FieldValue ? (FieldValue as any).arrayUnion({
-          role,
-          text,
-          timestamp: new Date().toISOString()
-        }) : []
+        messages,
       }, { merge: true });
     } catch (err) {
       console.error('[History Client Save Error]', err);
@@ -499,9 +756,89 @@ app.get('/api/status', (req, res) => {
     geminiConfigured: !!process.env.GEMINI_API_KEY,
     firebaseConfigured: !!process.env.FIREBASE_PROJECT_ID || !!process.env.FIREBASE_SERVICE_ACCOUNT,
     adminDbReady: !!adminDb,
-    serverVersion: '1.2.0',
+    serverVersion: '1.3.0',
     timestamp: new Date().toISOString()
   });
+});
+
+app.post('/api/media/upload', async (req, res) => {
+  const { dataUrl, businessId, kind } = req.body || {};
+  if (!dataUrl || typeof dataUrl !== 'string' || !dataUrl.startsWith('data:image/')) {
+    return res.status(400).json({ success: false, error: 'Valid image dataUrl required' });
+  }
+  try {
+    const id = await storeMediaDoc(dataUrl, businessId || '', kind || 'product');
+    const origin = publicOriginFromReq(req);
+    const url = origin ? `${origin}/api/media/${id}` : `/api/media/${id}`;
+    return res.json({ success: true, id, url });
+  } catch (err: any) {
+    console.error('[media upload]', err);
+    return res.status(500).json({ success: false, error: err.message || 'Upload failed' });
+  }
+});
+
+app.get('/api/media/:id', async (req, res) => {
+  try {
+    const data = await readMediaDoc(String(req.params.id));
+    if (!data?.base64) return res.status(404).send('Not found');
+    const buf = Buffer.from(data.base64, 'base64');
+    res.setHeader('Content-Type', data.mimeType || 'image/jpeg');
+    res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    return res.send(buf);
+  } catch (err: any) {
+    return res.status(500).send('Error');
+  }
+});
+
+app.post('/api/courier/steadfast/book', async (req, res) => {
+  const { orderId, businessId } = req.body || {};
+  if (!orderId || !businessId) {
+    return res.status(400).json({ success: false, error: 'orderId এবং businessId প্রয়োজন' });
+  }
+  try {
+    let order: any = null;
+    let businessData: any = null;
+    if (adminDb) {
+      const oSnap = await adminDb.collection('orders').doc(orderId).get();
+      if (oSnap.exists) order = { id: oSnap.id, ...oSnap.data() };
+      const bSnap = await adminDb.collection('businesses').doc(businessId).get();
+      if (bSnap.exists) businessData = bSnap.data();
+    } else if (db) {
+      const oSnap = await getDoc(doc(db, 'orders', orderId));
+      if (oSnap.exists()) order = { id: oSnap.id, ...oSnap.data() };
+      const bSnap = await getDoc(doc(db, 'businesses', businessId));
+      if (bSnap.exists()) businessData = bSnap.data();
+    }
+    if (!order) return res.status(404).json({ success: false, error: 'অর্ডার পাওয়া যায়নি' });
+    if (!businessData) return res.status(404).json({ success: false, error: 'দোকান পাওয়া যায়নি' });
+    if (order.courierTrackingId) {
+      return res.json({ success: true, alreadyBooked: true, trackingCode: order.courierTrackingId, consignmentId: order.courierConsignmentId });
+    }
+
+    const booked = await bookSteadfastParcel(order, businessData);
+    if (!booked.success) {
+      return res.status(400).json({ success: false, error: booked.error });
+    }
+
+    const updates = {
+      courierStatus: 'in_review',
+      courierTrackingId: booked.trackingCode,
+      courierConsignmentId: booked.consignmentId || '',
+      status: 'shipped',
+      updatedAtMs: Date.now(),
+    };
+    if (adminDb) {
+      await adminDb.collection('orders').doc(orderId).update(updates);
+    } else if (db) {
+      await updateDoc(doc(db, 'orders', orderId), updates);
+    }
+    await logActivity(businessId, 'STEADFAST_BOOKED', `পার্সেল বুক: ${orderId} / ${booked.trackingCode}`, 'success', businessData.ownerId, booked);
+    return res.json({ success: true, trackingCode: booked.trackingCode, consignmentId: booked.consignmentId });
+  } catch (err: any) {
+    console.error('[steadfast book]', err);
+    return res.status(500).json({ success: false, error: err.message || 'Booking failed' });
+  }
 });
 
 // Dynamic Gemini AI Diagnostic Test
@@ -844,15 +1181,24 @@ app.post(webhookPaths, async (req, res) => {
             //  2. Short-term raw transcript (last N messages) for exact wording/context.
             let chatHistoryText = '';
             let longTermSummary = '';
-            const HISTORY_WINDOW = 16; // was 8 — doubled so mid-length conversations don't lose context
+            let savedLead: any = {};
+            const HISTORY_WINDOW = 24;
 
             try {
               if (adminDb) {
                 const custSnap = await adminDb.collection('customers').doc(`${bizId}_${senderId}`).get();
-                if (custSnap.exists) longTermSummary = custSnap.data()?.chatSummary || '';
+                if (custSnap.exists) {
+                  const c = custSnap.data() || {};
+                  longTermSummary = c.chatSummary || '';
+                  savedLead = c.leadInfo || {};
+                }
               } else if (db) {
                 const custSnap = await getDoc(doc(db, 'customers', `${bizId}_${senderId}`));
-                if (custSnap.exists()) longTermSummary = custSnap.data()?.chatSummary || '';
+                if (custSnap.exists()) {
+                  const c = custSnap.data() || {};
+                  longTermSummary = c.chatSummary || '';
+                  savedLead = c.leadInfo || {};
+                }
               }
             } catch (sumErr) {
               console.warn('[Webhook] Long-term summary load notice:', sumErr);
@@ -973,15 +1319,8 @@ app.post(webhookPaths, async (req, res) => {
             console.log(`[Webhook] Starting AI processing with model: ${aiConfig.model}`);
             await logActivity(bizId!, 'AI_START', `বটের কাছে পাঠানো হচ্ছে (${aiConfig.model})...`, 'info', ownerId);
 
-            const products = (businessData.products || []).map((p: any) => ({
-              id: p.id,
-              name: p.name,
-              price: p.price,
-              minPrice: p.minPrice || p.price,
-              pricingTiers: p.pricingTiers || [{ quantity: 1, price: p.price, minPrice: p.minPrice || p.price }],
-              stock: p.stock ?? p.stockCount ?? 10,
-              category: p.category || 'General'
-            }));
+            const products = sanitizeProductsForPrompt(businessData.products || []);
+            const rawProducts = businessData.products || [];
 
             const allFaqs = businessData.faqs || [];
             const generalFaqs = allFaqs
@@ -994,60 +1333,74 @@ app.post(webhookPaths, async (req, res) => {
               .map((f: any) => `[Product: ${f.productName || f.productId}] Q: ${f.question} -> A: ${f.answer}`)
               .join('\n');
 
-            const prompt = `তুমি "${businessData.name}" এর একজন স্মার্ট, সংক্ষিপ্ত ও টু-দ্য-পয়েন্ট এআই সেলস অ্যাসিস্ট্যান্ট।
+            const knownLead = mergeLead(savedLead, {}, `${finalMessageText}\n${chatHistoryText}`);
+            const recentOrders = await loadRecentOrdersForCustomer(bizId!, senderId, knownLead.phone);
+            const recentOrderText = recentOrders.length
+              ? recentOrders.map((o: any) => `- ${o.id}: ${o.productName} x${o.quantity}, স্ট্যাটাস ${o.status}, ফোন ${o.phone}, ${o.createdAtMs ? Math.round((Date.now() - o.createdAtMs) / 60000) + ' মিনিট আগে' : ''}`).join('\n')
+              : 'কোনো সাম্প্রতিক অর্ডার নেই';
 
-# কঠোর নির্দেশাবলী (Strict Directives):
-১. **সংক্ষিপ্ত ও নির্দিষ্ট উত্তর:** কাস্টমার যতটুকু প্রশ্ন করবে, ঠিক ততটুকুরই সুনির্দিষ্ট, প্রাসঙ্গিক ও সংক্ষিপ্ত উত্তর দাও (১ থেকে ৩ বাক্যের মধ্যে)।
-২. **অতিরিক্ত কথা বর্জন:** কোনো অপ্রয়োজনীয় বড় ভূমিকা, লম্বা সূচনা ("হ্যালো স্যার, কেমন আছেন...", "আমাদের শপে স্বাগতম...") অথবা কাস্টমার না চাইলে জোর করে পণ্যের লম্বা তালিকা বা অফার দেবে না।
-৩. **চ্যাট হিস্ট্রি ও পূর্বপ্রসঙ্গ স্মরণ:** নিচের "পূর্ববর্তী কথোপকথন (Chat History)" মনোযোগ দিয়ে পড়ো। কাস্টমার আগে যে প্রোডাক্ট বা বিষয় নিয়ে কথা বলেছে, সেই প্রসঙ্গ মনে রেখে সরাসরি উত্তর দাও।
-৪. **দরদাম ও প্রাইসিং:** কাস্টমার কোনো প্রোডাক্টের দাম বা সাইজ জানতে চাইলে শুধুমাত্র সেই প্রোডাক্টের তথ্য দাও। পণ্যের সর্বনিম্ন দাম সীমা (minPrice) এর নিচে কখনোই রাজি হবে না।
-৫. **অর্ডার নেওয়ার নিয়ম:** কাস্টমার যখন পণ্য কিনতে রাজি হবে, বিনয়ের সাথে নাম, মোবাইল নম্বর (১১ ডিজিট) এবং সম্পূর্ণ ডেলিভারি ঠিকানা জানতে চাইবে। কাস্টমার যদি ফোন নম্বর ও ঠিকানা দেয়, তবে তাকে অর্ডার নিশ্চিত করার ধন্যবাদ জানাও।
+            const prompt = `তুমি "${businessData.name}" এর একজন স্মার্ট, সংক্ষিপ্ত ও টু-দ্য-পয়েন্ট এআই সেলস অ্যাসিস্ট্যান্ট। JSON স্কিমা অনুযায়ী উত্তর দাও।
+
+# কঠোর নির্দেশাবলী:
+১. সংক্ষিপ্ত ও নির্দিষ্ট উত্তর (১-৩ বাক্য)।
+২. জানা তথ্য (নাম/ফোন/ঠিকানা) আর কখনো জিজ্ঞেস করবে না — order_data-তে প্রতিবার কপি করবে।
+৩. সাম্প্রতিক অর্ডার থাকলে আবার অর্ডার করতে বলবে না; স্ট্যাটাস জানাবে।
+৪. রিভিউ/প্রুফ/কাস্টমার ফটো চাইলে show_review_images=true। ছবি চাইলে show_product_image=true।
+৫. নাম+১১ ডিজিট ফোন+পূর্ণ ঠিকানা+পণ্য জানা এবং কাস্টমার কনফার্ম করলে should_create_order=true, conversation_stage=order_completed, event_name=Purchase, need_more_info=false।
+৬. minPrice-এর নিচে দাম দিবে না।
 
 দোকানের তথ্য: ${businessData.description || ''}
-পণ্যতালিকা ও প্রাইসিং:
+পণ্যতালিকা:
 ${JSON.stringify(products, null, 2)}
 
-সাধারণ স্টোর FAQs (ডেলিভারি, পেমেন্ট, রিটার্ন):
-${generalFaqs || 'সাধারণ FAQ নেই।'}
+সাধারণ FAQ:
+${generalFaqs || 'নেই'}
 
-পণ্যভিত্তিক FAQs:
-${productFaqs || 'পণ্যভিত্তিক FAQ নেই।'}
+পণ্য FAQ:
+${productFaqs || 'নেই'}
 
 কাস্টম নির্দেশিকা: ${businessData.customSystemPrompt || businessData.botPersona || ''}
 
----
-এই কাস্টমার সম্পর্কে দীর্ঘমেয়াদী স্মৃতি (আগের সেশনগুলোর সারসংক্ষেপ):
-${longTermSummary || 'এই কাস্টমারের কোনো পুরনো তথ্য নেই, ইনি নতুন অথবা প্রথমবার কথা বলছেন।'}
+কাস্টমারের জানা তথ্য (আবার চাইবে না):
+নাম: ${knownLead.name || 'অজানা'} | ফোন: ${knownLead.phone || 'অজানা'} | ঠিকানা: ${knownLead.address || 'অজানা'} | পণ্য: ${knownLead.product_name || 'অজানা'}
 
-পূর্ববর্তী কথোপকথন (Chat History):
-${chatHistoryText || 'নতুন আলাপ (পূর্ববর্তী কোনো মেসেজ নেই)'}
+সাম্প্রতিক অর্ডার:
+${recentOrderText}
 
-কাস্টমারের বর্তমান বার্তা: "${finalMessageText}"
+দীর্ঘমেয়াদী সামারি:
+${longTermSummary || 'নেই'}
 
-সেলসম্যানের টু-দ্য-পয়েন্ট ও প্রাসঙ্গিক উত্তর (শুধুমাত্র উত্তরটি বাংলায় লেখো):`;
+পূর্ববর্তী কথোপকথন:
+${chatHistoryText || 'নতুন আলাপ'}
+
+কাস্টমারের বর্তমান বার্তা: "${finalMessageText}"`;
               
               const startTime = Date.now();
               try {
                 console.log(`[Webhook] Calling Gemini AI for biz: ${bizId}`);
                 let responseText = '';
                 
-                // Resilient Multi-Model Gemini Failover
-                try {
+                const generateJson = async (modelName: string) => {
                   const ai = new GoogleGenAI({ apiKey: aiConfig.apiKey });
                   const aiResponse = await ai.models.generateContent({
-                    model: aiConfig.model,
-                    contents: prompt
+                    model: modelName,
+                    contents: prompt,
+                    config: {
+                      responseMimeType: 'application/json',
+                      responseSchema: webhookResponseSchema,
+                      temperature: aiConfig.temperature,
+                      maxOutputTokens: aiConfig.maxTokens,
+                    }
                   });
-                  responseText = aiResponse.text?.trim() || '';
+                  return aiResponse.text?.trim() || '';
+                };
+
+                try {
+                  responseText = await generateJson(aiConfig.model);
                 } catch (primaryAiErr: any) {
                   console.warn(`[Webhook] Primary model ${aiConfig.model} failed, falling back to gemini-3.1-flash-lite...`, primaryAiErr?.message);
                   try {
-                    const fallbackAi = new GoogleGenAI({ apiKey: aiConfig.apiKey });
-                    const fallbackRes = await fallbackAi.models.generateContent({
-                      model: 'gemini-3.1-flash-lite',
-                      contents: prompt
-                    });
-                    responseText = fallbackRes.text?.trim() || '';
+                    responseText = await generateJson('gemini-3.1-flash-lite');
                   } catch (fallbackErr: any) {
                     throw new Error(`AI Generation failed on all models: ${fallbackErr?.message}`);
                   }
@@ -1073,66 +1426,99 @@ ${chatHistoryText || 'নতুন আলাপ (পূর্ববর্তী 
                   reply = 'ধন্যবাদ! আপনার মেসেজটি আমরা পেয়েছি। আমাদের সেলস টিম শীঘ্রই আপনার সাথে যোগাযোগ করবে।';
                 }
 
-                // ==========================================
-                // Enterprise Automated Order Extraction Engine
-                // ==========================================
-                const fullText = `${finalMessageText} ${chatHistoryText}`;
-                const phoneMatch = fullText.match(/(01[3-9]\d{8})/);
-                const hasAddressKeywords = /রোড|বাসা|বাড়ি|গ্রাম|থানা|জেলা|সেক্টর|ঢাকা|dhaka|চট্টগ্রাম|খুলনা|রাজশাহী|সিলেট|বরিশাল|রংপুর|ময়মনসিংহ|কুমিল্লা|গাজীপুর|নারায়ণগঞ্জ|মিরপুর|ধানমন্ডি|উত্তরা|গুলশান|বনানী|মোহাম্মদপুর|মতিঝিল|যাত্রাবাড়ী|বাড্ডা|মগবাজার/i.test(fullText);
+                const nextLead = mergeLead(knownLead, {
+                  ...(aiRes?.order_data || {}),
+                  product_name: aiRes?.order_data?.product_name || aiRes?.product_name || knownLead.product_name,
+                }, `${finalMessageText}\n${chatHistoryText}`);
 
-                if (phoneMatch && (hasAddressKeywords || finalMessageText.length > 25)) {
+                const wantsOrder = Boolean(
+                  aiRes?.should_create_order ||
+                  (aiRes?.conversation_stage === 'order_completed' && aiRes?.need_more_info === false) ||
+                  (aiRes?.event_name === 'Purchase' && aiRes?.need_more_info === false)
+                );
+
+                if (wantsOrder && hasCompleteLead(nextLead)) {
                   try {
-                    const extractedPhone = phoneMatch[1];
-                    const isInsideDhaka = /ঢাকা|dhaka|মিরপুর|ধানমন্ডি|উত্তরা|গুলশান|বনানী|মোহাম্মদপুর|মতিঝিল|যাত্রাবাড়ী|বাড্ডা|মগবাজার|খিলগাঁও|বাসাবো|তেজগাঁও|বারিধারা|রামপুরা|লালবাগ/i.test(finalMessageText);
+                    const productName = nextLead.product_name || aiRes?.product_name || '';
+                    const duplicate = await findRecentDuplicateOrder(bizId!, nextLead.phone, productName);
+                    if (duplicate) {
+                      console.log(`[Webhook] Duplicate order skipped, existing ${duplicate.id}`);
+                    } else {
+                    const isInsideDhaka = /ঢাকা|dhaka|মিরপুর|ধানমন্ডি|উত্তরা|গুলশান|বনানী|মোহাম্মদপুর|মতিঝিল|যাত্রাবাড়ী|বাড্ডা|মগবাজার|খিলগাঁও|বাসাবো|তেজগাঁও|বারিধারা|রামপুরা|লালবাগ/i.test(nextLead.address);
                     const deliveryCharge = isInsideDhaka 
                       ? (businessData.courierConfig?.deliveryChargeInsideDhaka || 60)
                       : (businessData.courierConfig?.deliveryChargeOutsideDhaka || 120);
 
-                    // Find matched product or default to first product
-                    const matchedProduct = products.find((p: any) => 
-                      finalMessageText.toLowerCase().includes(p.name?.toLowerCase()) ||
-                      chatHistoryText.toLowerCase().includes(p.name?.toLowerCase())
-                    ) || products[0];
+                    const matchedProduct = rawProducts.find((p: any) => {
+                      const n = String(p.name || '').toLowerCase();
+                      const w = productName.toLowerCase();
+                      return n && w && (n === w || n.includes(w) || w.includes(n));
+                    }) || rawProducts.find((p: any) => chatHistoryText.toLowerCase().includes(String(p.name || '').toLowerCase())) || rawProducts[0];
 
-                    const unitPrice = matchedProduct?.price || 500;
+                    const qty = Math.max(1, parseInt(String(nextLead.quantity || '1'), 10) || 1);
+                    const unitPrice = Number(String(nextLead.negotiated_price || '').replace(/[^0-9.]/g, '')) || matchedProduct?.price || 500;
                     const orderId = `ORD-${Date.now().toString().slice(-6)}`;
-                    const totalAmount = unitPrice + deliveryCharge;
+                    const totalAmount = unitPrice * qty + deliveryCharge;
 
                     const newOrder = {
                       id: orderId,
                       businessId: bizId,
-                      customerName: senderId ? `FB User (${senderId.slice(-4)})` : 'Messenger Customer',
-                      phone: extractedPhone,
-                      address: finalMessageText.slice(0, 150),
-                      productId: matchedProduct?.id || 'prod-1',
-                      productName: matchedProduct?.name || 'অর্ডারকৃত পণ্য',
-                      quantity: 1,
-                      unitPrice: unitPrice,
-                      deliveryCharge: deliveryCharge,
+                      merchantId: ownerId || '',
+                      sessionId: senderId,
+                      customerName: nextLead.name || `FB User (${String(senderId).slice(-4)})`,
+                      phone: nextLead.phone,
+                      address: nextLead.address,
+                      productId: matchedProduct?.id || '',
+                      productName: matchedProduct?.name || productName || 'অর্ডারকৃত পণ্য',
+                      quantity: qty,
+                      unitPrice,
+                      deliveryFee: deliveryCharge,
+                      deliveryCharge,
                       totalPrice: totalAmount,
-                      status: 'pending',
+                      status: 'confirmed',
                       paymentStatus: 'unpaid',
                       paymentMethod: 'cod',
-                      notes: `Auto-created by AI from Messenger (Customer: ${senderId})`,
-                      createdAt: new Date().toISOString()
+                      notes: `Messenger AI (Customer: ${senderId})`,
+                      createdAtMs: Date.now(),
                     };
 
-                    if (adminDb) {
-                      await adminDb.collection('orders').doc(orderId).set(newOrder);
-                      // Deduct stock
-                      if (matchedProduct && matchedProduct.stock > 0) {
-                        const updatedProducts = (businessData.products || []).map((p: any) => {
-                          if (p.id === matchedProduct.id) {
-                            return { ...p, stock: Math.max(0, (p.stock || p.stockCount || 10) - 1) };
-                          }
-                          return p;
-                        });
-                        await adminDb.collection('businesses').doc(bizId!).update({ products: updatedProducts }).catch(() => {});
-                      }
+                    await saveOrderDoc(newOrder);
+
+                    if (matchedProduct && (matchedProduct.stock || matchedProduct.stockCount) > 0 && adminDb) {
+                      const updatedProducts = (businessData.products || []).map((p: any) => {
+                        if (p.id === matchedProduct.id) {
+                          return { ...p, stock: Math.max(0, (p.stock || p.stockCount || 10) - qty) };
+                        }
+                        return p;
+                      });
+                      await adminDb.collection('businesses').doc(bizId!).update({ products: updatedProducts }).catch(() => {});
                     }
 
                     await logActivity(bizId!, 'ORDER_AUTO_CREATED', `নতুন অর্ডার তৈরি হয়েছে: ${orderId} (৳${totalAmount})`, 'success', ownerId, newOrder);
-                    console.log(`[Webhook] Auto-created order: ${orderId} for customer ${extractedPhone}`);
+                    console.log(`[Webhook] Auto-created order: ${orderId} for customer ${nextLead.phone}`);
+
+                    const autoBook = businessData.courierConfig?.autoBooking !== false && businessData.courierConfig?.steadfastApiKey;
+                    if (autoBook) {
+                      const booked = await bookSteadfastParcel(newOrder, businessData);
+                      if (booked.success) {
+                        const courierUpdates = {
+                          courierStatus: 'in_review',
+                          courierTrackingId: booked.trackingCode,
+                          courierConsignmentId: booked.consignmentId || '',
+                          status: 'shipped',
+                        };
+                        if (adminDb) {
+                          await adminDb.collection('orders').doc(orderId).update(courierUpdates).catch(() => {});
+                        } else if (db) {
+                          await updateDoc(doc(db, 'orders', orderId), courierUpdates).catch(() => {});
+                        }
+                        reply = `${reply.trim()}\n\nঅর্ডার কনফার্ম হয়েছে। কুরিয়ার ট্র্যাকিং: ${booked.trackingCode}`;
+                        await logActivity(bizId!, 'STEADFAST_AUTO', `অটো পার্সেল বুক: ${orderId} / ${booked.trackingCode}`, 'success', ownerId);
+                      } else {
+                        console.warn('[Webhook] Auto Steadfast booking failed:', booked.error);
+                      }
+                    }
+                    }
                   } catch (orderErr) {
                     console.warn('[Webhook] Auto order placement notice:', orderErr);
                   }
@@ -1160,29 +1546,29 @@ ${chatHistoryText || 'নতুন আলাপ (পূর্ববর্তী 
                   }, { timeout: 15000 });
                 }
 
-                // Send product image if the AI decided the customer wants to see one.
-                // (Previously `show_product_image` was parsed from the AI response but
-                // never actually used anywhere — customers asking for photos never got one.)
-                if (aiRes?.show_product_image) {
+                const wantsProductImg = Boolean(aiRes?.show_product_image);
+                const wantsReviewImg = Boolean(aiRes?.show_review_images) || /রিভিউ|review|প্রুফ|proof|ফিডব্যাক|feedback|আনবক্সিং/i.test(finalMessageText);
+                if (wantsProductImg || wantsReviewImg) {
                   try {
-                    const wantedName = String(aiRes.product_name || '').toLowerCase().trim();
-                    const rawProducts = businessData.products || [];
+                    const wantedName = String(aiRes?.product_name || nextLead.product_name || '').toLowerCase().trim();
                     let imageProduct = wantedName
                       ? rawProducts.find((p: any) => p.name?.toLowerCase().includes(wantedName) || wantedName.includes(p.name?.toLowerCase() || '\u0000'))
                       : null;
                     if (!imageProduct) {
-                      // Fallback: match against the customer's message text directly
                       imageProduct = rawProducts.find((p: any) => p.name && finalMessageText.toLowerCase().includes(p.name.toLowerCase()));
                     }
-                    const imageUrl = imageProduct?.images?.[0];
-                    if (imageUrl) {
-                      await sendImageMessage(pageAccessToken, senderId, imageUrl);
-                      console.log(`[Webhook] Sent product image for: ${imageProduct.name}`);
-                    } else {
-                      console.log('[Webhook] show_product_image was true but no matching product image was found.');
+                    if (!imageProduct) imageProduct = rawProducts[0];
+                    const urls: string[] = [];
+                    if (wantsProductImg) urls.push(...(imageProduct?.images || []).slice(0, 3));
+                    if (wantsReviewImg) urls.push(...(imageProduct?.reviewImages || []).slice(0, 3));
+                    for (const rawUrl of urls) {
+                      const publicUrl = await ensurePublicImageUrl(rawUrl, bizId!, req);
+                      if (publicUrl && publicUrl.startsWith('http')) {
+                        await sendImageMessage(pageAccessToken, senderId, publicUrl);
+                      }
                     }
                   } catch (imgErr: any) {
-                    console.warn('[Webhook] Product image send failed:', imgErr.response?.data || imgErr.message);
+                    console.warn('[Webhook] Product/review image send failed:', imgErr.response?.data || imgErr.message);
                   }
                 }
 
@@ -1207,18 +1593,21 @@ ${chatHistoryText || 'নতুন আলাপ (পূর্ববর্তী 
                 console.log('[Webhook] Reply sequence finished successfully');
                 await logActivity(bizId!, 'REPLY_SENT', `উত্তর পাঠানো হয়েছে: "${reply.substring(0, 50)}..."`, 'success', ownerId);
 
-                // Update lead info if AI provided it
-                if (aiRes && (aiRes.summary || aiRes.order_data)) {
-                  if (adminDb) {
-                    await adminDb.collection('customers').doc(`${bizId}_${senderId}`).set({
-                      businessId: bizId,
-                      messengerId: senderId,
-                      lastInteraction: admin.firestore.FieldValue.serverTimestamp(),
-                      chatSummary: aiRes.summary || '',
-                      leadInfo: aiRes.order_data || {},
-                      updatedAt: admin.firestore.FieldValue.serverTimestamp()
-                    }, { merge: true }).catch(() => {});
-                  }
+                const customerPayload = {
+                  businessId: bizId,
+                  messengerId: senderId,
+                  name: nextLead.name || '',
+                  phone: nextLead.phone || '',
+                  address: nextLead.address || '',
+                  lastInteraction: adminDb ? admin.firestore.FieldValue.serverTimestamp() : serverTimestamp(),
+                  chatSummary: aiRes?.summary || longTermSummary || '',
+                  leadInfo: nextLead,
+                  updatedAt: adminDb ? admin.firestore.FieldValue.serverTimestamp() : serverTimestamp(),
+                };
+                if (adminDb) {
+                  await adminDb.collection('customers').doc(`${bizId}_${senderId}`).set(customerPayload, { merge: true }).catch(() => {});
+                } else if (db) {
+                  await setDoc(doc(db, 'customers', `${bizId}_${senderId}`), customerPayload, { merge: true }).catch(() => {});
                 }
               } catch (err: any) {
                 const latencyMs = Date.now() - startTime;
@@ -1226,7 +1615,6 @@ ${chatHistoryText || 'নতুন আলাপ (পূর্ববর্তী 
                 const errorMsg = fbErrorObj?.message || err.message || 'ফেসবুক মেসেজ পাঠানো যায়নি';
                 const errorCode = fbErrorObj?.code ? ` [Code: ${fbErrorObj.code}]` : '';
                 console.error('[AI/Reply Error]', fbErrorObj || err.message);
-                
                 await logActivity(bizId!, 'ERROR', `বট রিপ্লাই দিতে ব্যর্থ হয়েছে: ${errorMsg}${errorCode}`, 'error', ownerId, fbErrorObj);
                 await saveMessengerLog(bizId!, {
                   senderId,

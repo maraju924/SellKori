@@ -26,6 +26,9 @@ interface MerchantIntegrationsProps {
 export function MerchantIntegrations({ business }: MerchantIntegrationsProps) {
   const [steadfastApiKey, setSteadfastApiKey] = useState(business.courierConfig?.steadfastApiKey || '');
   const [steadfastSecretKey, setSteadfastSecretKey] = useState(business.courierConfig?.steadfastSecretKey || '');
+  const [autoBooking, setAutoBooking] = useState(business.courierConfig?.autoBooking !== false);
+  const [insideDhaka, setInsideDhaka] = useState(business.courierConfig?.deliveryChargeInsideDhaka || 70);
+  const [outsideDhaka, setOutsideDhaka] = useState(business.courierConfig?.deliveryChargeOutsideDhaka || 130);
   
   const [pixelId, setPixelId] = useState(business.facebookConfig?.pixelId || '');
   const [capiAccessToken, setCapiAccessToken] = useState(business.facebookConfig?.accessToken || '');
@@ -41,6 +44,9 @@ export function MerchantIntegrations({ business }: MerchantIntegrationsProps) {
           ...(business.courierConfig || {}),
           steadfastApiKey,
           steadfastSecretKey,
+          autoBooking,
+          deliveryChargeInsideDhaka: Number(insideDhaka) || 70,
+          deliveryChargeOutsideDhaka: Number(outsideDhaka) || 130,
         },
         facebookConfig: {
           ...(business.facebookConfig || {}),
@@ -131,6 +137,40 @@ export function MerchantIntegrations({ business }: MerchantIntegrationsProps) {
                 className="font-mono text-xs h-10 rounded-xl"
               />
             </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <label className="font-bold text-zinc-700 dark:text-zinc-300">ঢাকার ভিতরে চার্জ (৳)</label>
+                <Input
+                  type="number"
+                  value={insideDhaka}
+                  onChange={e => setInsideDhaka(Number(e.target.value))}
+                  className="font-mono text-xs h-10 rounded-xl"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <label className="font-bold text-zinc-700 dark:text-zinc-300">ঢাকার বাইরে চার্জ (৳)</label>
+                <Input
+                  type="number"
+                  value={outsideDhaka}
+                  onChange={e => setOutsideDhaka(Number(e.target.value))}
+                  className="font-mono text-xs h-10 rounded-xl"
+                />
+              </div>
+            </div>
+            <label className="flex items-start gap-2.5 pt-1 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={autoBooking}
+                onChange={e => setAutoBooking(e.target.checked)}
+                className="mt-0.5 accent-orange-600"
+              />
+              <span>
+                <span className="font-bold text-zinc-800 dark:text-zinc-200">অর্ডার কনফার্ম হলে অটো স্টেডফাস্ট বুকিং</span>
+                <span className="block text-[11px] text-zinc-500 mt-0.5">
+                  মেসেঞ্জার/চ্যাটে অর্ডার কনফার্ম হলে পার্সেল নিজে থেকেই স্টেডফাস্টে পাঠানো হবে। ড্যাশবোর্ডের বাটনও আসল API কল করে।
+                </span>
+              </span>
+            </label>
           </div>
         </div>
 

@@ -117,6 +117,8 @@ export interface AIResponse {
   intent: Intent;
   product_name: string;
   show_product_image: boolean;
+  show_review_images?: boolean;
+  should_create_order?: boolean;
   reply: string;
   summary?: string; // Concise summary of the entire conversation so far
   order_data: OrderData;

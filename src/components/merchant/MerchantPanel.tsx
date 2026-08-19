@@ -89,7 +89,9 @@ export function MerchantPanel({ user, profile }: MerchantPanelProps) {
     const q = query(collection(db, 'businesses'), where('ownerId', '==', user.uid));
     return onSnapshot(q, (snapshot) => {
       if (!snapshot.empty) {
-        setBusiness(snapshot.docs[0].data() as BusinessConfig);
+        const docSnap = snapshot.docs[0];
+        const data = docSnap.data() as BusinessConfig;
+        setBusiness({ ...data, id: data.id || docSnap.id });
       } else {
         const newId = `biz-${Date.now()}`;
         const initialConfig: BusinessConfig = {
@@ -105,7 +107,8 @@ export function MerchantPanel({ user, profile }: MerchantPanelProps) {
           facebookConfig: { pixelId: '', accessToken: '', testEventCode: '' },
           courierConfig: {
             deliveryChargeInsideDhaka: 70,
-            deliveryChargeOutsideDhaka: 130
+            deliveryChargeOutsideDhaka: 130,
+            autoBooking: true
           },
           features: {
             aiEnabled: true,
@@ -135,17 +138,39 @@ export function MerchantPanel({ user, profile }: MerchantPanelProps) {
     });
   }, [user]);
 
-  // Load orders
+  // Load orders (fallback without orderBy if composite index is missing)
   useEffect(() => {
     if (!business?.id) return;
-    const ordersQ = query(
+
+    const applySnap = (snap: { docs: { id: string; data: () => any }[] }) => {
+      const list = snap.docs.map(d => ({ id: d.id, ...d.data() } as Order));
+      list.sort((a: any, b: any) => {
+        const ta = a.createdAtMs || a.createdAt?.toMillis?.() || Date.parse(a.createdAt || '') || 0;
+        const tb = b.createdAtMs || b.createdAt?.toMillis?.() || Date.parse(b.createdAt || '') || 0;
+        return tb - ta;
+      });
+      setOrders(list);
+    };
+
+    const withOrder = query(
       collection(db, 'orders'),
       where('businessId', '==', business.id),
       orderBy('createdAt', 'desc')
     );
-    return onSnapshot(ordersQ, (snap) => {
-      setOrders(snap.docs.map(d => ({ id: d.id, ...d.data() } as Order)));
-    }, () => {});
+    let unsubFallback: (() => void) | null = null;
+    const unsub = onSnapshot(withOrder, applySnap, () => {
+      const withoutOrder = query(
+        collection(db, 'orders'),
+        where('businessId', '==', business.id)
+      );
+      unsubFallback = onSnapshot(withoutOrder, applySnap, (err) => {
+        console.error('[Orders load failed]', err);
+      });
+    });
+    return () => {
+      unsub();
+      unsubFallback?.();
+    };
   }, [business?.id]);
 
   const isAdmin = profile?.role === 'admin' || user?.email === 'maraju924@gmail.com';

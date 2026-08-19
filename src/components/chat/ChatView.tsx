@@ -16,11 +16,20 @@ import {
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 import { Badge } from '../ui/badge';
-import { BusinessConfig, Message, Order } from '../../types';
+import { BusinessConfig, Message } from '../../types';
 import { db } from '../../lib/firebase';
-import { doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore';
+import { doc, getDoc } from 'firebase/firestore';
 import { getAIResponse } from '../../lib/gemini';
 import { toast } from 'sonner';
+import {
+  mergeOrderData,
+  extractBdPhone,
+  buildCustomerContext,
+  shouldPlaceOrder,
+  saveConfirmedOrder,
+  maybeAutoBookSteadfast,
+  CollectedOrderInfo,
+} from '../../lib/chatOrder';
 
 export function ChatView() {
   const { businessId } = useParams<{ businessId: string }>();
@@ -29,8 +38,18 @@ export function ChatView() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [isSending, setIsSending] = useState(false);
-  const [sessionId] = useState(() => `session_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`);
+  const [sessionId] = useState(() => {
+    if (typeof window === 'undefined' || !businessId) return `session_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
+    const key = `sellkori_session_${businessId}`;
+    const existing = localStorage.getItem(key);
+    if (existing) return existing;
+    const created = `session_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
+    localStorage.setItem(key, created);
+    return created;
+  });
   const [chatSummary, setChatSummary] = useState('');
+  const [collected, setCollected] = useState<CollectedOrderInfo>({});
+  const [orderPlacedId, setOrderPlacedId] = useState<string>('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -40,12 +59,32 @@ export function ChatView() {
         const snap = await getDoc(doc(db, 'businesses', businessId));
         if (snap.exists()) {
           const data = snap.data() as BusinessConfig;
-          setBusiness(data);
+          setBusiness({ ...data, id: data.id || snap.id || businessId });
+          const memKey = `sellkori_mem_${businessId}`;
+          let restored: CollectedOrderInfo = {};
+          let restoredSummary = '';
+          let restoredOrderId = '';
+          try {
+            const raw = localStorage.getItem(memKey);
+            if (raw) {
+              const parsed = JSON.parse(raw);
+              restored = parsed.collected || {};
+              restoredSummary = parsed.summary || '';
+              restoredOrderId = parsed.orderPlacedId || '';
+            }
+          } catch { /* ignore */ }
+          setCollected(restored);
+          setChatSummary(restoredSummary);
+          setOrderPlacedId(restoredOrderId);
+
+          const greetExtra = restored.phone
+            ? ` আপনার আগের তথ্য আমাদের কাছে আছে${restored.name ? ` (${restored.name})` : ''}।`
+            : '';
           setMessages([
             {
               id: 'init-msg',
               role: 'assistant',
-              content: `আসসালামু আলাইকুম! ${data.name || 'আমাদের শপে'} আপনাকে স্বাগতম। আপনি কোন পণ্যটি সম্পর্কে জানতে বা অর্ডার করতে চান?`,
+              content: `আসসালামু আলাইকুম! ${data.name || 'আমাদের শপে'} আপনাকে স্বাগতম।${greetExtra} আপনি কোন পণ্যটি সম্পর্কে জানতে বা অর্ডার করতে চান?`,
               timestamp: Date.now()
             }
           ]);
@@ -83,16 +122,35 @@ export function ChatView() {
     setIsSending(true);
 
     try {
-      const historyStr = messages.slice(-6).map(m => `${m.role}: ${m.content}`).join('\n');
+      const liveCollected = mergeOrderData(collected, {
+        phone: extractBdPhone(textToSend) || collected.phone,
+      });
+      const historyStr = [...messages, userMsg]
+        .slice(-24)
+        .map(m => `${m.role === 'user' ? 'Customer' : 'Bot'}: ${m.content}`)
+        .join('\n');
+
+      let recentOrderNote = '';
+      if (orderPlacedId) {
+        recentOrderNote = `সাম্প্রতিক অর্ডার ইতিমধ্যে কনফার্ম হয়েছে (ID: ${orderPlacedId})। কাস্টমারকে আবার অর্ডার করতে বলবেন না।`;
+      }
+
       const aiResponse = await getAIResponse(
         textToSend,
         historyStr,
         business,
-        'Public Customer Chat Session',
+        buildCustomerContext(liveCollected, recentOrderNote || 'Public Customer Chat Session'),
         undefined,
         undefined,
         chatSummary
       );
+
+      const nextCollected = mergeOrderData(liveCollected, {
+        ...aiResponse.order_data,
+        product_name: aiResponse.order_data?.product_name || aiResponse.product_name || liveCollected.product_name,
+        phone: extractBdPhone(textToSend) || aiResponse.order_data?.phone || liveCollected.phone,
+      });
+      setCollected(nextCollected);
 
       if (aiResponse.summary) {
         setChatSummary(aiResponse.summary);
@@ -108,39 +166,32 @@ export function ChatView() {
 
       setMessages(prev => [...prev, assistantMsg]);
 
-      // If customer completed order placement
-      if (aiResponse.event_name === 'Purchase' && !aiResponse.need_more_info) {
-        const orderId = `ord-${Date.now()}`;
-        const qty = parseInt(aiResponse.order_data.quantity) || 1;
-        const matchedProduct = business.products?.find(p => 
-          p.name.toLowerCase().includes((aiResponse.product_name || '').toLowerCase())
-        );
-        const unitPrice = aiResponse.order_data.negotiated_price
-          ? Number(aiResponse.order_data.negotiated_price.replace(/[^0-9]/g, ''))
-          : (matchedProduct?.price || 1000);
-
-        const newOrder: any = {
-          id: orderId,
-          businessId: business.id,
-          merchantId: business.ownerId,
-          sessionId: sessionId,
-          customerName: aiResponse.order_data.name || 'সম্মানিত গ্রাহক',
-          phone: aiResponse.order_data.phone || '',
-          address: aiResponse.order_data.address || '',
-          quantity: qty,
-          productName: aiResponse.product_name || matchedProduct?.name || 'পণ্য',
-          unitPrice,
-          totalPrice: unitPrice * qty,
-          status: 'pending',
-          paymentStatus: 'unpaid',
-          createdAt: serverTimestamp()
-        };
-
-        await setDoc(doc(db, 'orders', orderId), newOrder);
-        toast.success('আপনার অর্ডারটি সফলভাবে গ্রহণ করা হয়েছে!', {
-          description: 'খুব দ্রুত আমাদের প্রতিনিধি আপনার সাথে যোগাযোগ করবে।'
+      let placedId = orderPlacedId;
+      if (shouldPlaceOrder(aiResponse, nextCollected, Boolean(orderPlacedId))) {
+        const saved = await saveConfirmedOrder({
+          business,
+          collected: nextCollected,
+          productName: nextCollected.product_name || aiResponse.product_name,
+          sessionId,
+          source: 'Public chat',
         });
+        if (saved) {
+          placedId = saved.id;
+          setOrderPlacedId(saved.id);
+          await maybeAutoBookSteadfast(business, saved.id, false);
+          toast.success('আপনার অর্ডারটি সফলভাবে গ্রহণ করা হয়েছে!', {
+            description: 'খুব দ্রুত আমাদের প্রতিনিধি আপনার সাথে যোগাযোগ করবে।'
+          });
+        }
       }
+
+      try {
+        localStorage.setItem(`sellkori_mem_${businessId}`, JSON.stringify({
+          collected: nextCollected,
+          summary: aiResponse.summary || chatSummary,
+          orderPlacedId: placedId,
+        }));
+      } catch { /* ignore quota */ }
     } catch (e) {
       toast.error('দুঃখিত, কোনো একটি সমস্যা হয়েছে। অনুগ্রহ করে আবার চেষ্টা করুন।');
     } finally {
@@ -233,30 +284,56 @@ export function ChatView() {
               >
                 {msg.content}
 
-                {/* Optional Product Image & Gallery Display */}
-                {msg.role === 'assistant' && msg.aiMetadata?.show_product_image && (() => {
+                {/* Optional Product Image & Review Gallery Display */}
+                {msg.role === 'assistant' && (msg.aiMetadata?.show_product_image || msg.aiMetadata?.show_review_images) && (() => {
                   const matched = business.products?.find(p => 
                     p.name.toLowerCase().includes((msg.aiMetadata?.product_name || '').toLowerCase())
-                  );
-                  if (!matched || !matched.images || matched.images.length === 0) return null;
+                  ) || business.products?.[0];
+                  if (!matched) return null;
+                  const productImgs = msg.aiMetadata?.show_product_image ? (matched.images || []).slice(0, 4) : [];
+                  const reviewImgs = msg.aiMetadata?.show_review_images ? (matched.reviewImages || []).slice(0, 4) : [];
+                  if (productImgs.length === 0 && reviewImgs.length === 0) return null;
 
                   return (
-                    <div className="mt-3 pt-3 border-t border-zinc-100 dark:border-zinc-700 space-y-2">
-                      <div className="flex items-center gap-1.5 text-[11px] font-bold text-orange-600 dark:text-orange-400">
-                        <ShoppingBag className="w-3.5 h-3.5" />
-                        <span>{matched.name}</span>
-                      </div>
-                      <div className="grid grid-cols-2 gap-2">
-                        {matched.images.slice(0, 4).map((img, idx) => (
-                          <img
-                            key={idx}
-                            src={img}
-                            alt={matched.name}
-                            className="rounded-xl w-full h-24 object-cover border border-zinc-200 dark:border-zinc-700"
-                            referrerPolicy="no-referrer"
-                          />
-                        ))}
-                      </div>
+                    <div className="mt-3 pt-3 border-t border-zinc-100 dark:border-zinc-700 space-y-3">
+                      {productImgs.length > 0 && (
+                        <div className="space-y-2">
+                          <div className="flex items-center gap-1.5 text-[11px] font-bold text-orange-600 dark:text-orange-400">
+                            <ShoppingBag className="w-3.5 h-3.5" />
+                            <span>{matched.name}</span>
+                          </div>
+                          <div className="grid grid-cols-2 gap-2">
+                            {productImgs.map((img, idx) => (
+                              <img
+                                key={idx}
+                                src={img}
+                                alt={matched.name}
+                                className="rounded-xl w-full h-24 object-cover border border-zinc-200 dark:border-zinc-700"
+                                referrerPolicy="no-referrer"
+                              />
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                      {reviewImgs.length > 0 && (
+                        <div className="space-y-2">
+                          <div className="flex items-center gap-1.5 text-[11px] font-bold text-amber-600 dark:text-amber-400">
+                            <ShieldCheck className="w-3.5 h-3.5" />
+                            <span>কাস্টমার রিভিউ ও ডেলিভারি প্রুফ</span>
+                          </div>
+                          <div className="grid grid-cols-2 gap-2">
+                            {reviewImgs.map((img, idx) => (
+                              <img
+                                key={`rev-${idx}`}
+                                src={img}
+                                alt={`Review ${idx + 1}`}
+                                className="rounded-xl w-full h-24 object-cover border border-amber-200 dark:border-amber-800"
+                                referrerPolicy="no-referrer"
+                              />
+                            ))}
+                          </div>
+                        </div>
+                      )}
                     </div>
                   );
                 })()}

@@ -59,27 +59,28 @@ export function MerchantOrders({ business, orders }: MerchantOrdersProps) {
   };
 
   const handleBookSteadfast = async (order: Order) => {
-    if (!business.courierConfig?.steadfastApiKey) {
+    if (!business.courierConfig?.steadfastApiKey || !business.courierConfig?.steadfastSecretKey) {
       toast.error('স্টেডফাস্ট কুরিয়ার এপিআই কনফিগার করা নেই', {
-        description: 'ইন্টিগ্রেশন পেজে গিয়ে API Key যুক্ত করুন।'
+        description: 'ইন্টিগ্রেশন পেজে গিয়ে API Key ও Secret Key যুক্ত করুন।'
       });
       return;
     }
 
     setIsBookingCourier(order.id);
     try {
-      // Simulate Steadfast API integration
-      await new Promise(r => setTimeout(r, 1200));
-      const trackingCode = `STDF-${Math.floor(100000 + Math.random() * 900000)}`;
-      
-      await updateDoc(doc(db, 'orders', order.id), {
-        courierStatus: 'in_transit',
-        courierTrackingId: trackingCode,
-        status: 'shipped'
+      const res = await fetch('/api/courier/steadfast/book', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orderId: order.id, businessId: business.id }),
       });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.success) {
+        toast.error(data.error || 'কুরিয়ার বুকিং ব্যর্থ হয়েছে');
+        return;
+      }
 
-      toast.success('স্টেডফাস্টে পার্সেল সফলভাবে বুকিং হয়েছে!', {
-        description: `ট্র্যাকিং আইডি: ${trackingCode}`
+      toast.success(data.alreadyBooked ? 'এই পার্সেল আগেই বুক করা আছে' : 'স্টেডফাস্টে পার্সেল সফলভাবে বুকিং হয়েছে!', {
+        description: `ট্র্যাকিং আইডি: ${data.trackingCode || '—'}`
       });
     } catch (e) {
       toast.error('কুরিয়ার বুকিং ব্যর্থ হয়েছে');

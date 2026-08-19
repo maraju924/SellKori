@@ -2,7 +2,7 @@
  * Utility for compressing and converting client-uploaded images to optimized Base64 DataURLs.
  * Ensures fast uploads, low storage footprint in Firestore, and instant preview rendering.
  */
-export async function compressImageFile(file: File, maxWidth = 1200, quality = 0.82): Promise<string> {
+export async function compressImageFile(file: File, maxWidth = 900, quality = 0.72): Promise<string> {
   return new Promise((resolve, reject) => {
     // If SVG or gif, read as data url directly
     if (file.type === 'image/svg+xml' || file.type === 'image/gif') {

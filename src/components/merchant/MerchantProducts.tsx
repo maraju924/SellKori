@@ -41,6 +41,7 @@ import { db } from '../../lib/firebase';
 import { doc, updateDoc } from 'firebase/firestore';
 import { toast } from 'sonner';
 import { compressImageFile } from '../../lib/imageUtils';
+import { persistImageDataUrl } from '../../lib/mediaUpload';
 import { cleanFirestoreData } from '../../lib/utils';
 
 interface MerchantProductsProps {
@@ -210,8 +211,9 @@ export function MerchantProducts({ business }: MerchantProductsProps) {
       const compressedUrls: string[] = [];
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
-        const dataUrl = await compressImageFile(file, 1200, 0.82);
-        compressedUrls.push(dataUrl);
+        const dataUrl = await compressImageFile(file, 900, 0.72);
+        const hosted = await persistImageDataUrl(dataUrl, business.id, 'product');
+        compressedUrls.push(hosted);
       }
       setImages(prev => [...prev, ...compressedUrls]);
       toast.success(`${compressedUrls.length}টি প্রোডাক্ট ছবি সফলভাবে যুক্ত হয়েছে!`);
@@ -233,8 +235,9 @@ export function MerchantProducts({ business }: MerchantProductsProps) {
       const compressedUrls: string[] = [];
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
-        const dataUrl = await compressImageFile(file, 1000, 0.80);
-        compressedUrls.push(dataUrl);
+        const dataUrl = await compressImageFile(file, 800, 0.7);
+        const hosted = await persistImageDataUrl(dataUrl, business.id, 'review');
+        compressedUrls.push(hosted);
       }
       setReviewImages(prev => [...prev, ...compressedUrls]);
       toast.success(`${compressedUrls.length}টি কাস্টমার রিভিউ ছবি সফলভাবে যুক্ত হয়েছে!`);
@@ -317,6 +320,16 @@ export function MerchantProducts({ business }: MerchantProductsProps) {
       const currentProducts = business.products || [];
       let updatedProducts: Product[];
 
+      // Re-host any leftover data-URLs so the business document stays under Firestore's 1MB cap.
+      const hostedImages: string[] = [];
+      for (const img of images) {
+        hostedImages.push(await persistImageDataUrl(img, business.id, 'product'));
+      }
+      const hostedReviews: string[] = [];
+      for (const img of reviewImages) {
+        hostedReviews.push(await persistImageDataUrl(img, business.id, 'review'));
+      }
+
       const productPayload: Product = {
         id: editingProduct ? editingProduct.id : `prod-${Date.now()}`,
         name,
@@ -327,8 +340,8 @@ export function MerchantProducts({ business }: MerchantProductsProps) {
         specs,
         stock: Number(stock),
         category: category.trim() || 'জেনারেল',
-        images: images,
-        reviewImages: reviewImages,
+        images: hostedImages,
+        reviewImages: hostedReviews,
         isAvailable: true
       };
 
@@ -399,6 +412,7 @@ export function MerchantProducts({ business }: MerchantProductsProps) {
         </div>
 
         <Button
+          id="add-product-btn"
           onClick={openAddModal}
           className="bg-linear-to-r from-orange-600 to-amber-500 hover:from-orange-700 hover:to-amber-600 text-white font-black text-xs rounded-2xl h-11 px-6 shadow-md shadow-orange-600/20 active:scale-95 transition-all shrink-0 flex items-center gap-2"
         >
@@ -602,7 +616,7 @@ export function MerchantProducts({ business }: MerchantProductsProps) {
 
       {/* Comprehensive Add / Edit Product Modal */}
       <Dialog open={isModalOpen} onOpenChange={setIsModalOpen}>
-        <DialogContent className="max-w-2xl max-h-[92vh] overflow-y-auto rounded-3xl p-6 space-y-5">
+        <DialogContent className="max-w-2xl sm:max-w-2xl max-h-[92vh] overflow-y-auto rounded-3xl p-6 space-y-5">
           <DialogHeader className="pb-2 border-b border-zinc-100 dark:border-zinc-800">
             <div className="flex items-center gap-2">
               <div className="w-9 h-9 rounded-2xl bg-orange-500/10 border border-orange-500/20 text-orange-500 flex items-center justify-center">
