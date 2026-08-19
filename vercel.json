@@ -2,12 +2,20 @@
   "version": 2,
   "rewrites": [
     {
-      "source": "/api/(.*)",
-      "destination": "/api/index.ts"
+      "source": "/api/webhook/:businessId",
+      "destination": "/api/webhook"
     },
     {
-      "source": "/webhook(.*)",
-      "destination": "/api/index.ts"
+      "source": "/webhook",
+      "destination": "/api/webhook"
+    },
+    {
+      "source": "/webhook/:businessId",
+      "destination": "/api/webhook"
+    },
+    {
+      "source": "/api/(.*)",
+      "destination": "/api"
     },
     {
       "source": "/((?!api|webhook|assets|favicon.ico).*)",

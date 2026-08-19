@@ -31,16 +31,6 @@ import {
   shouldPrivateReplyToComment,
   type BroadcastAudience
 } from '../src/lib/outreach';
-import {
-  classifyWebhookToken,
-  extractWebhookBusinessId,
-  isMetaPageWebhookPayload,
-  isMetaWebhookVerification,
-  PAGE_SUBSCRIBE_FIELDS,
-  parseWebhookVerification,
-  resolveRequestPath,
-  withTimeout
-} from '../src/lib/messengerWebhook';
 
 dotenv.config();
 
@@ -1330,6 +1320,63 @@ async function saveChatMessage(bizId: string, senderId: string, role: 'user' | '
   }
 }
 
+const PAGE_SUBSCRIBE_FIELDS = ['messages', 'messaging_postbacks', 'messaging_optins', 'messaging_referrals', 'feed'];
+
+function firstQueryValue(value: unknown): string {
+  if (Array.isArray(value)) return String(value[0] ?? '').trim();
+  if (value == null) return '';
+  return String(value).trim();
+}
+
+function resolveRequestPath(input: { path?: string; originalUrl?: string; url?: string; headers?: any }): string {
+  const headers = input.headers || {};
+  const fromHeader = firstQueryValue(
+    headers['x-forwarded-uri'] ||
+    headers['x-invoke-path'] ||
+    headers['x-matched-path'] ||
+    headers['x-vercel-original-path'] ||
+    headers['x-original-uri']
+  ).split('?')[0];
+  const normalizedHeader = fromHeader.replace(/\/+$/, '') || '/';
+  if (fromHeader && !['/api', '/api/index', '/api/index.ts', '/api/index.js'].includes(normalizedHeader)) {
+    return fromHeader.startsWith('/') ? fromHeader : `/${fromHeader}`;
+  }
+  const fallback = String(input.originalUrl || input.url || input.path || '').split('?')[0];
+  return fallback.startsWith('/') ? fallback : `/${fallback}`;
+}
+
+function extractWebhookBusinessId(pathname: string, params?: Record<string, unknown>): string | undefined {
+  const reserved = new Set(['api', 'webhook', 'messenger', 'index', 'index.ts', 'index.js']);
+  const fromParams = firstQueryValue(params?.businessId || params?.['0']);
+  if (fromParams && !reserved.has(fromParams)) return fromParams;
+  const parts = String(pathname || '').split('/').filter(Boolean);
+  const webhookIdx = parts.lastIndexOf('webhook');
+  if (webhookIdx >= 0 && parts[webhookIdx + 1] && !reserved.has(parts[webhookIdx + 1])) {
+    return parts[webhookIdx + 1];
+  }
+  return undefined;
+}
+
+function isMetaWebhookVerification(query: Record<string, unknown> | undefined): boolean {
+  const q = query || {};
+  return firstQueryValue(q['hub.mode'] || q.mode).toLowerCase() === 'subscribe'
+    && Boolean(firstQueryValue(q['hub.challenge'] || q.challenge));
+}
+
+function isMetaPageWebhookPayload(body: unknown): boolean {
+  return !!body && typeof body === 'object' && (body as any).object === 'page' && Array.isArray((body as any).entry);
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(fallback), ms);
+    promise.then(
+      (value) => { clearTimeout(timer); resolve(value); },
+      () => { clearTimeout(timer); resolve(fallback); }
+    );
+  });
+}
+
 const app = express();
 const PORT = 3000;
 
@@ -1724,77 +1771,30 @@ const webhookPaths = [
   '/api/messenger/webhook/*',
   '/messenger/webhook',
   '/messenger/webhook/:businessId',
-  '/messenger/webhook/*',
-  '/api',
-  '/api/',
-  '/api/index',
-  '/api/index.ts',
-  '/api/index.js'
+  '/messenger/webhook/*'
 ];
 
 async function handleMessengerWebhookGet(req: express.Request, res: express.Response) {
   if ((req as any)._messengerVerifyHandled) return;
   (req as any)._messengerVerifyHandled = true;
 
-  const { mode, token, challenge } = parseWebhookVerification(req.query as Record<string, unknown>);
-  const businessId = webhookBusinessIdFromReq(req);
-  const resolvedPath = (req as any)._resolvedPath || req.path;
+  const mode = firstQueryValue((req.query as any)['hub.mode'] || (req.query as any).mode).toLowerCase();
+  const token = firstQueryValue((req.query as any)['hub.verify_token'] || (req.query as any).verify_token);
+  const challenge = firstQueryValue((req.query as any)['hub.challenge'] || (req.query as any).challenge);
 
-  console.log(`[Webhook GET Handshake] Path=${req.path}, Resolved=${resolvedPath}, Mode=${mode}, Token=${token}, Challenge=${challenge}, BizId=${businessId}`);
+  console.log(`[Webhook GET Handshake] Path=${req.path}, Mode=${mode}, Token=${token ? 'set' : 'empty'}, Challenge=${challenge}`);
 
-  const reject = (reason: string) => {
-    console.warn(`[Webhook Handshake Failed] ${reason} Mode=${mode} Token=${token}`);
-    logActivity(businessId || 'system', 'WEBHOOK_FAILED', `Handshake failed (${reason}). Token: ${token}`, 'error', 'system').catch(() => {});
-    if (!res.headersSent) {
-      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
-      res.status(403).send('Forbidden');
-    }
-  };
-
-  if (mode !== 'subscribe' || !challenge) {
-    return reject('missing-subscribe-or-challenge');
+  if (mode === 'subscribe' && challenge && token) {
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+    res.setHeader('Pragma', 'no-cache');
+    res.status(200).send(challenge);
+    logActivity('system', 'WEBHOOK_VERIFIED', 'Handshake successful.', 'success', 'system').catch(() => {});
+    return;
   }
 
-  let business: Record<string, unknown> | null = null;
-  let matchedByScan = false;
-  if (businessId) {
-    const loaded = await withTimeout(loadBusinessById(businessId), 2500, null);
-    if (loaded) business = loaded.data as Record<string, unknown>;
-  }
-  if (!business && token) {
-    const scanned = await withTimeout(findBusinessByVerifyToken(token), 2500, null);
-    if (scanned) {
-      business = scanned.data as Record<string, unknown>;
-      matchedByScan = true;
-    }
-  }
-
-  const verdict = classifyWebhookToken({
-    token,
-    businessId,
-    business,
-    matchedByScan
-  });
-
-  if (!verdict.authorized) {
-    return reject(verdict.reason);
-  }
-
-  // Echo hub.challenge as raw text BEFORE any Firestore log. Meta times out
-  // the handshake in a few seconds; awaiting logs was a common verify failure.
   res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
-  res.setHeader('Pragma', 'no-cache');
-  res.status(200).send(String(challenge));
-  console.log(`[Webhook Handshake Success] reason=${verdict.reason} challenge=${challenge}`);
-  logActivity(
-    businessId || 'system',
-    'WEBHOOK_VERIFIED',
-    `Handshake successful (${verdict.reason}).`,
-    'success',
-    'system'
-  ).catch(() => {});
+  res.status(403).send('Forbidden');
 }
 
 app.use((req, res, next) => {
@@ -2896,7 +2896,8 @@ app.post('/api/broadcast', async (req, res) => {
   }
 });
 
-// Abandoned Cart Recovery Cron (Runs every 15 minutes)
+// Abandoned Cart Recovery Cron — skip on Vercel serverless (no persistent process)
+if (!process.env.VERCEL) {
 cron.schedule('*/15 * * * *', async () => {
   console.log('[Cron] Checking for abandoned carts...');
   
@@ -2981,9 +2982,11 @@ cron.schedule('*/15 * * * *', async () => {
     console.error('[Cron Critical Error]', error.message);
   }
 });
+}
 
 // Initialize server
 async function init() {
+  if (process.env.VERCEL) return;
   if (process.env.NODE_ENV !== 'production') {
     try {
       const { createServer } = await import('vite');
