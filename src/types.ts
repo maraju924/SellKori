@@ -49,6 +49,7 @@ export interface BusinessFeatures {
   invoicingEnabled?: boolean;
   autoCourierBookingEnabled?: boolean;
   broadcastingEnabled?: boolean;
+  commentToInboxEnabled?: boolean;
   analyticsEnabled?: boolean;
   proactiveNotificationsEnabled?: boolean;
   humanHandoverEnabled?: boolean;
@@ -104,6 +105,9 @@ export interface BusinessConfig {
   pageAccessToken?: string;
   pageId?: string;
   facebookPageId?: string;
+  commentToInboxKeywords?: string[] | string;
+  commentInboxMessage?: string;
+  commentPublicReply?: string;
   status?: 'active' | 'suspended' | 'pending';
   plan?: 'free' | 'pro' | 'enterprise';
   verificationStatus?: 'verified' | 'pending' | 'rejected';
@@ -216,15 +220,22 @@ export interface SystemConfig {
   geminiModel?: string;
 }
 
+export type BroadcastAudience = 'all' | 'hot_leads' | 'buyers';
+
 export interface BroadcastingCampaign {
   id: string;
   businessId: string;
   title: string;
   message: string;
-  targetAudience: 'all' | 'hot_leads' | 'buyers' | 'custom';
+  targetAudience: BroadcastAudience | 'custom';
   sentCount: number;
+  failedCount?: number;
+  skippedCount?: number;
+  eligibleCount?: number;
   status: 'draft' | 'sending' | 'completed' | 'failed';
   createdAt?: any;
+  createdAtMs?: number;
+  error?: string;
 }
 
 export interface AIResponse {

@@ -692,7 +692,7 @@ export function MerchantMessengerLive({ business }: MerchantMessengerLiveProps) 
                     <span>ইভেন্ট সাবস্ক্রাইব করুন</span>
                   </div>
                   <p className="text-[11px] text-zinc-500 pl-7">
-                    Webhooks ফিল্ডে <code className="bg-zinc-200 dark:bg-zinc-700 px-1 py-0.5 rounded font-mono text-[10px]">messages</code> এবং <code className="bg-zinc-200 dark:bg-zinc-700 px-1 py-0.5 rounded font-mono text-[10px]">messaging_postbacks</code> এ টিক দিয়ে সাবস্ক্রাইব করুন।
+                    Webhooks ফিল্ডে <code className="bg-zinc-200 dark:bg-zinc-700 px-1 py-0.5 rounded font-mono text-[10px]">messages</code>, <code className="bg-zinc-200 dark:bg-zinc-700 px-1 py-0.5 rounded font-mono text-[10px]">messaging_postbacks</code> এবং কমেন্ট-টু-ইনবক্সের জন্য <code className="bg-zinc-200 dark:bg-zinc-700 px-1 py-0.5 rounded font-mono text-[10px]">feed</code> এ টিক দিয়ে সাবস্ক্রাইব করুন।
                   </p>
                 </div>
 
