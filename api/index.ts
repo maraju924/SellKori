@@ -1393,7 +1393,6 @@ function sanitizePublicBusiness(id: string, data: any) {
   const faqs = Array.isArray(data.faqs) ? data.faqs : [];
   return {
     id,
-    ownerId: '',
     name: String(data.name || 'Store'),
     description: String(data.description || '').slice(0, 1_000),
     phone: String(data.phone || '').slice(0, 30),
