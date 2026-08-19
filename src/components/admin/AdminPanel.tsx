@@ -24,7 +24,7 @@ export function AdminPanel({ profile }: AdminPanelProps) {
 
   useEffect(() => {
     return onSnapshot(collection(db, 'businesses'), (snap) => {
-      setMerchants(snap.docs.map(d => ({ id: d.id, ...d.data() } as BusinessConfig)));
+      setMerchants(snap.docs.map(d => ({ ...d.data(), id: d.id } as BusinessConfig)));
       setLoading(false);
     });
   }, []);

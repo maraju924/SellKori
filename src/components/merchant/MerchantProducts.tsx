@@ -38,20 +38,66 @@ import {
 } from '../ui/dialog';
 import { BusinessConfig, Product, ProductTier } from '../../types';
 import { db } from '../../lib/firebase';
-import { doc, updateDoc } from 'firebase/firestore';
+import { doc, getDoc, updateDoc, serverTimestamp } from 'firebase/firestore';
 import { toast } from 'sonner';
 import { compressImageFile } from '../../lib/imageUtils';
-import { persistImageDataUrl } from '../../lib/mediaUpload';
-import { cleanFirestoreData } from '../../lib/utils';
+import { persistImageDataUrl, persistImageList } from '../../lib/mediaUpload';
+import { cleanFirestoreData, finiteNumber } from '../../lib/utils';
 
 interface MerchantProductsProps {
   business: BusinessConfig;
+}
+
+function sameProductId(a?: string | number | null, b?: string | number | null): boolean {
+  if (a == null || b == null) return false;
+  const left = String(a).trim();
+  const right = String(b).trim();
+  return left.length > 0 && left === right;
+}
+
+function normalizeTier(tier: Partial<ProductTier>, fallbackPrice = 0): ProductTier {
+  const price = finiteNumber(tier.price, fallbackPrice);
+  return {
+    quantity: Math.max(1, Math.round(finiteNumber(tier.quantity, 1))),
+    price,
+    minPrice: finiteNumber(tier.minPrice, price),
+    label: tier.label || undefined
+  };
+}
+
+function replaceEditedProduct(
+  list: Product[],
+  payload: Product,
+  editing: Product,
+  editingIndex: number | null
+): Product[] {
+  const byId = list.findIndex(p => sameProductId(p.id, editing.id) || sameProductId(p.id, payload.id));
+  if (byId >= 0) {
+    return list.map((p, i) => (i === byId ? payload : p));
+  }
+
+  if (editingIndex != null && editingIndex >= 0 && editingIndex < list.length) {
+    return list.map((p, i) => (i === editingIndex ? payload : p));
+  }
+
+  const editingName = (editing.name || '').trim();
+  const byName = editingName
+    ? list.filter(p => (p.name || '').trim() === editingName)
+    : [];
+  if (byName.length === 1) {
+    const idx = list.findIndex(p => (p.name || '').trim() === editingName);
+    return list.map((p, i) => (i === idx ? payload : p));
+  }
+
+  // Last resort: still persist the merchant's edits instead of silently no-op.
+  return [...list, payload];
 }
 
 export function MerchantProducts({ business }: MerchantProductsProps) {
   const [searchTerm, setSearchTerm] = useState('');
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
+  const [editingIndex, setEditingIndex] = useState<number | null>(null);
 
   // Form State
   const [name, setName] = useState('');
@@ -82,9 +128,11 @@ export function MerchantProducts({ business }: MerchantProductsProps) {
 
   const productFileInputRef = useRef<HTMLInputElement>(null);
   const reviewFileInputRef = useRef<HTMLInputElement>(null);
+  const savingRef = useRef(false);
 
   const openAddModal = () => {
     setEditingProduct(null);
+    setEditingIndex(null);
     setName('');
     setPricingMode('tiered');
     setSinglePrice(500);
@@ -104,21 +152,27 @@ export function MerchantProducts({ business }: MerchantProductsProps) {
   };
 
   const openEditModal = (prod: Product) => {
+    const catalog = business.products || [];
+    const idx = catalog.findIndex(p => p === prod || sameProductId(p.id, prod.id));
     setEditingProduct(prod);
-    setName(prod.name);
-    
+    setEditingIndex(idx >= 0 ? idx : null);
+    setName(prod.name || '');
+
     if (prod.pricingTiers && prod.pricingTiers.length > 0) {
+      const normalized = prod.pricingTiers.map(t => normalizeTier(t, finiteNumber(prod.price, 0)));
       setPricingMode('tiered');
-      setPricingTiers(prod.pricingTiers);
-      const tier1 = prod.pricingTiers.find(t => t.quantity === 1) || prod.pricingTiers[0];
+      setPricingTiers(normalized);
+      const tier1 = normalized.find(t => t.quantity === 1) || normalized[0];
       setSinglePrice(tier1.price);
       setSingleMinPrice(tier1.minPrice);
     } else {
+      const price = finiteNumber(prod.price, 0);
+      const minPrice = finiteNumber(prod.minPrice, price);
       setPricingMode('single');
-      setSinglePrice(prod.price);
-      setSingleMinPrice(prod.minPrice || prod.price);
+      setSinglePrice(price);
+      setSingleMinPrice(minPrice);
       setPricingTiers([
-        { quantity: 1, price: prod.price, minPrice: prod.minPrice || prod.price, label: '১ পিস' }
+        { quantity: 1, price, minPrice, label: '১ পিস' }
       ]);
     }
 
@@ -267,14 +321,24 @@ export function MerchantProducts({ business }: MerchantProductsProps) {
     setReviewImages(reviewImages.filter((_, i) => i !== index));
   };
 
-  const handleSaveProduct = async () => {
+  const handleSaveProduct = async (e?: React.FormEvent | React.MouseEvent) => {
+    e?.preventDefault?.();
+    e?.stopPropagation?.();
+
+    if (savingRef.current || isSubmitting || isUploadingImages || isUploadingReviews) return;
+
+    if (!business?.id) {
+      toast.error('স্টোর আইডি পাওয়া যায়নি। পেজ রিফ্রেশ করে আবার চেষ্টা করুন।');
+      return;
+    }
+
     if (!name.trim()) {
       toast.error('প্রোডাক্টের নাম লিখুন');
       return;
     }
 
-    let finalPrice = singlePrice;
-    let finalMinPrice = singleMinPrice;
+    let finalPrice = finiteNumber(singlePrice, 0);
+    let finalMinPrice = finiteNumber(singleMinPrice, finalPrice);
     let finalTiers: ProductTier[] = [];
 
     if (pricingMode === 'tiered') {
@@ -283,8 +347,8 @@ export function MerchantProducts({ business }: MerchantProductsProps) {
         return;
       }
 
-      // Validate each tier
-      for (const tier of pricingTiers) {
+      const normalizedTiers = pricingTiers.map(t => normalizeTier(t, 0));
+      for (const tier of normalizedTiers) {
         if (!tier.price || tier.price <= 0) {
           toast.error(`কোয়ান্টিটি ${tier.quantity} এর জন্য সঠিক বিক্রয় মূল্য দিন`);
           return;
@@ -295,90 +359,131 @@ export function MerchantProducts({ business }: MerchantProductsProps) {
         }
       }
 
-      // Sort tiers by quantity ascending
-      finalTiers = [...pricingTiers].sort((a, b) => a.quantity - b.quantity);
-      
+      finalTiers = [...normalizedTiers].sort((a, b) => a.quantity - b.quantity);
+
       const tier1 = finalTiers.find(t => t.quantity === 1) || finalTiers[0];
       finalPrice = tier1.price;
-      finalMinPrice = tier1.minPrice;
+      finalMinPrice = finiteNumber(tier1.minPrice, tier1.price);
     } else {
-      if (singlePrice <= 0) {
+      if (finalPrice <= 0) {
         toast.error('রেগুলার মূল্য সঠিকভাবে দিন');
         return;
       }
-      if (singleMinPrice > singlePrice) {
+      if (finalMinPrice > finalPrice) {
         toast.error('সর্বনিম্ন মূল্য (Min Price) কখনোই রেগুলার মূল্যের চেয়ে বেশি হতে পারে না');
         return;
       }
-      finalPrice = singlePrice;
-      finalMinPrice = singleMinPrice > 0 ? singleMinPrice : singlePrice;
+      finalMinPrice = finalMinPrice > 0 ? finalMinPrice : finalPrice;
       finalTiers = [{ quantity: 1, price: finalPrice, minPrice: finalMinPrice, label: '১ পিস' }];
     }
 
+    savingRef.current = true;
     setIsSubmitting(true);
     try {
-      const currentProducts = business.products || [];
-      let updatedProducts: Product[];
+      // Re-host leftover data-URLs so the business document stays under Firestore's 1MB cap.
+      const hostedImages = await persistImageList(images, business.id, 'product');
+      const hostedReviews = await persistImageList(reviewImages, business.id, 'review');
 
-      // Re-host any leftover data-URLs so the business document stays under Firestore's 1MB cap.
-      const hostedImages: string[] = [];
-      for (const img of images) {
-        hostedImages.push(await persistImageDataUrl(img, business.id, 'product'));
-      }
-      const hostedReviews: string[] = [];
-      for (const img of reviewImages) {
-        hostedReviews.push(await persistImageDataUrl(img, business.id, 'review'));
-      }
+      const productId = (editingProduct?.id && String(editingProduct.id).trim())
+        ? String(editingProduct.id)
+        : `prod-${Date.now()}`;
 
       const productPayload: Product = {
-        id: editingProduct ? editingProduct.id : `prod-${Date.now()}`,
-        name,
-        price: Number(finalPrice),
-        minPrice: Number(finalMinPrice),
+        ...(editingProduct || {}),
+        id: productId,
+        name: name.trim(),
+        price: finalPrice,
+        minPrice: finalMinPrice,
         pricingTiers: finalTiers,
         description,
         specs,
-        stock: Number(stock),
+        stock: finiteNumber(stock, 0),
         category: category.trim() || 'জেনারেল',
         images: hostedImages,
         reviewImages: hostedReviews,
-        isAvailable: true
+        isAvailable: editingProduct?.isAvailable ?? true
       };
 
+      const bizRef = doc(db, 'businesses', business.id);
+      const latestSnap = await getDoc(bizRef);
+      const latestData = latestSnap.exists() ? latestSnap.data() : null;
+      const currentProducts: Product[] = Array.isArray(latestData?.products)
+        ? latestData!.products
+        : (business.products || []);
+
+      let updatedProducts: Product[];
       if (editingProduct) {
-        updatedProducts = currentProducts.map(p => p.id === editingProduct.id ? productPayload : p);
+        updatedProducts = replaceEditedProduct(currentProducts, productPayload, editingProduct, editingIndex);
       } else {
         updatedProducts = [...currentProducts, productPayload];
       }
 
-      const cleanedProducts = cleanFirestoreData(updatedProducts);
+      // Convert leftover inline photos on *other* products so this write is not rejected for size.
+      const hostedCatalog: Product[] = [];
+      for (const prod of updatedProducts) {
+        if (prod.id === productPayload.id) {
+          hostedCatalog.push(productPayload);
+          continue;
+        }
+        hostedCatalog.push({
+          ...prod,
+          id: prod.id || `prod-${Date.now()}-${hostedCatalog.length}`,
+          images: await persistImageList(prod.images || [], business.id, 'product'),
+          reviewImages: await persistImageList(prod.reviewImages || [], business.id, 'review')
+        });
+      }
 
-      await updateDoc(doc(db, 'businesses', business.id), {
-        products: cleanedProducts
-      });
+      const cleanedProducts = cleanFirestoreData(hostedCatalog);
+
+      if (latestSnap.exists()) {
+        await updateDoc(bizRef, {
+          products: cleanedProducts,
+          updatedAt: serverTimestamp()
+        });
+      } else {
+        throw new Error('স্টোর ডকুমেন্ট খুঁজে পাওয়া যায়নি। পেজ রিফ্রেশ করে আবার চেষ্টা করুন।');
+      }
 
       toast.success(editingProduct ? 'প্রোডাক্ট সফলভাবে আপডেট হয়েছে!' : 'নতুন প্রোডাক্ট সফলভাবে যুক্ত হয়েছে!', {
-        description: pricingMode === 'tiered' 
+        description: pricingMode === 'tiered'
           ? `এআই এখন ১, ২, ৩ পিস বান্ডেল অফার এবং দরদামের সময় Min Price সীমার মধ্যে স্মার্টলি বিক্রয় করবে।`
           : `এআই এখন রেগুলার ৳${finalPrice} এবং সর্বনিম্ন ৳${finalMinPrice} সীমার মধ্যে দরদাম করবে।`
       });
 
       setIsModalOpen(false);
-    } catch (e: any) {
-      console.error('[Save Product Error]', e);
-      toast.error(e?.message ? `সংরক্ষণ ব্যর্থ: ${e.message}` : 'প্রোডাক্ট সংরক্ষণ করতে সমস্যা হয়েছে');
+    } catch (err: any) {
+      console.error('[Save Product Error]', err);
+      const message = String(err?.message || '');
+      if (/NaN|unsupported field value|invalid-argument/i.test(message)) {
+        toast.error('সংরক্ষণ ব্যর্থ: মূল্য/স্টক সংখ্যা সঠিক নয়। সব প্রাইস ফিল্ড পূরণ করে আবার চেষ্টা করুন।');
+      } else if (/exceed|too large|1 MiB|1MB|payload/i.test(message)) {
+        toast.error('সংরক্ষণ ব্যর্থ: প্রোডাক্ট ছবি খুব বড়। কিছু ছবি কমিয়ে আবার সেভ করুন।');
+      } else {
+        toast.error(message ? `সংরক্ষণ ব্যর্থ: ${message}` : 'প্রোডাক্ট সংরক্ষণ করতে সমস্যা হয়েছে');
+      }
     } finally {
+      savingRef.current = false;
       setIsSubmitting(false);
     }
   };
 
   const handleDeleteProduct = async (prodId: string) => {
     if (!window.confirm('আপনি কি নিশ্চিত এই প্রোডাক্টটি মুছে ফেলতে চান?')) return;
+    if (!business?.id) {
+      toast.error('স্টোর আইডি পাওয়া যায়নি');
+      return;
+    }
     try {
-      const updatedProducts = (business.products || []).filter(p => p.id !== prodId);
+      const bizRef = doc(db, 'businesses', business.id);
+      const latestSnap = await getDoc(bizRef);
+      const latestProducts: Product[] = Array.isArray(latestSnap.data()?.products)
+        ? latestSnap.data()!.products
+        : (business.products || []);
+      const updatedProducts = latestProducts.filter(p => !sameProductId(p.id, prodId));
       const cleanedProducts = cleanFirestoreData(updatedProducts);
-      await updateDoc(doc(db, 'businesses', business.id), {
-        products: cleanedProducts
+      await updateDoc(bizRef, {
+        products: cleanedProducts,
+        updatedAt: serverTimestamp()
       });
       toast.success('প্রোডাক্ট মুছে ফেলা হয়েছে');
     } catch (e: any) {
@@ -615,9 +720,19 @@ export function MerchantProducts({ business }: MerchantProductsProps) {
       )}
 
       {/* Comprehensive Add / Edit Product Modal */}
-      <Dialog open={isModalOpen} onOpenChange={setIsModalOpen}>
-        <DialogContent className="max-w-2xl sm:max-w-2xl max-h-[92vh] overflow-y-auto rounded-3xl p-6 space-y-5">
-          <DialogHeader className="pb-2 border-b border-zinc-100 dark:border-zinc-800">
+      <Dialog
+        open={isModalOpen}
+        onOpenChange={(open) => {
+          if (isSubmitting) return;
+          setIsModalOpen(open);
+        }}
+      >
+        <DialogContent
+          className="max-w-2xl sm:max-w-2xl max-h-[92vh] overflow-hidden flex flex-col rounded-3xl p-0 gap-0"
+          onClick={(e: React.MouseEvent) => e.stopPropagation()}
+        >
+          <form onSubmit={handleSaveProduct} className="flex flex-col max-h-[92vh] min-h-0">
+          <DialogHeader className="px-6 pt-6 pb-2 border-b border-zinc-100 dark:border-zinc-800 shrink-0">
             <div className="flex items-center gap-2">
               <div className="w-9 h-9 rounded-2xl bg-orange-500/10 border border-orange-500/20 text-orange-500 flex items-center justify-center">
                 <Sparkles className="w-5 h-5" />
@@ -633,7 +748,7 @@ export function MerchantProducts({ business }: MerchantProductsProps) {
             </div>
           </DialogHeader>
 
-          <div className="space-y-6 py-1 text-xs">
+          <div className="flex-1 overflow-y-auto px-6 space-y-6 py-4 text-xs min-h-0">
             {/* 1. Basic Product Info */}
             <div className="space-y-3">
               <h4 className="font-black text-xs text-zinc-900 dark:text-white flex items-center gap-1.5">
@@ -1066,8 +1181,9 @@ export function MerchantProducts({ business }: MerchantProductsProps) {
             </div>
           </div>
 
-          <DialogFooter className="gap-2 pt-3 border-t border-zinc-100 dark:border-zinc-800">
+          <DialogFooter className="mx-0 mb-0 gap-2 px-6 py-4 shrink-0 rounded-b-3xl border-t border-zinc-100 dark:border-zinc-800">
             <Button
+              type="button"
               variant="outline"
               onClick={() => setIsModalOpen(false)}
               className="rounded-2xl text-xs font-bold h-11 px-5"
@@ -1075,6 +1191,7 @@ export function MerchantProducts({ business }: MerchantProductsProps) {
               বাতিল
             </Button>
             <Button
+              type="submit"
               onClick={handleSaveProduct}
               disabled={isSubmitting || isUploadingImages || isUploadingReviews}
               className="bg-linear-to-r from-orange-600 to-amber-500 hover:from-orange-700 hover:to-amber-600 text-white rounded-2xl text-xs font-black px-6 h-11 shadow-md shadow-orange-600/20"
@@ -1082,6 +1199,7 @@ export function MerchantProducts({ business }: MerchantProductsProps) {
               {isSubmitting ? 'সংরক্ষণ হচ্ছে...' : (editingProduct ? 'আপডেট সেভ করুন' : 'প্রোডাক্ট সংরক্ষণ করুন')}
             </Button>
           </DialogFooter>
+          </form>
         </DialogContent>
       </Dialog>
     </div>

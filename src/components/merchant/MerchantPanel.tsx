@@ -91,7 +91,10 @@ export function MerchantPanel({ user, profile }: MerchantPanelProps) {
       if (!snapshot.empty) {
         const docSnap = snapshot.docs[0];
         const data = docSnap.data() as BusinessConfig;
-        setBusiness({ ...data, id: data.id || docSnap.id });
+        // Always use the Firestore document ID for writes. Using `data.id`
+        // when it differs from the doc path makes updateDoc a no-op / not-found
+        // — product edits look like they save but never persist.
+        setBusiness({ ...data, id: docSnap.id });
       } else {
         const newId = `biz-${Date.now()}`;
         const initialConfig: BusinessConfig = {
