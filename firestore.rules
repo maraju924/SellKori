@@ -105,6 +105,14 @@ service cloud.firestore {
       allow create, read, write: if true; 
     }
 
+    match /messenger_logs/{logId} {
+      allow create, read, write: if true;
+    }
+
+    match /chats/{chatId} {
+      allow create, read, write: if true;
+    }
+
     match /chat_history/{msgId} {
       allow read, write: if true;
     }

@@ -726,32 +726,35 @@ app.post(webhookPaths, async (req, res) => {
               continue;
             }
 
-            // Retrieve recent chat history for context
+            // Retrieve recent chat history for context (Robust multi-source)
             let chatHistoryText = '';
             try {
+              // 1. Try reading the unified chats doc which has messages array
+              let chatDocData: any = null;
               if (adminDb) {
-                const historySnap = await adminDb.collection('chat_history')
-                  .where('businessId', '==', bizId)
-                  .where('senderId', '==', senderId)
-                  .orderBy('timestamp', 'desc')
-                  .limit(6)
-                  .get();
-                if (!historySnap.empty) {
-                  const msgs = historySnap.docs.map((d: any) => d.data()).reverse();
-                  chatHistoryText = msgs.map((m: any) => `${m.role === 'user' ? 'Customer' : 'Bot'}: ${m.text}`).join('\n');
-                }
+                const cSnap = await adminDb.collection('chats').doc(`${bizId}_${senderId}`).get();
+                if (cSnap.exists) chatDocData = cSnap.data();
               } else if (db) {
-                const qHist = query(
-                  collection(db, 'chat_history'),
-                  where('businessId', '==', bizId),
-                  where('senderId', '==', senderId),
-                  orderBy('timestamp', 'desc'),
-                  limit(6)
-                );
-                const snapHist = await getDocs(qHist);
-                if (!snapHist.empty) {
-                  const msgs = snapHist.docs.map((d: any) => d.data()).reverse();
-                  chatHistoryText = msgs.map((m: any) => `${m.role === 'user' ? 'Customer' : 'Bot'}: ${m.text}`).join('\n');
+                const cSnap = await getDoc(doc(db, 'chats', `${bizId}_${senderId}`));
+                if (cSnap.exists()) chatDocData = cSnap.data();
+              }
+
+              if (chatDocData && Array.isArray(chatDocData.messages) && chatDocData.messages.length > 0) {
+                const recentMsgs = chatDocData.messages.slice(-8);
+                chatHistoryText = recentMsgs.map((m: any) => `${m.role === 'user' ? 'Customer' : 'Bot'}: ${m.text}`).join('\n');
+              } else {
+                // 2. Fallback to chat_history collection query
+                if (adminDb) {
+                  const historySnap = await adminDb.collection('chat_history')
+                    .where('businessId', '==', bizId)
+                    .where('senderId', '==', senderId)
+                    .limit(10)
+                    .get();
+                  if (!historySnap.empty) {
+                    const msgs = historySnap.docs.map((d: any) => d.data());
+                    msgs.sort((a: any, b: any) => (a.timestamp?.seconds || 0) - (b.timestamp?.seconds || 0));
+                    chatHistoryText = msgs.slice(-8).map((m: any) => `${m.role === 'user' ? 'Customer' : 'Bot'}: ${m.text}`).join('\n');
+                  }
                 }
               }
             } catch (histErr) {
@@ -809,33 +812,34 @@ app.post(webhookPaths, async (req, res) => {
               .map((f: any) => `[Product: ${f.productName || f.productId}] Q: ${f.question} -> A: ${f.answer}`)
               .join('\n');
 
-            const prompt = `তুমি "${businessData.name}" এর জন্য একজন অত্যন্ত দক্ষ, বিনয়ী ও পেশাদার সেলস অ্যাসিস্ট্যান্ট। তোমার কাজ হলো কাস্টমারের সাথে বন্ধুত্বপূর্ণ আচরণ করা, পণ্যের সঠিক তথ্য দেওয়া এবং অর্ডার নেওয়া।
+            const prompt = `তুমি "${businessData.name}" এর একজন স্মার্ট, সংক্ষিপ্ত ও টু-দ্য-পয়েন্ট এআই সেলস অ্যাসিস্ট্যান্ট।
 
-দোকানের বর্ণনা: ${businessData.description || ''}
-পণ্যতালিকা ও প্রাইসিং অফার:
+# কঠোর নির্দেশাবলী (Strict Directives):
+১. **সংক্ষিপ্ত ও নির্দিষ্ট উত্তর:** কাস্টমার যতটুকু প্রশ্ন করবে, ঠিক ততটুকুরই সুনির্দিষ্ট, প্রাসঙ্গিক ও সংক্ষিপ্ত উত্তর দাও (১ থেকে ৩ বাক্যের মধ্যে)।
+২. **অতিরিক্ত কথা বর্জন:** কোনো অপ্রয়োজনীয় বড় ভূমিকা, লম্বা সূচনা ("হ্যালো স্যার, কেমন আছেন...", "আমাদের শপে স্বাগতম...") অথবা কাস্টমার না চাইলে জোর করে পণ্যের লম্বা তালিকা বা অফার দেবে না।
+৩. **চ্যাট হিস্ট্রি ও পূর্বপ্রসঙ্গ স্মরণ:** নিচের "পূর্ববর্তী কথোপকথন (Chat History)" মনোযোগ দিয়ে পড়ো। কাস্টমার আগে যে প্রোডাক্ট বা বিষয় নিয়ে কথা বলেছে, সেই প্রসঙ্গ মনে রেখে সরাসরি উত্তর দাও। একই কথা বারবার রিপিট করবে না।
+৪. **দরদাম ও প্রাইসিং:** কাস্টমার কোনো প্রোডাক্টের দাম বা সাইজ জানতে চাইলে শুধুমাত্র সেই প্রোডাক্টের তথ্য দাও। কাস্টমার দরদাম করলে পণ্যের সর্বনিম্ন দাম সীমা (minPrice) এর নিচে কখনোই নামবে না।
+৫. **অর্ডার নেওয়ার নিয়ম:** কাস্টমার যখন স্পষ্ট করে পণ্য অর্ডার করতে চাইবে, শুধুমাত্র তখনই বিনয়ের সাথে নাম, মোবাইল নম্বর (১১ ডিজিট) এবং সম্পূর্ণ ডেলিভারি ঠিকানা জানতে চাইবে।
+
+দোকানের তথ্য: ${businessData.description || ''}
+পণ্যতালিকা ও প্রাইসিং:
 ${JSON.stringify(products, null, 2)}
 
-সাধারণ স্টোর পলিসি FAQs (ডেলিভারি, পেমেন্ট, রিটার্ন):
-${generalFaqs || 'কোনো সাধারণ FAQ নেই।'}
+সাধারণ স্টোর FAQs (ডেলিভারি, পেমেন্ট, রিটার্ন):
+${generalFaqs || 'সাধারণ FAQ নেই।'}
 
-পণ্যভিত্তিক বিশেষ প্রশ্নোত্তর FAQs (সাইজ, মেটেরিয়াল, কোয়ালিটি):
-${productFaqs || 'কোনো পণ্যভিত্তিক FAQ নেই।'}
+পণ্যভিত্তিক FAQs:
+${productFaqs || 'পণ্যভিত্তিক FAQ নেই।'}
 
-অতিরিক্ত নিয়ম ও ব্যক্তিত্ব: ${businessData.customSystemPrompt || businessData.botPersona || ''}
+কাস্টম নির্দেশিকা: ${businessData.customSystemPrompt || businessData.botPersona || ''}
 
-নির্দেশনা:
-১. সবসময় নম্র ও মার্জিত বাংলায় কথা বলবে।
-২. কাস্টমার দাম জানতে চাইলে একক মূল্যের পাশাপাশি আকর্ষণীয় কোয়ান্টিটি বান্ডেল অফার (যেমন: ১ পিস ৫০০৳, ২ পিস ৮০০৳, ৩ পিস ১০০০৳) তুলে ধরবে যাতে কাস্টমার বেশি কিনতে উৎসাহিত হয়।
-৩. কাস্টমার সাধারণ পলিসি (ডেলিভারি, সিওডি, রিটার্ন) নিয়ে প্রশ্ন করলে 'সাধারণ স্টোর পলিসি FAQs' থেকে উত্তর দেবে।
-৪. কাস্টমার কোনো বিশেষ প্রোডাক্টের সাইজ, মেটেরিয়াল বা যত্ন নিয়ে প্রশ্ন করলে 'পণ্যভিত্তিক বিশেষ প্রশ্নোত্তর FAQs' থেকে উত্তর দেবে।
-৫. কাস্টমার দরদাম (Bargaining) করতে চাইলে সংশ্লিষ্ট কোয়ান্টিটির সর্বনিম্ন দরদাম সীমা (minPrice) বজায় রেখে নেগোসিয়েট করবে। কখনোই minPrice-এর নিচে বিক্রি করতে রাজি হবে না।
-৬. কাস্টমার যদি অর্ডার করতে চায়, তবে তাদের নাম, ফোন নম্বর (১১ ডিজিট) এবং সম্পূর্ণ ডেলিভারি ঠিকানা জানতে চাইবে।
-৭. কথা সংক্ষেপে কিন্তু কার্যকরভাবে বলবে।
+---
+পূর্ববর্তী কথোপকথন (Chat History):
+${chatHistoryText || 'নতুন আলাপ (পূর্ববর্তী কোনো মেসেজ নেই)'}
 
-সাম্প্রতিক আলাপ:
-${chatHistoryText}
+কাস্টমারের বর্তমান বার্তা: "${finalMessageText}"
 
-কাস্টমার: ${finalMessageText}`;
+সেলসম্যানের টু-দ্য-পয়েন্ট ও প্রাসঙ্গিক উত্তর (শুধুমাত্র উত্তরটি বাংলায় লেখো):`;
               
               const startTime = Date.now();
               try {
@@ -995,13 +999,33 @@ app.post('/api/messenger/simulate-message', async (req, res) => {
       category: p.category || 'General'
     }));
 
-    const prompt = `তুমি "${businessData.name || 'আমাদের স্টোর'}" এর এআই সেলস অ্যাসিস্ট্যান্ট।
-কাস্টমারের বার্তার বন্ধুত্বপূর্ণ ও তথ্যবহুল উত্তর দাও।
+    // Fetch simulated user chat history if any
+    let simHistory = '';
+    try {
+      if (adminDb) {
+        const cSnap = await adminDb.collection('chats').doc(`${businessId}_${senderId}`).get();
+        if (cSnap.exists && Array.isArray(cSnap.data()?.messages)) {
+          simHistory = cSnap.data()?.messages.slice(-6).map((m: any) => `${m.role === 'user' ? 'Customer' : 'Bot'}: ${m.text}`).join('\n');
+        }
+      }
+    } catch (e) {}
+
+    const prompt = `তুমি "${businessData.name || 'আমাদের স্টোর'}" এর এআই সেলসম্যান।
+
+# কঠোর নিয়মাবলী:
+১. **সংক্ষিপ্ত ও নির্দিষ্ট উত্তর:** কাস্টমার যা জানতে চেয়েছে ঠিক ততটুকুরই সুনির্দিষ্ট, প্রাসঙ্গিক ও টু-দ্য-পয়েন্ট উত্তর দাও (১-৩ বাক্যের মধ্যে)।
+২. **অতিরিক্ত কথা না বলা:** কোনো অপ্রয়োজনীয় বড় ভূমিকা, সালাম-স্বাগত ভাষণ বা না চাওয়া তথ্য দেবে না।
+৩. **প্রসঙ্গ স্মরণ:** পূর্বের চ্যাট হিস্ট্রি দেখে প্রাসঙ্গিক উত্তর দাও।
 
 পণ্যতালিকা:
 ${JSON.stringify(products, null, 2)}
 
-কাস্টমার: ${message}`;
+পূর্ববর্তী চ্যাট হিস্ট্রি:
+${simHistory || 'নতুন আলাপ'}
+
+কাস্টমার: "${message}"
+
+টু-দ্য-পয়েন্ট উত্তর:`;
 
     const response = await ai.models.generateContent({
       model: aiConfig.model,
