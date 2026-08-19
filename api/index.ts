@@ -7,7 +7,7 @@ import cron from 'node-cron';
 import admin from 'firebase-admin';
 import { getFirestore as getAdminFirestore, FieldValue } from 'firebase-admin/firestore';
 import { getApp, getApps, initializeApp } from 'firebase/app';
-import { getFirestore, doc, getDoc, collection, addDoc, setDoc, updateDoc, deleteDoc, serverTimestamp, query, where, getDocs, orderBy, limit, Timestamp } from 'firebase/firestore';
+import { getFirestore, doc, getDoc, collection, addDoc, setDoc, updateDoc, deleteDoc, serverTimestamp, query, where, getDocs, orderBy, limit, Timestamp, increment } from 'firebase/firestore';
 import fs from 'fs';
 import { createHash } from 'crypto';
 import dotenv from 'dotenv';
@@ -1068,15 +1068,33 @@ interface AiGenerateOptions {
   schema?: any;
   temperature?: number;
   maxTokens?: number;
+  // Merchant's own Gemini key tried first — usage on it is NOT billed
+  preferredKeys?: PooledGeminiKey[];
 }
 
-async function aiGenerate(opts: AiGenerateOptions): Promise<{ text: string; provider: string; keyLabel: string }> {
+interface AiGenerateResult {
+  text: string;
+  provider: string;
+  keyLabel: string;
+  tokensUsed: number;
+  merchantKeyUsed: boolean;
+}
+
+function estimateTokens(promptText: string, replyText: string): number {
+  return Math.max(50, Math.ceil((String(promptText).length + String(replyText).length) / 4));
+}
+
+async function aiGenerate(opts: AiGenerateOptions): Promise<AiGenerateResult> {
   const pool = await getAiPool();
   const models = Array.from(new Set([opts.model, 'gemini-3.1-flash-lite'].filter(Boolean)));
+  const geminiCandidates: PooledGeminiKey[] = [
+    ...(opts.preferredKeys || []),
+    ...pool.geminiKeys,
+  ];
   let lastErr: any = null;
 
-  for (const gk of pool.geminiKeys) {
-    if (!gk.enabled || !aiKeyAvailable(gk.key)) continue;
+  for (const gk of geminiCandidates) {
+    if (!gk.enabled || !gk.key || !aiKeyAvailable(gk.key)) continue;
     for (const modelName of models) {
       try {
         const ai = new GoogleGenAI({ apiKey: gk.key });
@@ -1094,7 +1112,17 @@ async function aiGenerate(opts: AiGenerateOptions): Promise<{ text: string; prov
           config,
         });
         const text = r.text?.trim() || '';
-        if (text) return { text, provider: 'gemini', keyLabel: gk.label };
+        if (text) {
+          const usage: any = (r as any).usageMetadata || {};
+          const tokensUsed = Number(usage.totalTokenCount) || estimateTokens(opts.textPrompt, text);
+          return {
+            text,
+            provider: 'gemini',
+            keyLabel: gk.label,
+            tokensUsed,
+            merchantKeyUsed: gk.label === 'merchant-own',
+          };
+        }
       } catch (err: any) {
         lastErr = err;
         const kind = classifyAiError(err);
@@ -1128,7 +1156,10 @@ async function aiGenerate(opts: AiGenerateOptions): Promise<{ text: string; prov
         timeout: 30000,
       });
       const text = String(r.data?.choices?.[0]?.message?.content || '').trim();
-      if (text) return { text, provider: p.name, keyLabel: p.name };
+      if (text) {
+        const tokensUsed = Number(r.data?.usage?.total_tokens) || estimateTokens(opts.textPrompt, text);
+        return { text, provider: p.name, keyLabel: p.name, tokensUsed, merchantKeyUsed: false };
+      }
     } catch (err: any) {
       lastErr = err;
       const kind = classifyAiError(err);
@@ -1137,6 +1168,61 @@ async function aiGenerate(opts: AiGenerateOptions): Promise<{ text: string; prov
   }
 
   throw lastErr || new Error('সব AI প্রোভাইডার ব্যর্থ হয়েছে — অ্যাডমিন প্যানেলে API Key যাচাই করুন।');
+}
+
+// ---------------------------------------------------------------------------
+// Token metering: every AI answer on the central pool is billed against the
+// merchant's token wallet. Merchants using their OWN Gemini key are free.
+// When the wallet is empty the bot stops answering (silently to customers,
+// loudly to the merchant via the activity log).
+// ---------------------------------------------------------------------------
+function merchantOwnGeminiKey(businessData: any): PooledGeminiKey[] {
+  const ownKey = businessData?.useOwnApiKey ? String(businessData?.customGeminiApiKey || '').trim() : '';
+  return ownKey ? [{ key: ownKey, label: 'merchant-own', enabled: true }] : [];
+}
+
+function hasTokenBalance(businessData: any): boolean {
+  if (merchantOwnGeminiKey(businessData).length > 0) return true; // own key = own cost
+  const bal = businessData?.tokenBalance;
+  // Legacy stores without the field get grace: the first charge materializes
+  // the field (negative), after which the gate enforces normally.
+  if (bal === undefined || bal === null) return true;
+  return Number(bal) > 0;
+}
+
+async function chargeAiUsage(bizId: string, result: AiGenerateResult, source: string) {
+  if (!bizId || result.merchantKeyUsed) return;
+  const tokens = Math.max(1, Math.round(result.tokensUsed));
+  try {
+    if (adminDb) {
+      await adminDb.collection('businesses').doc(bizId).update({
+        tokenBalance: admin.firestore.FieldValue.increment(-tokens),
+        totalTokensUsed: admin.firestore.FieldValue.increment(tokens),
+        aiMessagesCount: admin.firestore.FieldValue.increment(1),
+      });
+      return;
+    }
+    if (db) {
+      // Unauthenticated fallback — succeeds only if rules permit; usage is
+      // still recorded in logs either way.
+      await updateDoc(doc(db, 'businesses', bizId), {
+        tokenBalance: increment(-tokens),
+        totalTokensUsed: increment(tokens),
+        aiMessagesCount: increment(1),
+      } as any);
+    }
+  } catch (e: any) {
+    console.warn(`[TokenMeter] charge failed for ${bizId} (${source}):`, e?.message);
+  }
+}
+
+// Notify the merchant at most once per 30 minutes that the wallet is empty
+const tokenEmptyNotifiedAt = new Map<string, number>();
+async function notifyTokensEmpty(bizId: string, ownerId?: string) {
+  const last = tokenEmptyNotifiedAt.get(bizId) || 0;
+  if (Date.now() - last < 30 * 60 * 1000) return;
+  tokenEmptyNotifiedAt.set(bizId, Date.now());
+  await logActivity(bizId, 'TOKEN_EMPTY', 'টোকেন ব্যালেন্স শেষ! বট কাস্টমারদের উত্তর দেওয়া বন্ধ রেখেছে — বিলিং থেকে রিচার্জ করুন।', 'error', ownerId);
 }
 
 function sanitizeProductsForPrompt(products: any[] = []) {
@@ -2008,6 +2094,14 @@ app.post('/api/chat/respond', async (req, res) => {
       });
     }
 
+    // Prepaid gate: central-pool usage requires wallet balance
+    if (!hasMerchantKey && !hasTokenBalance(business.data)) {
+      return res.status(402).json({
+        code: 'TOKENS_EXHAUSTED',
+        error: 'এই স্টোরের AI ব্যালেন্স শেষ। স্টোর মালিক রিচার্জ করলে আবার চালু হবে।',
+      });
+    }
+
     // Try up to 3 keys from the pool so one exhausted free-tier key never
     // takes the public chat down.
     const pool = await getAiPool();
@@ -2037,6 +2131,21 @@ app.post('/api/chat/respond', async (req, res) => {
         error: 'AI সহকারী এই মুহূর্তে উত্তর দিতে পারছে না।',
       });
     }
+
+    if (!hasMerchantKey) {
+      const usedTokens = estimateTokens(
+        `${message}\n${String(req.body?.history || '').slice(-30_000)}`,
+        JSON.stringify(response)
+      );
+      chargeAiUsage(business.id, {
+        text: '',
+        provider: 'gemini',
+        keyLabel: 'chat',
+        tokensUsed: usedTokens,
+        merchantKeyUsed: false,
+      }, 'web-chat').catch(() => {});
+    }
+
     res.setHeader('Cache-Control', 'no-store');
     return res.json({ response });
   } catch (error: any) {
@@ -2588,6 +2697,20 @@ async function handleMessengerWebhookPost(req: any, res: any) {
               continue;
             }
 
+            // Token wallet gate: central-pool AI is prepaid. Empty wallet =
+            // bot goes silent for customers, merchant gets an activity alert.
+            if (!hasTokenBalance(businessData)) {
+              await notifyTokensEmpty(bizId!, ownerId);
+              await saveMessengerLog(bizId!, {
+                senderId,
+                pageId: cleanPageId,
+                message: finalMessageText,
+                status: 'error',
+                error: 'টোকেন ব্যালেন্স শেষ — উত্তর পাঠানো হয়নি। বিলিং থেকে রিচার্জ করুন।'
+              });
+              continue;
+            }
+
             let downloadedMedia: DownloadedMedia[] = [];
             if (incomingMedia.length > 0) {
               downloadedMedia = await downloadIncomingMedia(incomingMedia, pageAccessToken);
@@ -2715,11 +2838,14 @@ ${chatHistoryText || 'নতুন আলাপ'}
                   schema: webhookResponseSchema,
                   temperature: aiConfig.temperature,
                   maxTokens: aiConfig.maxTokens,
+                  preferredKeys: merchantOwnGeminiKey(businessData),
                 });
                 responseText = aiResult.text;
                 if (aiResult.provider !== 'gemini') {
                   console.log(`[Webhook] Reply served by fallback provider: ${aiResult.provider}`);
                 }
+                // Bill the merchant's wallet with the REAL token usage
+                chargeAiUsage(bizId!, aiResult, 'messenger').catch(() => {});
 
                 const latencyMs = Date.now() - startTime;
                 
@@ -2976,13 +3102,8 @@ ${chatHistoryText || 'নতুন আলাপ'}
                   latencyMs
                 });
 
-                // Update Tenant AI Message & Token Counter
-                if (adminDb) {
-                  await adminDb.collection('businesses').doc(bizId!).update({
-                    aiMessagesCount: admin.firestore.FieldValue.increment(1),
-                    totalTokensUsed: admin.firestore.FieldValue.increment(180)
-                  }).catch(() => {});
-                }
+                // (Token wallet already charged with real usage right after
+                // the AI call — see chargeAiUsage above.)
 
                 console.log('[Webhook] Reply sequence finished successfully');
                 await logActivity(bizId!, 'REPLY_SENT', `উত্তর পাঠানো হয়েছে: "${reply.substring(0, 50)}..."`, 'success', ownerId);
@@ -3392,6 +3513,10 @@ app.post('/api/messenger/simulate-message', async (req, res) => {
     return res.status(400).json({ success: false, error: 'সেন্ট্রাল জেমিনি এপিআই কি কনফিগার করা নেই। অ্যাডমিন প্যানেল থেকে দিন।' });
   }
 
+  if (!hasTokenBalance(businessData)) {
+    return res.status(402).json({ success: false, error: 'টোকেন ব্যালেন্স শেষ! বিলিং ট্যাব থেকে রিচার্জ করুন — তারপর বট আবার চলবে।' });
+  }
+
   const startTime = Date.now();
   try {
     const products = (businessData.products || []).map((p: any) => ({
@@ -3435,8 +3560,10 @@ ${simHistory || 'নতুন আলাপ'}
       model: aiConfig.model,
       temperature: aiConfig.temperature,
       maxTokens: aiConfig.maxTokens,
+      preferredKeys: merchantOwnGeminiKey(businessData),
     });
     const response = { text: aiResult.text } as { text?: string };
+    chargeAiUsage(businessId, aiResult, 'simulator').catch(() => {});
 
     const reply = response.text?.trim() || 'ধন্যবাদ! আপনার মেসেজ পেয়েছি।';
     const latencyMs = Date.now() - startTime;

@@ -294,6 +294,31 @@ export function MerchantPanel({ user, profile }: MerchantPanelProps) {
 
         {/* Center Content Workspace */}
         <main className="flex-1 p-3.5 sm:p-6 md:p-8 min-w-0">
+          {/* Prepaid token wallet alerts */}
+          {!business.useOwnApiKey && (business.tokenBalance || 0) <= 0 && activeTab !== 'billing' && (
+            <button
+              onClick={() => setActiveTab('billing')}
+              className="w-full mb-4 p-4 rounded-2xl bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900/60 text-left flex items-center justify-between gap-3"
+            >
+              <div>
+                <p className="font-black text-sm text-red-700 dark:text-red-300">টোকেন ব্যালেন্স শেষ — বট এখন কাস্টমারদের উত্তর দিচ্ছে না!</p>
+                <p className="text-[11px] text-red-600/80 dark:text-red-400/80 mt-0.5">রিচার্জ করলেই বট সাথে সাথে আবার চালু হবে। এখানে চেপে বিলিং-এ যান।</p>
+              </div>
+              <span className="shrink-0 px-3 py-1.5 rounded-xl bg-red-600 text-white text-xs font-black">রিচার্জ করুন</span>
+            </button>
+          )}
+          {!business.useOwnApiKey && (business.tokenBalance || 0) > 0 && (business.tokenBalance || 0) < 50000 && activeTab !== 'billing' && (
+            <button
+              onClick={() => setActiveTab('billing')}
+              className="w-full mb-4 p-3 rounded-2xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-900/60 text-left flex items-center justify-between gap-3"
+            >
+              <p className="font-bold text-xs text-amber-700 dark:text-amber-300">
+                টোকেন প্রায় শেষ ({(business.tokenBalance || 0).toLocaleString()} বাকি) — শেষ হয়ে গেলে বট থেমে যাবে।
+              </p>
+              <span className="shrink-0 px-2.5 py-1 rounded-lg bg-amber-500 text-white text-[10px] font-black">রিচার্জ</span>
+            </button>
+          )}
+
           {activeTab === 'analytics' && (
             <MerchantOverview
               business={business}
