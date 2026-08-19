@@ -16,7 +16,7 @@ import {
   isQuietHoursNow,
   mergeFeatures,
   shouldRunAi
-} from '../src/lib/featureFlags';
+} from '../src/lib/featureFlags.js';
 import {
   BROADCAST_CONCURRENCY,
   DEFAULT_COMMENT_INBOX_MESSAGE,
@@ -30,7 +30,7 @@ import {
   planBroadcastRecipients,
   shouldPrivateReplyToComment,
   type BroadcastAudience
-} from '../src/lib/outreach';
+} from '../src/lib/outreach.js';
 
 dotenv.config();
 
@@ -156,7 +156,7 @@ import {
   normalizeClientIp,
   normalizePhone,
   trustedClientIp,
-} from '../src/lib/orderIdentity.ts';
+} from '../src/lib/orderIdentity.js';
 
 // Initialize AI
 const genAI = process.env.GEMINI_API_KEY ? new GoogleGenerativeAI(process.env.GEMINI_API_KEY) : null;

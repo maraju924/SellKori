@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { handleMetaVerifyGet } from './webhook.ts';
+import { handleMetaVerifyGet } from './webhook.js';
 
 function testEchoesChallenge() {
   const result = handleMetaVerifyGet({

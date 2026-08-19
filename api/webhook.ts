@@ -41,10 +41,10 @@ export default async function handler(req: any, res: any) {
 
   if (method === 'POST') {
     try {
-      // Keep this specifier dynamic so the verify function does not boot
-      // the full Express/Firebase app at module load.
-      const specifier = './ind' + 'ex.ts';
-      const mod = await import(specifier);
+      // Lazy import: the full Express/Firebase app boots only for POST events,
+      // never at module load, so the verify GET always stays available.
+      // On Vercel the compiled file is `index.js`; tsx resolves it to `index.ts` locally.
+      const mod = await import('./index.js');
       const app = mod.default;
       if (typeof app === 'function') return app(req, res);
     } catch (err: any) {
