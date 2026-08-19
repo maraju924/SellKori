@@ -10,6 +10,13 @@ import { initializeApp } from 'firebase/app';
 import { getFirestore, doc, getDoc, collection, addDoc, setDoc, updateDoc, deleteDoc, serverTimestamp, query, where, getDocs, orderBy, limit, Timestamp } from 'firebase/firestore';
 import fs from 'fs';
 import dotenv from 'dotenv';
+import {
+  buildFeaturePromptBlock,
+  isFeatureEnabled,
+  isQuietHoursNow,
+  mergeFeatures,
+  shouldRunAi
+} from '../src/lib/featureFlags';
 
 dotenv.config();
 
@@ -367,6 +374,21 @@ async function sendTypingOn(pageAccessToken: string, senderId: string) {
       sender_action: 'typing_on'
     }, { timeout: 5000 });
   } catch (_) {}
+}
+
+async function sendPlainText(pageAccessToken: string, senderId: string, text: string) {
+  const cleanToken = String(pageAccessToken).trim();
+  const body = {
+    recipient: { id: senderId },
+    messaging_type: 'RESPONSE',
+    message: { text: String(text || '').trim().slice(0, 1900) }
+  };
+  if (!body.message.text) return;
+  try {
+    await axios.post(`https://graph.facebook.com/v21.0/me/messages?access_token=${encodeURIComponent(cleanToken)}`, body, { timeout: 15000 });
+  } catch (_) {
+    await axios.post(`https://graph.facebook.com/v18.0/me/messages?access_token=${encodeURIComponent(cleanToken)}`, body, { timeout: 15000 });
+  }
 }
 
 // Helper to get effective Gemini Config (Admin DB or Environment)
@@ -1497,10 +1519,30 @@ app.post(webhookPaths, async (req, res) => {
               console.warn('[Webhook] Takeover check notice:', takeoverErr);
             }
 
+            const storeFeatures = mergeFeatures(businessData.features);
+            if (!shouldRunAi(storeFeatures)) {
+              if (isFeatureEnabled(storeFeatures, 'messengerRepliesEnabled')) {
+                const offline = storeFeatures.offlineMessage
+                  || (isQuietHoursNow(storeFeatures)
+                    ? 'এখন আমাদের অফলাইন সময়। সকালে আমাদের টিম আপনাকে উত্তর দিবে।'
+                    : 'ধন্যবাদ! আমাদের সেলস টিম শীঘ্রই আপনার মেসেজের উত্তর দিবে।');
+                try {
+                  await sendPlainText(pageAccessToken, senderId, offline);
+                  await saveChatMessage(bizId!, senderId, 'bot', offline);
+                  await logActivity(bizId!, 'AI_PAUSED', isQuietHoursNow(storeFeatures) ? 'নীরব সময় — অফলাইন মেসেজ পাঠানো হয়েছে।' : 'এআই সুইচবোর্ডে বন্ধ — অফলাইন মেসেজ পাঠানো হয়েছে।', 'info', ownerId);
+                } catch (offlineErr) {
+                  console.warn('[Webhook] Offline reply failed:', offlineErr);
+                }
+              } else {
+                await logActivity(bizId!, 'AI_SILENT', 'এআই ও মেসেঞ্জার রিপ্লাই সুইচবোর্ডে বন্ধ।', 'info', ownerId);
+              }
+              continue;
+            }
+
             // Check if Customer explicitly requests Human Support / Agent
             const lowerMsg = finalMessageText.toLowerCase();
             const isHumanRequested = /মানুষ|manush|agent|human|representative|মালিক|owner|অভিযোগ|কথা বলতে চাই|সরাসরি কথা|helpdesk|support/i.test(lowerMsg);
-            if (isHumanRequested) {
+            if (isHumanRequested && isFeatureEnabled(storeFeatures, 'humanHandoverEnabled')) {
               const takeoverReply = "অবশ্যই! আমাদের কাস্টমার কেয়ার প্রতিনিধির কাছে আপনার বার্তাটি ফরোয়ার্ড করা হয়েছে। শীঘ্রই আমাদের একজন প্রতিনিধি আপনার সাথে কথা বলবেন।";
               try {
                 if (adminDb) {
@@ -1536,6 +1578,12 @@ app.post(webhookPaths, async (req, res) => {
             let downloadedMedia: DownloadedMedia[] = [];
             if (incomingMedia.length > 0) {
               downloadedMedia = await downloadIncomingMedia(incomingMedia, pageAccessToken);
+              if (!isFeatureEnabled(storeFeatures, 'photoReplyEnabled')) {
+                downloadedMedia = downloadedMedia.filter((m) => m.kind !== 'image');
+              }
+              if (!isFeatureEnabled(storeFeatures, 'voiceReplyEnabled')) {
+                downloadedMedia = downloadedMedia.filter((m) => m.kind !== 'audio');
+              }
               console.log(`[Webhook] Media attachments: ${incomingMedia.length} incoming, ${downloadedMedia.length} downloaded`);
             }
 
@@ -1548,7 +1596,7 @@ app.post(webhookPaths, async (req, res) => {
             const products = sanitizeProductsForPrompt(businessData.products || []);
             const rawProducts = businessData.products || [];
 
-            const allFaqs = businessData.faqs || [];
+            const allFaqs = isFeatureEnabled(storeFeatures, 'faqEnabled') ? (businessData.faqs || []) : [];
             const generalFaqs = allFaqs
               .filter((f: any) => (f.type || (f.productId ? 'product' : 'general')) === 'general')
               .map((f: any) => `[${f.category || 'General'}] Q: ${f.question} -> A: ${f.answer}`)
@@ -1560,7 +1608,9 @@ app.post(webhookPaths, async (req, res) => {
               .join('\n');
 
             const knownLead = mergeLead(savedLead, {}, `${finalMessageText}\n${chatHistoryText}`);
-            const recentOrders = await loadRecentOrdersForCustomer(bizId!, senderId, knownLead.phone);
+            const recentOrders = isFeatureEnabled(storeFeatures, 'orderTrackingEnabled')
+              ? await loadRecentOrdersForCustomer(bizId!, senderId, knownLead.phone)
+              : [];
             const recentOrderText = recentOrders.length
               ? recentOrders.map((o: any) => `- ${o.id}: ${o.productName} x${o.quantity}, স্ট্যাটাস ${o.status}, ফোন ${o.phone}, ${o.createdAtMs ? Math.round((Date.now() - o.createdAtMs) / 60000) + ' মিনিট আগে' : ''}`).join('\n')
               : 'কোনো সাম্প্রতিক অর্ডার নেই';
@@ -1594,6 +1644,8 @@ ${productFaqs || 'নেই'}
 
 কাস্টম নির্দেশিকা: ${businessData.customSystemPrompt || businessData.botPersona || ''}
 
+${buildFeaturePromptBlock(storeFeatures)}
+
 কাস্টমারের জানা তথ্য (আবার চাইবে না):
 নাম: ${knownLead.name || 'অজানা'} | ফোন: ${knownLead.phone || 'অজানা'} | ঠিকানা: ${knownLead.address || 'অজানা'} | পণ্য: ${knownLead.product_name || 'অজানা'}
 
@@ -1601,7 +1653,7 @@ ${productFaqs || 'নেই'}
 ${recentOrderText}
 
 দীর্ঘমেয়াদী সামারি:
-${longTermSummary || 'নেই'}
+${isFeatureEnabled(storeFeatures, 'chatSummaryEnabled') ? (longTermSummary || 'নেই') : 'মেমোরি বন্ধ'}
 ${downloadedMedia.length > 0 ? `\nকাস্টমারের সাথে পাঠানো মিডিয়া এই রিকোয়েস্টে সংযুক্ত আছে (${downloadedMedia.map((m) => m.kind === 'audio' ? 'ভয়েস' : 'ছবি').join(', ')})। মিডিয়া দেখে/শুনে উত্তর দাও।` : ''}
 
 পূর্ববর্তী কথোপকথন:
@@ -1678,6 +1730,13 @@ ${chatHistoryText || 'নতুন আলাপ'}
                   }
                 }
 
+                if (aiRes) {
+                  if (!isFeatureEnabled(storeFeatures, 'imageDisplayEnabled')) aiRes.show_product_image = false;
+                  if (!isFeatureEnabled(storeFeatures, 'reviewImagesEnabled')) aiRes.show_review_images = false;
+                  if (!isFeatureEnabled(storeFeatures, 'autoOrderEnabled')) aiRes.should_create_order = false;
+                  if (!isFeatureEnabled(storeFeatures, 'chatSummaryEnabled')) aiRes.summary = '';
+                }
+
                 const nextLead = mergeLead(knownLead, {
                   ...(aiRes?.order_data || {}),
                   product_name: aiRes?.order_data?.product_name || aiRes?.product_name || knownLead.product_name,
@@ -1689,7 +1748,7 @@ ${chatHistoryText || 'নতুন আলাপ'}
                   (aiRes?.event_name === 'Purchase' && aiRes?.need_more_info === false)
                 );
 
-                if (wantsOrder && hasCompleteLead(nextLead)) {
+                if (wantsOrder && isFeatureEnabled(storeFeatures, 'autoOrderEnabled') && hasCompleteLead(nextLead)) {
                   try {
                     const productName = nextLead.product_name || aiRes?.product_name || '';
                     const identity = {
@@ -1748,7 +1807,7 @@ ${chatHistoryText || 'নতুন আলাপ'}
                     lastOrderId = orderId;
                     lastOrderAtMs = newOrder.createdAtMs;
 
-                    if (matchedProduct && (matchedProduct.stock || matchedProduct.stockCount) > 0 && adminDb) {
+                    if (isFeatureEnabled(storeFeatures, 'inventoryEnabled') && matchedProduct && (matchedProduct.stock || matchedProduct.stockCount) > 0 && adminDb) {
                       const updatedProducts = (businessData.products || []).map((p: any) => {
                         if (p.id === matchedProduct.id) {
                           return { ...p, stock: Math.max(0, (p.stock || p.stockCount || 10) - qty) };
@@ -1761,7 +1820,9 @@ ${chatHistoryText || 'নতুন আলাপ'}
                     await logActivity(bizId!, 'ORDER_AUTO_CREATED', `নতুন অর্ডার তৈরি হয়েছে: ${orderId} (৳${totalAmount})`, 'success', ownerId, newOrder);
                     console.log(`[Webhook] Auto-created order: ${orderId} for customer ${nextLead.phone}`);
 
-                    const autoBook = businessData.courierConfig?.autoBooking !== false && businessData.courierConfig?.steadfastApiKey;
+                    const autoBook = isFeatureEnabled(storeFeatures, 'autoCourierBookingEnabled')
+                      && businessData.courierConfig?.autoBooking !== false
+                      && businessData.courierConfig?.steadfastApiKey;
                     if (autoBook) {
                       const booked = await bookSteadfastParcel(newOrder, businessData);
                       if (booked.success) {
@@ -1790,7 +1851,7 @@ ${chatHistoryText || 'নতুন আলাপ'}
 
                 console.log(`[Webhook] AI Reply: ${reply.substring(0, 30)}...`);
                 
-                // Send Response to Facebook Graph API
+                if (isFeatureEnabled(storeFeatures, 'messengerRepliesEnabled')) {
                 console.log(`[Webhook] Sending response to Facebook sender: ${senderId}`);
                 const cleanToken = String(pageAccessToken).trim();
                 const fbUrl = `https://graph.facebook.com/v21.0/me/messages?access_token=${encodeURIComponent(cleanToken)}`;
@@ -1810,8 +1871,8 @@ ${chatHistoryText || 'নতুন আলাপ'}
                   }, { timeout: 15000 });
                 }
 
-                const wantsProductImg = Boolean(aiRes?.show_product_image);
-                const wantsReviewImg = Boolean(aiRes?.show_review_images) || /রিভিউ|review|প্রুফ|proof|ফিডব্যাক|feedback|আনবক্সিং/i.test(finalMessageText);
+                const wantsProductImg = isFeatureEnabled(storeFeatures, 'imageDisplayEnabled') && Boolean(aiRes?.show_product_image);
+                const wantsReviewImg = isFeatureEnabled(storeFeatures, 'reviewImagesEnabled') && (Boolean(aiRes?.show_review_images) || /রিভিউ|review|প্রুফ|proof|ফিডব্যাক|feedback|আনবক্সিং/i.test(finalMessageText));
                 if (wantsProductImg || wantsReviewImg) {
                   try {
                     const wantedName = String(aiRes?.product_name || nextLead.product_name || '').toLowerCase().trim();
@@ -1834,6 +1895,7 @@ ${chatHistoryText || 'নতুন আলাপ'}
                   } catch (imgErr: any) {
                     console.warn('[Webhook] Product/review image send failed:', imgErr.response?.data || imgErr.message);
                   }
+                }
                 }
 
                 await saveChatMessage(bizId!, senderId, 'bot', reply.trim()).catch(e => console.error('Save chat error:', e));
@@ -1865,7 +1927,7 @@ ${chatHistoryText || 'নতুন আলাপ'}
                   phone: nextLead.phone || '',
                   address: nextLead.address || '',
                   lastInteraction: adminDb ? admin.firestore.FieldValue.serverTimestamp() : serverTimestamp(),
-                  chatSummary: aiRes?.summary || longTermSummary || '',
+                  chatSummary: isFeatureEnabled(storeFeatures, 'chatSummaryEnabled') ? (aiRes?.summary || longTermSummary || '') : (longTermSummary || ''),
                   leadInfo: nextLead,
                   updatedAt: adminDb ? admin.firestore.FieldValue.serverTimestamp() : serverTimestamp(),
                 };
@@ -2118,6 +2180,16 @@ app.post('/api/broadcast', async (req, res) => {
   }
 
   try {
+    let bizFeatures: any = {};
+    try {
+      if (adminDb) {
+        const bSnap = await adminDb.collection('businesses').doc(businessId).get();
+        bizFeatures = bSnap.exists ? (bSnap.data()?.features || {}) : {};
+      }
+    } catch (_) {}
+    if (!isFeatureEnabled(bizFeatures, 'broadcastingEnabled') || !isFeatureEnabled(bizFeatures, 'messengerRepliesEnabled')) {
+      return res.status(403).json({ error: 'Broadcasting is disabled in the feature switchboard' });
+    }
     let customers: any[] = [];
     if (adminDb) {
       let queryRef = adminDb.collection('customers').where('businessId', '==', businessId);
@@ -2201,6 +2273,16 @@ cron.schedule('*/15 * * * *', async () => {
       
       if (cartTime < oneHourAgo) {
         try {
+          let recoveryFeatures: any = {};
+          try {
+            if (adminDb && cart.businessId) {
+              const bSnap = await adminDb.collection('businesses').doc(cart.businessId).get();
+              recoveryFeatures = bSnap.exists ? (bSnap.data()?.features || {}) : {};
+            }
+          } catch (_) {}
+          if (!isFeatureEnabled(recoveryFeatures, 'proactiveNotificationsEnabled') || !isFeatureEnabled(recoveryFeatures, 'messengerRepliesEnabled') || isQuietHoursNow(recoveryFeatures) || !shouldRunAi(recoveryFeatures)) {
+            continue;
+          }
           const followUp = `হ্যালো ${cart.customerName || 'কাস্টমার'}! আপনি কি "${cart.productName}" অর্ডারটি সম্পন্ন করতে চান? আমরা আপনার জন্য এটি বুকড করে রেখেছি। কোনো সাহায্য লাগলে আমাদের মেসেজ দিন।`;
           
           await axios.post(`https://graph.facebook.com/v18.0/me/messages?access_token=${cart.pageAccessToken}`, {

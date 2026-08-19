@@ -21,6 +21,7 @@ import { db } from '../../lib/firebase';
 import { doc, getDoc } from 'firebase/firestore';
 import { getAIResponse } from '../../lib/gemini';
 import { toast } from 'sonner';
+import { isFeatureEnabled, mergeFeatures, shouldRunAi } from '../../lib/featureFlags';
 import {
   mergeOrderData,
   extractBdPhone,
@@ -111,6 +112,25 @@ export function ChatView() {
     const textToSend = overrideText || input;
     if (!textToSend.trim() || isSending || !business) return;
 
+    if (!shouldRunAi(business.features)) {
+      const offline = mergeFeatures(business.features).offlineMessage
+        || 'ধন্যবাদ! আমাদের সেলস টিম শীঘ্রই আপনার মেসেজের উত্তর দিবে।';
+      const userMsg: Message = {
+        id: `usr-${Date.now()}`,
+        role: 'user',
+        content: textToSend,
+        timestamp: Date.now()
+      };
+      setMessages(prev => [...prev, userMsg, {
+        id: `bot-${Date.now()}`,
+        role: 'assistant',
+        content: offline,
+        timestamp: Date.now()
+      }]);
+      setInput('');
+      return;
+    }
+
     const userMsg: Message = {
       id: `usr-${Date.now()}`,
       role: 'user',
@@ -168,7 +188,7 @@ export function ChatView() {
       setMessages(prev => [...prev, assistantMsg]);
 
       let placedId = orderPlacedId;
-      if (shouldPlaceOrder(aiResponse, nextCollected, Boolean(orderPlacedId))) {
+      if (isFeatureEnabled(business.features, 'autoOrderEnabled') && shouldPlaceOrder(aiResponse, nextCollected, Boolean(orderPlacedId))) {
         const saved = await saveConfirmedOrder({
           business,
           collected: nextCollected,
@@ -292,8 +312,8 @@ export function ChatView() {
                     p.name.toLowerCase().includes((msg.aiMetadata?.product_name || '').toLowerCase())
                   ) || business.products?.[0];
                   if (!matched) return null;
-                  const productImgs = msg.aiMetadata?.show_product_image ? (matched.images || []).slice(0, 4) : [];
-                  const reviewImgs = msg.aiMetadata?.show_review_images ? (matched.reviewImages || []).slice(0, 4) : [];
+                  const productImgs = isFeatureEnabled(business.features, 'imageDisplayEnabled') && msg.aiMetadata?.show_product_image ? (matched.images || []).slice(0, 4) : [];
+                  const reviewImgs = isFeatureEnabled(business.features, 'reviewImagesEnabled') && msg.aiMetadata?.show_review_images ? (matched.reviewImages || []).slice(0, 4) : [];
                   if (productImgs.length === 0 && reviewImgs.length === 0) return null;
 
                   return (

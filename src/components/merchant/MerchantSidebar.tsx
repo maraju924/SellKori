@@ -22,6 +22,7 @@ import {
 } from 'lucide-react';
 import { BusinessConfig, UserProfile } from '../../types';
 import { Link } from 'react-router-dom';
+import { isFeatureEnabled } from '../../lib/featureFlags';
 
 interface MerchantSidebarProps {
   activeTab: string;
@@ -65,12 +66,12 @@ export function MerchantSidebar({
     {
       group: 'এআই ও অটোমেশন ইঞ্জিন',
       items: [
-        { id: 'ai-control', label: 'এআই সেলস ব্রেন ও দরদাম', icon: Bot, isHighlighted: true },
-        { id: 'test-chat', label: 'লাইভ চ্যাট সিমুলেটর', icon: Terminal },
-        { id: 'messenger', label: 'ফেসবুক মেসেঞ্জার ওয়েবহুক', icon: MessageCircle },
-        { id: 'broadcasting', label: 'টার্গেটেড ব্রডকাস্টিং', icon: Megaphone },
-        { id: 'faqs', label: 'পলিসি ও নলেজবেস', icon: HelpCircle },
-        { id: 'features', label: 'সিস্টেম ফিচার সুইচ', icon: ShieldCheck },
+        { id: 'ai-control', label: 'এআই সেলস ব্রেন ও দরদাম', icon: Bot, isHighlighted: true, live: isFeatureEnabled(business.features, 'aiEnabled') },
+        { id: 'test-chat', label: 'লাইভ চ্যাট সিমুলেটর', icon: Terminal, live: isFeatureEnabled(business.features, 'aiEnabled') },
+        { id: 'messenger', label: 'ফেসবুক মেসেঞ্জার ওয়েবহুক', icon: MessageCircle, live: isFeatureEnabled(business.features, 'messengerRepliesEnabled') },
+        { id: 'broadcasting', label: 'টার্গেটেড ব্রডকাস্টিং', icon: Megaphone, live: isFeatureEnabled(business.features, 'broadcastingEnabled') },
+        { id: 'faqs', label: 'পলিসি ও নলেজবেস', icon: HelpCircle, live: isFeatureEnabled(business.features, 'faqEnabled') },
+        { id: 'features', label: 'সিস্টেম ফিচার সুইচ', icon: ShieldCheck, badge: 'Control' },
       ]
     },
     {
@@ -160,17 +161,29 @@ export function MerchantSidebar({
                         <span className="truncate">{item.label}</span>
                       </div>
 
-                      {item.badge && (
-                        <span className={`text-[9px] font-black px-1.5 py-0.5 rounded-md ${
-                          isActive
-                            ? 'bg-white/20 text-white'
-                            : item.badge === 'Live'
-                            ? 'bg-emerald-100 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300'
-                            : 'bg-orange-100 dark:bg-orange-950/60 text-orange-700 dark:text-orange-300'
-                        }`}>
-                          {item.badge}
-                        </span>
-                      )}
+                      <div className="flex items-center gap-2 shrink-0">
+                        {typeof item.live === 'boolean' && (
+                          <span
+                            className={`w-1.5 h-1.5 rounded-full ${
+                              item.live
+                                ? isActive ? 'bg-emerald-300' : 'bg-emerald-500'
+                                : isActive ? 'bg-white/40' : 'bg-zinc-300 dark:bg-zinc-600'
+                            }`}
+                            title={item.live ? 'মডিউল সক্রিয়' : 'সুইচবোর্ডে বন্ধ'}
+                          />
+                        )}
+                        {item.badge && (
+                          <span className={`text-[9px] font-black px-1.5 py-0.5 rounded-md ${
+                            isActive
+                              ? 'bg-white/20 text-white'
+                              : item.badge === 'Live'
+                              ? 'bg-emerald-100 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300'
+                              : 'bg-orange-100 dark:bg-orange-950/60 text-orange-700 dark:text-orange-300'
+                          }`}>
+                            {item.badge}
+                          </span>
+                        )}
+                      </div>
                     </button>
                   );
                 })}

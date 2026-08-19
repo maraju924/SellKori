@@ -34,15 +34,28 @@ export interface FAQ {
 
 export interface BusinessFeatures {
   aiEnabled?: boolean;
-  orderTrackingEnabled?: boolean;
-  proactiveNotificationsEnabled?: boolean;
+  messengerRepliesEnabled?: boolean;
+  photoReplyEnabled?: boolean;
+  voiceReplyEnabled?: boolean;
   chatSummaryEnabled?: boolean;
   negotiationEnabled?: boolean;
-  imageDisplayEnabled?: boolean;
+  upsellEnabled?: boolean;
+  autoOrderEnabled?: boolean;
   inventoryEnabled?: boolean;
-  analyticsEnabled?: boolean;
+  imageDisplayEnabled?: boolean;
+  reviewImagesEnabled?: boolean;
+  orderTrackingEnabled?: boolean;
+  faqEnabled?: boolean;
   invoicingEnabled?: boolean;
+  autoCourierBookingEnabled?: boolean;
   broadcastingEnabled?: boolean;
+  analyticsEnabled?: boolean;
+  proactiveNotificationsEnabled?: boolean;
+  humanHandoverEnabled?: boolean;
+  quietHoursEnabled?: boolean;
+  quietHoursStart?: string;
+  quietHoursEnd?: string;
+  offlineMessage?: string;
 }
 
 export interface FacebookConfig {

@@ -123,7 +123,17 @@ export function MerchantPanel({ user, profile }: MerchantPanelProps) {
             inventoryEnabled: true,
             analyticsEnabled: true,
             invoicingEnabled: true,
-            broadcastingEnabled: true
+            broadcastingEnabled: true,
+            messengerRepliesEnabled: true,
+            photoReplyEnabled: true,
+            voiceReplyEnabled: true,
+            upsellEnabled: true,
+            autoOrderEnabled: true,
+            reviewImagesEnabled: true,
+            faqEnabled: true,
+            autoCourierBookingEnabled: true,
+            humanHandoverEnabled: true,
+            quietHoursEnabled: false
           },
           aiPersona: 'friendly',
           aiLanguage: 'bangla',
@@ -315,7 +325,13 @@ export function MerchantPanel({ user, profile }: MerchantPanelProps) {
           )}
 
           {activeTab === 'features' && (
-            <MerchantFeatures business={business} />
+            <MerchantFeatures
+              business={business}
+              onNavigateTab={(tab) => setActiveTab(tab)}
+              onFeaturesChange={(features) =>
+                setBusiness(prev => (prev ? { ...prev, features } : prev))
+              }
+            />
           )}
 
           {activeTab === 'info' && (

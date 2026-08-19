@@ -7,6 +7,7 @@ import { GoogleGenAI, Type } from "@google/genai";
 import { AIResponse, BusinessConfig, Product } from "../types";
 import { db } from "./firebase";
 import { doc, getDoc, collection, addDoc, serverTimestamp } from "firebase/firestore";
+import { buildFeaturePromptBlock, isFeatureEnabled } from "./featureFlags";
 
 /** Strip huge base64 payloads so the model actually sees chat history + customer memory. */
 export function sanitizeProductsForAI(products?: Product[]) {
@@ -528,9 +529,11 @@ CRITICAL MEMORY RULES:
 ## ফটো ও ভয়েস মেসেজ
 কাস্টমার ছবি পাঠালে অবশ্যই ছবিটি দেখে উত্তর দাও। ভয়েস পাঠালে অডিও শুনে টেক্সট মেসেজের মতো উত্তর দাও। নীরব থাকবে না। পেমেন্ট স্ক্রিনশটে নিজে থেকে পেইড কনফার্ম করবে না।`;
 
-  const systemInstruction = businessConfig.customSystemPrompt 
-    ? `${businessConfig.customSystemPrompt}\n\n${memoryGuard}\nContext:\nBusiness Name: ${businessConfig.name}\n${businessConfig.description ? `Business Info: ${businessConfig.description}\n` : ''}Products Data: ${JSON.stringify(sanitizeProductsForAI(businessConfig.products))}\nFAQs: ${JSON.stringify(businessConfig.faqs || [])}\n${customerContext ? `Customer Context: ${customerContext}` : ''}${chatSummary ? `\nPrevious Conversation Summary: ${chatSummary}` : ''}${mediaDirective}`
-    : defaultPrompt;
+  const systemInstruction = `${
+    businessConfig.customSystemPrompt
+      ? `${businessConfig.customSystemPrompt}\n\n${memoryGuard}\nContext:\nBusiness Name: ${businessConfig.name}\n${businessConfig.description ? `Business Info: ${businessConfig.description}\n` : ''}Products Data: ${JSON.stringify(sanitizeProductsForAI(businessConfig.products))}\nFAQs: ${JSON.stringify(isFeatureEnabled(businessConfig.features, 'faqEnabled') ? (businessConfig.faqs || []) : [])}\n${customerContext ? `Customer Context: ${customerContext}` : ''}${chatSummary && isFeatureEnabled(businessConfig.features, 'chatSummaryEnabled') ? `\nPrevious Conversation Summary: ${chatSummary}` : ''}${mediaDirective}`
+      : defaultPrompt
+  }\n\n${buildFeaturePromptBlock(businessConfig.features)}`;
 
   const startTime = Date.now();
 
@@ -577,7 +580,12 @@ CRITICAL MEMORY RULES:
       }).catch(() => {});
     }
 
-    return JSON.parse(text) as AIResponse;
+    const parsed = JSON.parse(text) as AIResponse;
+    if (!isFeatureEnabled(businessConfig.features, 'imageDisplayEnabled')) parsed.show_product_image = false;
+    if (!isFeatureEnabled(businessConfig.features, 'reviewImagesEnabled')) parsed.show_review_images = false;
+    if (!isFeatureEnabled(businessConfig.features, 'autoOrderEnabled')) parsed.should_create_order = false;
+    if (!isFeatureEnabled(businessConfig.features, 'chatSummaryEnabled')) parsed.summary = '';
+    return parsed;
   } catch (error: any) {
     const latencyMs = Date.now() - startTime;
     console.error("Gemini Error:", error);
