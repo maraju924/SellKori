@@ -421,7 +421,8 @@ const app = express();
 const PORT = 3000;
 
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // Test Connection Endpoint
 app.post('/api/test-connection', async (req, res) => {
@@ -627,81 +628,115 @@ app.post(webhookPaths, async (req, res) => {
               continue;
             }
 
-            // Identify Store by Page ID
+            // Identify Store by Page ID (Multi-Strategy Bulletproof Matcher)
             let businessData: any = null;
             let bizId: string | null = pathBizId;
             const cleanPageId = String(pageId).trim();
 
-            console.log(`[Webhook] Processing Page ID: ${cleanPageId}`);
+            console.log(`[Webhook] Incoming Event for Page ID: "${cleanPageId}", URL BizId: "${pathBizId || 'none'}"`);
 
-            // Attempt 1: Admin SDK (Try string and number)
-            if (adminDb) {
-              try {
-                console.log(`[Webhook] Admin Lookup for: ${cleanPageId}`);
-                let snap = await adminDb.collection('businesses').where('facebookPageId', '==', cleanPageId).get();
-                if (snap.empty) {
-                  snap = await adminDb.collection('businesses').where('pageId', '==', cleanPageId).get();
-                }
-                if (snap.empty && !isNaN(Number(cleanPageId))) {
-                  snap = await adminDb.collection('businesses').where('facebookPageId', '==', Number(cleanPageId)).get();
-                  if (snap.empty) {
-                    snap = await adminDb.collection('businesses').where('pageId', '==', Number(cleanPageId)).get();
-                  }
-                }
-                if (!snap.empty) {
-                  const doc = snap.docs[0];
-                  businessData = doc.data();
-                  bizId = doc.id;
-                  console.log(`[Webhook] Admin Lookup Success: ${bizId}`);
-                }
-              } catch (e: any) {
-                console.warn('[Webhook] Admin Lookup Failed:', e.message);
-              }
-            }
-
-            // Attempt 2: Client SDK (if Admin failed)
-            if (!businessData && db) {
-              try {
-                console.log(`[Webhook] Client Lookup for: ${cleanPageId}`);
-                const q1 = query(collection(db, 'businesses'), where('facebookPageId', 'in', [cleanPageId, Number(cleanPageId)]));
-                let snap = await getDocs(q1);
-                if (snap.empty) {
-                  const q2 = query(collection(db, 'businesses'), where('pageId', 'in', [cleanPageId, Number(cleanPageId)]));
-                  snap = await getDocs(q2);
-                }
-                if (!snap.empty) {
-                  const doc = snap.docs[0];
-                  businessData = doc.data();
-                  bizId = doc.id;
-                  console.log(`[Webhook] Client Lookup Success: ${bizId}`);
-                }
-              } catch (e: any) {
-                console.error('[Webhook] Client Lookup Failed:', e.message);
-              }
-            }
-
-            // Attempt 3: If still not found and we have a bizId in the URL, use that
-            if (!businessData && pathBizId && pathBizId !== 'unknown' && pathBizId !== 'system') {
-              console.log(`[Webhook] ID Fallback: ${pathBizId}`);
+            // Strategy 1: Look up by path business ID if provided
+            if (pathBizId && pathBizId !== 'unknown' && pathBizId !== 'system') {
               try {
                 if (adminDb) {
                   const d = await adminDb.collection('businesses').doc(pathBizId).get();
                   if (d.exists) { businessData = d.data(); bizId = pathBizId; }
-                }
-                if (!businessData && db) {
+                } else if (db) {
                   const d = await getDoc(doc(db, 'businesses', pathBizId));
                   if (d.exists()) { businessData = d.data(); bizId = pathBizId; }
                 }
               } catch (e) {}
             }
 
+            // Strategy 2: Direct Page ID queries
+            if (!businessData && cleanPageId) {
+              const possiblePageIds = [cleanPageId];
+              if (!isNaN(Number(cleanPageId))) {
+                possiblePageIds.push(Number(cleanPageId) as any);
+              }
+
+              if (adminDb) {
+                try {
+                  for (const pid of possiblePageIds) {
+                    let snap = await adminDb.collection('businesses').where('facebookPageId', '==', pid).limit(1).get();
+                    if (snap.empty) snap = await adminDb.collection('businesses').where('pageId', '==', pid).limit(1).get();
+                    if (snap.empty) snap = await adminDb.collection('businesses').where('facebookConfig.pageId', '==', pid).limit(1).get();
+                    if (snap.empty) snap = await adminDb.collection('businesses').where('facebookConfig.facebookPageId', '==', pid).limit(1).get();
+                    if (!snap.empty) {
+                      businessData = snap.docs[0].data();
+                      bizId = snap.docs[0].id;
+                      console.log(`[Webhook] Admin Lookup Matched Biz: ${bizId}`);
+                      break;
+                    }
+                  }
+                } catch (e: any) {
+                  console.warn('[Webhook] Admin Lookup Query Notice:', e.message);
+                }
+              }
+
+              if (!businessData && db) {
+                try {
+                  for (const pid of possiblePageIds) {
+                    let snap = await getDocs(query(collection(db, 'businesses'), where('facebookPageId', '==', pid), limit(1)));
+                    if (snap.empty) snap = await getDocs(query(collection(db, 'businesses'), where('pageId', '==', pid), limit(1)));
+                    if (!snap.empty) {
+                      businessData = snap.docs[0].data();
+                      bizId = snap.docs[0].id;
+                      console.log(`[Webhook] Client Lookup Matched Biz: ${bizId}`);
+                      break;
+                    }
+                  }
+                } catch (e: any) {
+                  console.warn('[Webhook] Client Lookup Query Notice:', e.message);
+                }
+              }
+            }
+
+            // Strategy 3: In-memory exhaustive scan across all businesses
+            if (!businessData) {
+              try {
+                let allDocs: any[] = [];
+                if (adminDb) {
+                  const allSnap = await adminDb.collection('businesses').limit(100).get();
+                  allDocs = allSnap.docs.map((d: any) => ({ id: d.id, ...d.data() }));
+                } else if (db) {
+                  const allSnap = await getDocs(query(collection(db, 'businesses'), limit(100)));
+                  allDocs = allSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+                }
+
+                // Match against all fields
+                const matched = allDocs.find((b: any) => {
+                  const bPageId = String(b.facebookPageId || b.pageId || b.facebookConfig?.pageId || b.facebookConfig?.facebookPageId || '').trim();
+                  return bPageId && (bPageId === cleanPageId || cleanPageId.includes(bPageId) || bPageId.includes(cleanPageId));
+                });
+
+                if (matched) {
+                  businessData = matched;
+                  bizId = matched.id;
+                  console.log(`[Webhook] In-memory scan matched Biz: ${bizId}`);
+                } else if (allDocs.length === 1) {
+                  // Single store fallback
+                  businessData = allDocs[0];
+                  bizId = allDocs[0].id;
+                  console.log(`[Webhook] Single store fallback applied: ${bizId}`);
+                }
+              } catch (scanErr) {
+                console.error('[Webhook] In-memory scan error:', scanErr);
+              }
+            }
+
             if (!businessData) {
               console.error(`[Webhook] Business not found for Page ID: "${cleanPageId}"`);
-              
-              // Diagnostic: What was received?
-              await logActivity('system', 'ERROR', `বট রিপ্লাই দিতে পারেনি: আপনার ফেসবুক পেজ আইডি (${cleanPageId}) ডাটাবেজের কোনো দোকানের সাথে মেলেনি। দোকানের সেটিংস চেক করুন।`, 'error', 'system', { 
+              await logActivity('system', 'ERROR', `বট রিপ্লাই দিতে পারেনি: আপনার ফেসবুক পেজ আইডি (${cleanPageId}) ডাটাবেজের কোনো দোকানের সাথে মেলেনি। দোকানের সেটিংসে সঠিক Page ID প্রদান করুন।`, 'error', 'system', { 
                 receivedPageId: cleanPageId,
                 pathBizId: pathBizId || 'none'
+              });
+              await saveMessengerLog(pathBizId || 'unassigned', {
+                senderId,
+                pageId: cleanPageId,
+                message: messageText || 'Postback / Action',
+                status: 'error',
+                error: `ফেসবুক পেজ আইডি (${cleanPageId}) ডাটাবেজে পাওয়া যায়নি।`
               });
               continue;
             }
@@ -874,11 +909,24 @@ ${chatHistoryText || 'নতুন আলাপ (পূর্ববর্তী 
                 console.log(`[Webhook] AI Reply: ${reply.substring(0, 30)}...`);
                 
                 // Send Response to Facebook Graph API
-                console.log(`[Webhook] Sending response to Facebook: ${senderId}`);
-                await axios.post(`https://graph.facebook.com/v21.0/me/messages?access_token=${pageAccessToken}`, {
-                  recipient: { id: senderId },
-                  message: { text: reply.trim() }
-                }, { timeout: 12000 });
+                console.log(`[Webhook] Sending response to Facebook sender: ${senderId}`);
+                const cleanToken = String(pageAccessToken).trim();
+                const fbUrl = `https://graph.facebook.com/v21.0/me/messages?access_token=${encodeURIComponent(cleanToken)}`;
+                
+                try {
+                  await axios.post(fbUrl, {
+                    recipient: { id: senderId },
+                    messaging_type: 'RESPONSE',
+                    message: { text: reply.trim() }
+                  }, { timeout: 15000 });
+                } catch (fbSendErr: any) {
+                  console.warn('[Webhook] v21.0 send failed, trying v18.0 fallback...', fbSendErr.response?.data || fbSendErr.message);
+                  await axios.post(`https://graph.facebook.com/v18.0/me/messages?access_token=${encodeURIComponent(cleanToken)}`, {
+                    recipient: { id: senderId },
+                    messaging_type: 'RESPONSE',
+                    message: { text: reply.trim() }
+                  }, { timeout: 15000 });
+                }
 
                 await saveChatMessage(bizId!, senderId, 'bot', reply.trim()).catch(e => console.error('Save chat error:', e));
                 await saveMessengerLog(bizId!, {
@@ -908,15 +956,18 @@ ${chatHistoryText || 'নতুন আলাপ (পূর্ববর্তী 
                 }
               } catch (err: any) {
                 const latencyMs = Date.now() - startTime;
-                console.error('[AI/Reply Error]', err.response?.data || err.message);
-                const errorMsg = err.response?.data?.error?.message || err.message;
-                await logActivity(bizId!, 'ERROR', `বট রিপ্লাই দিতে ব্যর্থ হয়েছে: ${errorMsg}`, 'error', ownerId);
+                const fbErrorObj = err.response?.data?.error;
+                const errorMsg = fbErrorObj?.message || err.message || 'ফেসবুক মেসেজ পাঠানো যায়নি';
+                const errorCode = fbErrorObj?.code ? ` [Code: ${fbErrorObj.code}]` : '';
+                console.error('[AI/Reply Error]', fbErrorObj || err.message);
+                
+                await logActivity(bizId!, 'ERROR', `বট রিপ্লাই দিতে ব্যর্থ হয়েছে: ${errorMsg}${errorCode}`, 'error', ownerId, fbErrorObj);
                 await saveMessengerLog(bizId!, {
                   senderId,
                   pageId: cleanPageId,
                   message: finalMessageText,
                   status: 'error',
-                  error: errorMsg,
+                  error: `${errorMsg}${errorCode}`,
                   latencyMs
                 });
                 
