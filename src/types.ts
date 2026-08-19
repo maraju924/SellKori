@@ -194,8 +194,9 @@ export interface Message {
   role: 'user' | 'assistant' | 'system';
   content: string;
   timestamp: number;
-  aiMetadata?: any;
+  aiMetadata?: AIResponse;
   senderName?: string;
+  deliveryStatus?: 'sending' | 'sent' | 'failed';
 }
 
 export interface UserProfile {
@@ -258,4 +259,6 @@ export interface AIResponse {
   event_name: string;
   need_more_info: boolean;
   confidence: number;
+  errorCode?: 'AI_UNAVAILABLE' | 'INVALID_RESPONSE';
+  retryable?: boolean;
 }

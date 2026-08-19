@@ -6,7 +6,7 @@
 import React, { useState, useEffect } from 'react';
 import { BrowserRouter as Router, Routes, Route, Link, useNavigate, Navigate } from 'react-router-dom';
 import { User as FirebaseUser, onAuthStateChanged, signOut, GoogleAuthProvider, signInWithPopup } from 'firebase/auth';
-import { doc, getDoc, setDoc, onSnapshot, serverTimestamp } from 'firebase/firestore';
+import { doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore';
 import { Zap, ShieldCheck, LayoutDashboard, LogOut, Megaphone } from 'lucide-react';
 import { Toaster, toast } from 'sonner';
 
@@ -22,16 +22,14 @@ function GlobalBanner() {
   const [announcement, setAnnouncement] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!db) return;
-    try {
-      return onSnapshot(doc(db, 'system_config', 'public'), (snap) => {
-        if (snap.exists()) setAnnouncement(snap.data().globalAnnouncement || null);
-      }, (error) => {
-        console.error("GlobalBanner Error:", error);
+    const controller = new AbortController();
+    fetch('/api/public/config', { signal: controller.signal })
+      .then((response) => response.ok ? response.json() : null)
+      .then((config) => setAnnouncement(config?.globalAnnouncement || null))
+      .catch((error) => {
+        if (error?.name !== 'AbortError') console.error('GlobalBanner Error:', error);
       });
-    } catch (e) {
-      console.error("GlobalBanner Snapshot Error:", e);
-    }
+    return () => controller.abort();
   }, []);
 
   if (!announcement) return null;

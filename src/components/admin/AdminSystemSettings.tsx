@@ -24,7 +24,7 @@ import { Input } from '../ui/input';
 import { Textarea } from '../ui/textarea';
 import { Badge } from '../ui/badge';
 import { db } from '../../lib/firebase';
-import { doc, getDoc, setDoc } from 'firebase/firestore';
+import { deleteField, doc, getDoc, setDoc } from 'firebase/firestore';
 import { toast } from 'sonner';
 import { AVAILABLE_GEMINI_MODELS, testGeminiApiKeyAndModel } from '../../lib/gemini';
 
@@ -62,12 +62,20 @@ export function AdminSystemSettings() {
         return;
       }
       try {
-        const publicDoc = await getDoc(doc(db, 'system_config', 'public'));
-        if (publicDoc.exists()) {
-          const data = publicDoc.data();
+        const [publicDoc, secretDoc] = await Promise.all([
+          getDoc(doc(db, 'system_config', 'public')),
+          getDoc(doc(db, 'system', 'settings')),
+        ]);
+        const publicData = publicDoc.exists() ? publicDoc.data() : {};
+        const secretData = secretDoc.exists() ? secretDoc.data() : {};
+        const data = { ...publicData, ...secretData };
+        if (publicDoc.exists() || secretDoc.exists()) {
           if (data.globalAnnouncement) setAnnouncement(data.globalAnnouncement);
           if (data.tokenRatePerLakh) setTokenRatePerLakh(Number(data.tokenRatePerLakh));
-          if (data.geminiApiKey) setGeminiApiKey(data.geminiApiKey);
+          // Public fallback migrates keys saved by older releases.
+          if (secretData.geminiApiKey || publicData.geminiApiKey) {
+            setGeminiApiKey(secretData.geminiApiKey || publicData.geminiApiKey);
+          }
           if (data.defaultAiModel) {
             const isStandard = AVAILABLE_GEMINI_MODELS.some(m => m.id === data.defaultAiModel);
             if (isStandard) {
@@ -125,25 +133,30 @@ export function AdminSystemSettings() {
       ? customModelId.trim()
       : defaultAiModel;
 
-    const payload = {
+    const publicPayload = {
       globalAnnouncement: announcement,
       announcement,
       tokenRatePerLakh: Number(tokenRatePerLakh),
       tokenPricePerLakh: Number(tokenRatePerLakh),
       maintenanceMode,
-      geminiApiKey: geminiApiKey.trim(),
       defaultAiModel: activeModel,
       aiTemperature: Number(aiTemperature),
       aiMaxTokens: Number(aiMaxTokens),
       updatedAt: Date.now(),
-      updatedBy: 'Admin Console'
+      updatedBy: 'Admin Console',
+      // Explicitly remove credentials left by older deployments.
+      geminiApiKey: deleteField(),
+    };
+    const secretPayload = {
+      ...publicPayload,
+      geminiApiKey: geminiApiKey.trim(),
     };
 
     try {
-      // Save in public collection (read by clients for banner / key resolution)
-      await setDoc(doc(db, 'system_config', 'public'), payload, { merge: true });
-      // Also save in system/settings for backwards-compatibility
-      await setDoc(doc(db, 'system', 'settings'), payload, { merge: true });
+      await Promise.all([
+        setDoc(doc(db, 'system_config', 'public'), publicPayload, { merge: true }),
+        setDoc(doc(db, 'system', 'settings'), secretPayload, { merge: true }),
+      ]);
       toast.success('সিস্টেম ও জেমিনি এআই সেটিংস সফলভাবে সংরক্ষিত হয়েছে!');
     } catch (e) {
       console.error(e);

@@ -25,6 +25,8 @@ const sources = [
   'src/lib/featureFlags.ts',
   'src/lib/outreach.ts',
   'src/lib/orderIdentity.ts',
+  'src/lib/gemini.ts',
+  'src/lib/firebase.ts',
   'src/types.ts',
 ];
 
