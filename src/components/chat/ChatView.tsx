@@ -587,7 +587,7 @@ export function ChatView() {
             }}
             className="px-3 pb-safe pt-3 sm:px-5"
           >
-            <div className="flex items-end gap-2 rounded-2xl border border-zinc-200 bg-zinc-50 p-1.5 shadow-inner transition-within focus-within:border-orange-300 focus-within:ring-4 focus-within:ring-orange-500/10">
+            <div className="flex items-end gap-2 rounded-2xl border border-zinc-200 bg-zinc-50 p-1.5 shadow-inner transition-colors focus-within:border-orange-300 focus-within:ring-4 focus-within:ring-orange-500/10">
               <label htmlFor="chat-message" className="sr-only">আপনার মেসেজ</label>
               <textarea
                 ref={textareaRef}
