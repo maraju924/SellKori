@@ -171,6 +171,103 @@ const responseSchema = {
   required: ["intent", "reply", "conversation_stage", "event_name", "summary"],
 };
 
+// Helper to get effective Gemini Config (Admin DB or Environment)
+async function getEffectiveGeminiConfig() {
+  let apiKey = process.env.GEMINI_API_KEY || '';
+  let model = 'gemini-3.7-flash';
+  let temperature = 0.7;
+  let maxTokens = 800;
+
+  try {
+    if (adminDb) {
+      const publicSnap = await adminDb.collection('system_config').doc('public').get();
+      if (publicSnap.exists) {
+        const d = publicSnap.data();
+        if (d.geminiApiKey) apiKey = d.geminiApiKey;
+        if (d.defaultAiModel) model = d.defaultAiModel;
+        if (d.aiTemperature) temperature = Number(d.aiTemperature);
+        if (d.aiMaxTokens) maxTokens = Number(d.aiMaxTokens);
+      } else {
+        const sysSnap = await adminDb.collection('system').doc('settings').get();
+        if (sysSnap.exists) {
+          const d = sysSnap.data();
+          if (d.geminiApiKey) apiKey = d.geminiApiKey;
+          if (d.defaultAiModel) model = d.defaultAiModel;
+        }
+      }
+    } else if (db) {
+      const publicSnap = await getDoc(doc(db, 'system_config', 'public'));
+      if (publicSnap.exists()) {
+        const d = publicSnap.data();
+        if (d.geminiApiKey) apiKey = d.geminiApiKey;
+        if (d.defaultAiModel) model = d.defaultAiModel;
+        if (d.aiTemperature) temperature = Number(d.aiTemperature);
+        if (d.aiMaxTokens) maxTokens = Number(d.aiMaxTokens);
+      } else {
+        const sysSnap = await getDoc(doc(db, 'system', 'settings'));
+        if (sysSnap.exists()) {
+          const d = sysSnap.data();
+          if (d.geminiApiKey) apiKey = d.geminiApiKey;
+          if (d.defaultAiModel) model = d.defaultAiModel;
+        }
+      }
+    }
+  } catch (e) {
+    console.warn('[Gemini Config Load Notice]', e);
+  }
+
+  if (model === 'gemini-1.5-flash' || model === 'gemini-2.5-flash' || model === 'gemini-1.5-pro') {
+    model = 'gemini-3.7-flash';
+  }
+
+  return { apiKey: (apiKey || '').trim(), model, temperature, maxTokens };
+}
+
+// Helper to save Messenger logs in live collection
+async function saveMessengerLog(businessId: string, logData: {
+  senderId?: string;
+  pageId?: string;
+  message?: string;
+  reply?: string;
+  status?: 'received' | 'replied' | 'error';
+  error?: string;
+  latencyMs?: number;
+}) {
+  const payload = {
+    businessId: businessId || 'unknown',
+    senderId: logData.senderId || 'FB_User',
+    pageId: logData.pageId || '',
+    message: logData.message || '',
+    reply: logData.reply || '',
+    status: logData.status || 'received',
+    error: logData.error || null,
+    latencyMs: logData.latencyMs || 0
+  };
+
+  if (adminDb) {
+    try {
+      await adminDb.collection('messenger_logs').add({
+        ...payload,
+        timestamp: admin.firestore.FieldValue.serverTimestamp()
+      });
+      return;
+    } catch (e) {
+      console.warn('[Messenger Log Admin Error]', e);
+    }
+  }
+
+  if (db) {
+    try {
+      await addDoc(collection(db, 'messenger_logs'), {
+        ...payload,
+        timestamp: serverTimestamp()
+      });
+    } catch (e) {
+      console.warn('[Messenger Log Client Error]', e);
+    }
+  }
+}
+
 // Helper to get system settings
 async function getSystemSettings() {
   const defaultSettings = { tokenPricePerLakh: 20, monthlyServerCost: 1000, freeTrialTokens: 100000 };
@@ -664,6 +761,7 @@ app.post(webhookPaths, async (req, res) => {
             console.log(`[Webhook] Message from ${senderId}: ${finalMessageText}`);
             await logActivity(bizId!, 'INCOMING', `Customer: "${finalMessageText.substring(0, 70)}"`, 'info', ownerId);
             await saveChatMessage(bizId!, senderId, 'user', finalMessageText).catch(e => console.error('Save chat error:', e));
+            await saveMessengerLog(bizId!, { senderId, pageId: cleanPageId, message: finalMessageText, status: 'received' });
 
             const pageAccessToken = businessData.pageAccessToken || 
                                    businessData.facebookConfig?.accessToken || 
@@ -671,19 +769,24 @@ app.post(webhookPaths, async (req, res) => {
 
             if (!pageAccessToken) {
               console.error(`[Webhook] No access token for biz: ${bizId}. Data:`, JSON.stringify(businessData));
-              await logActivity(bizId!, 'ERROR', 'ফেসবুক অ্যাক্সেস টোকেন পাওয়া যায়নি। আপনার সেটিংস থেকে ফেসবুক পেজ কানেক্ট করুন।', 'error', ownerId);
+              const noTokenMsg = 'ফেসবুক পেজ এক্সেস টোকেন (Page Access Token) পাওয়া যায়নি। সেটিংস থেকে Token দিন।';
+              await logActivity(bizId!, 'ERROR', noTokenMsg, 'error', ownerId);
+              await saveMessengerLog(bizId!, { senderId, pageId: cleanPageId, message: finalMessageText, status: 'error', error: noTokenMsg });
               continue;
             }
 
-            if (!process.env.GEMINI_API_KEY || !genAI) {
-              console.error('[Webhook] Gemini AI not configured');
-              await logActivity(bizId!, 'ERROR', 'Gemini AI Key কনফিগার করা নেই। অ্যাডমিন প্যানেলে চেক করুন।', 'error', ownerId);
+            const aiConfig = await getEffectiveGeminiConfig();
+            if (!aiConfig.apiKey) {
+              console.error('[Webhook] Gemini AI API key not configured in system');
+              const noAiMsg = 'সেন্ট্রাল জেমিনি এপিআই কি কনফিগার করা নেই। অ্যাডমিন প্যানেলে API Key প্রদান করুন।';
+              await logActivity(bizId!, 'ERROR', noAiMsg, 'error', ownerId);
+              await saveMessengerLog(bizId!, { senderId, pageId: cleanPageId, message: finalMessageText, status: 'error', error: noAiMsg });
               continue;
             }
 
             // AI Processing
-            console.log(`[Webhook] Starting AI processing...`);
-            await logActivity(bizId!, 'AI_START', 'বটের কাছে পাঠানো হচ্ছে...', 'info', ownerId);
+            console.log(`[Webhook] Starting AI processing with model: ${aiConfig.model}`);
+            await logActivity(bizId!, 'AI_START', `বটের কাছে পাঠানো হচ্ছে (${aiConfig.model})...`, 'info', ownerId);
 
             const products = (businessData.products || []).map((p: any) => ({
               id: p.id,
@@ -718,7 +821,7 @@ ${generalFaqs || 'কোনো সাধারণ FAQ নেই।'}
 পণ্যভিত্তিক বিশেষ প্রশ্নোত্তর FAQs (সাইজ, মেটেরিয়াল, কোয়ালিটি):
 ${productFaqs || 'কোনো পণ্যভিত্তিক FAQ নেই।'}
 
-অতিরিক্ত নিয়ম ও ব্যক্তিত্ব: ${businessData.botPersona || ''}
+অতিরিক্ত নিয়ম ও ব্যক্তিত্ব: ${businessData.customSystemPrompt || businessData.botPersona || ''}
 
 নির্দেশনা:
 ১. সবসময় নম্র ও মার্জিত বাংলায় কথা বলবে।
@@ -734,12 +837,17 @@ ${chatHistoryText}
 
 কাস্টমার: ${finalMessageText}`;
               
+              const startTime = Date.now();
               try {
                 console.log(`[Webhook] Calling Gemini AI for biz: ${bizId}`);
-                const aiModelName = businessData.selectedAiModel || "gemini-3.7-flash";
-                const model = genAI!.getGenerativeModel({ model: aiModelName === 'gemini-1.5-flash' || aiModelName === 'gemini-2.5-flash' ? 'gemini-3.7-flash' : aiModelName });
-                const result = await model.generateContent(prompt);
-                const responseText = result.response.text();
+                const ai = new GoogleGenAI({ apiKey: aiConfig.apiKey });
+                const aiResponse = await ai.models.generateContent({
+                  model: aiConfig.model,
+                  contents: prompt
+                });
+
+                const responseText = aiResponse.text?.trim() || '';
+                const latencyMs = Date.now() - startTime;
                 
                 let reply = "";
                 let aiRes: any = null;
@@ -756,19 +864,28 @@ ${chatHistoryText}
                 }
 
                 if (!reply || reply.trim().length === 0) {
-                  throw new Error("AI generated an empty reply.");
+                  reply = 'ধন্যবাদ! আপনার মেসেজটি আমরা পেয়েছি। আমাদের সেলস টিম শীঘ্রই আপনার সাথে যোগাযোগ করবে।';
                 }
 
                 console.log(`[Webhook] AI Reply: ${reply.substring(0, 30)}...`);
                 
-                // Send Response to Facebook
+                // Send Response to Facebook Graph API
                 console.log(`[Webhook] Sending response to Facebook: ${senderId}`);
-                await axios.post(`https://graph.facebook.com/v18.0/me/messages?access_token=${pageAccessToken}`, {
+                await axios.post(`https://graph.facebook.com/v21.0/me/messages?access_token=${pageAccessToken}`, {
                   recipient: { id: senderId },
                   message: { text: reply.trim() }
-                }, { timeout: 10000 });
+                }, { timeout: 12000 });
 
                 await saveChatMessage(bizId!, senderId, 'bot', reply.trim()).catch(e => console.error('Save chat error:', e));
+                await saveMessengerLog(bizId!, {
+                  senderId,
+                  pageId: cleanPageId,
+                  message: finalMessageText,
+                  reply: reply.trim(),
+                  status: 'replied',
+                  latencyMs
+                });
+
                 console.log('[Webhook] Reply sequence finished successfully');
                 await logActivity(bizId!, 'REPLY_SENT', `উত্তর পাঠানো হয়েছে: "${reply.substring(0, 50)}..."`, 'success', ownerId);
 
@@ -786,15 +903,24 @@ ${chatHistoryText}
                   }
                 }
               } catch (err: any) {
+                const latencyMs = Date.now() - startTime;
                 console.error('[AI/Reply Error]', err.response?.data || err.message);
                 const errorMsg = err.response?.data?.error?.message || err.message;
                 await logActivity(bizId!, 'ERROR', `বট রিপ্লাই দিতে ব্যর্থ হয়েছে: ${errorMsg}`, 'error', ownerId);
+                await saveMessengerLog(bizId!, {
+                  senderId,
+                  pageId: cleanPageId,
+                  message: finalMessageText,
+                  status: 'error',
+                  error: errorMsg,
+                  latencyMs
+                });
                 
-                // Fallback messaging
+                // Fallback messaging to Facebook
                 try {
-                  await axios.post(`https://graph.facebook.com/v18.0/me/messages?access_token=${pageAccessToken}`, {
+                  await axios.post(`https://graph.facebook.com/v21.0/me/messages?access_token=${pageAccessToken}`, {
                     recipient: { id: senderId },
-                    message: { text: "দুঃখিত, আমি এই মুহূর্তে উত্তর দিতে পারছি না। দয়া করে কিছুক্ষণ পর আবার চেষ্টা করুন।" }
+                    message: { text: "ধন্যবাদ আপনার বার্তার জন্য! আমাদের সেলস অ্যাসিস্ট্যান্ট শীঘ্রই আপনার সাথে যুক্ত হচ্ছে।" }
                   });
                 } catch (e) {}
               }
@@ -808,6 +934,113 @@ ${chatHistoryText}
       console.error('Webhook Process error', e);
     }
   })();
+});
+
+// Meta Graph API Token Health Test
+app.post('/api/messenger/test-token', async (req, res) => {
+  const { pageAccessToken } = req.body;
+  if (!pageAccessToken || typeof pageAccessToken !== 'string') {
+    return res.status(400).json({ success: false, error: 'Page Access Token প্রদান করুন।' });
+  }
+
+  try {
+    const metaRes = await axios.get(`https://graph.facebook.com/v21.0/me?fields=id,name,category,link&access_token=${encodeURIComponent(pageAccessToken.trim())}`);
+    return res.json({
+      success: true,
+      page: metaRes.data
+    });
+  } catch (err: any) {
+    const errorData = err.response?.data?.error;
+    const msg = errorData?.message || err.message || 'ফেসবুক টোকেন যাচাই ব্যর্থ হয়েছে';
+    return res.status(400).json({
+      success: false,
+      error: `ফেসবুক এরর: ${msg}`
+    });
+  }
+});
+
+// Full-Pipeline Simulated Test Message (Simulates an incoming customer message to test the AI live)
+app.post('/api/messenger/simulate-message', async (req, res) => {
+  const { businessId, message, senderId } = req.body;
+  if (!businessId || !message) {
+    return res.status(400).json({ success: false, error: 'Business ID এবং Message প্রয়োজন' });
+  }
+
+  let businessData: any = null;
+  if (adminDb) {
+    const d = await adminDb.collection('businesses').doc(businessId).get();
+    if (d.exists) businessData = d.data();
+  }
+  if (!businessData && db) {
+    const d = await getDoc(doc(db, 'businesses', businessId));
+    if (d.exists()) businessData = d.data();
+  }
+
+  if (!businessData) {
+    return res.status(404).json({ success: false, error: 'দোকান পাওয়া যায়নি।' });
+  }
+
+  const aiConfig = await getEffectiveGeminiConfig();
+  if (!aiConfig.apiKey) {
+    return res.status(400).json({ success: false, error: 'সেন্ট্রাল জেমিনি এপিআই কি কনফিগার করা নেই। অ্যাডমিন প্যানেল থেকে দিন।' });
+  }
+
+  const startTime = Date.now();
+  try {
+    const ai = new GoogleGenAI({ apiKey: aiConfig.apiKey });
+    const products = (businessData.products || []).map((p: any) => ({
+      name: p.name,
+      price: p.price,
+      minPrice: p.minPrice || p.price,
+      category: p.category || 'General'
+    }));
+
+    const prompt = `তুমি "${businessData.name || 'আমাদের স্টোর'}" এর এআই সেলস অ্যাসিস্ট্যান্ট।
+কাস্টমারের বার্তার বন্ধুত্বপূর্ণ ও তথ্যবহুল উত্তর দাও।
+
+পণ্যতালিকা:
+${JSON.stringify(products, null, 2)}
+
+কাস্টমার: ${message}`;
+
+    const response = await ai.models.generateContent({
+      model: aiConfig.model,
+      contents: prompt
+    });
+
+    const reply = response.text?.trim() || 'ধন্যবাদ! আপনার মেসেজ পেয়েছি।';
+    const latencyMs = Date.now() - startTime;
+
+    await saveMessengerLog(businessId, {
+      senderId: senderId || 'Simulated_Tester',
+      pageId: businessData.pageId || businessData.facebookPageId || 'TEST_PAGE',
+      message: message,
+      reply: reply,
+      status: 'replied',
+      latencyMs
+    });
+
+    return res.json({
+      success: true,
+      reply,
+      latencyMs,
+      model: aiConfig.model
+    });
+  } catch (err: any) {
+    const latencyMs = Date.now() - startTime;
+    await saveMessengerLog(businessId, {
+      senderId: senderId || 'Simulated_Tester',
+      message: message,
+      status: 'error',
+      error: err.message,
+      latencyMs
+    });
+    return res.status(500).json({
+      success: false,
+      error: err.message,
+      latencyMs
+    });
+  }
 });
 
 // Manual message sending from Dashboard (Live Chat)
