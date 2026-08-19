@@ -119,3 +119,31 @@ export function orderIdentityKey(order: OrderIdentity & { id?: string }): string
   if (ip) return `ip:${ip}`;
   return `id:${order.id || 'unknown'}`;
 }
+
+export function latestOrdersByIdentity<T extends OrderIdentity & { id?: string }>(orders: T[]): T[] {
+  const latest = new Map<string, T>();
+  const sorted = [...orders].sort((a, b) => orderCreatedAtMs(b) - orderCreatedAtMs(a));
+  for (const order of sorted) {
+    const key = orderIdentityKey(order);
+    if (!latest.has(key)) latest.set(key, order);
+  }
+  return [...latest.values()];
+}
+
+export function duplicateCountById<T extends OrderIdentity & { id?: string }>(orders: T[]): Map<string, number> {
+  const groups = new Map<string, T[]>();
+  for (const order of orders) {
+    const key = orderIdentityKey(order);
+    const list = groups.get(key) || [];
+    list.push(order);
+    groups.set(key, list);
+  }
+  const counts = new Map<string, number>();
+  for (const list of groups.values()) {
+    if (list.length < 2) continue;
+    for (const order of list) {
+      if (order.id) counts.set(order.id, list.length);
+    }
+  }
+  return counts;
+}

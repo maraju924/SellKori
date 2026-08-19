@@ -99,6 +99,25 @@ export interface BusinessConfig {
   updatedAt?: any;
 }
 
+export type OrderStatus =
+  | 'pending'
+  | 'confirmed'
+  | 'processing'
+  | 'shipped'
+  | 'delivered'
+  | 'cancelled'
+  | 'returned';
+
+export type PaymentStatus = 'unpaid' | 'paid' | 'refunded' | 'partial';
+export type PaymentMethod = 'cod' | 'bkash' | 'nagad' | 'card' | 'rocket';
+export type OrderPriority = 'normal' | 'urgent' | 'hold';
+
+export interface OrderStatusEvent {
+  status: OrderStatus;
+  at: number;
+  note?: string;
+}
+
 export interface Order {
   id: string;
   businessId: string;
@@ -109,20 +128,33 @@ export interface Order {
   customerName: string;
   phone: string;
   address: string;
+  district?: string;
   quantity: number;
+  productId?: string;
   productName: string;
   unitPrice: number;
   totalPrice: number;
   deliveryFee?: number;
-  status: 'pending' | 'confirmed' | 'processing' | 'shipped' | 'delivered' | 'cancelled';
-  paymentStatus: 'unpaid' | 'paid' | 'refunded';
-  paymentMethod?: 'cod' | 'bkash' | 'nagad' | 'card';
+  discount?: number;
+  status: OrderStatus;
+  paymentStatus: PaymentStatus;
+  paymentMethod?: PaymentMethod;
   courierStatus?: string;
   courierTrackingId?: string;
   courierConsignmentId?: string;
   notes?: string;
+  internalNotes?: string;
+  tags?: string[];
+  priority?: OrderPriority;
+  cancelReason?: string;
+  returnReason?: string;
+  source?: string;
+  insideDhaka?: boolean;
   createdAt?: any;
   createdAtMs?: number;
+  updatedAt?: any;
+  updatedAtMs?: number;
+  statusHistory?: OrderStatusEvent[];
 }
 
 export interface Customer {

@@ -1,6 +1,7 @@
 import {
   isRecentIdentityDuplicate,
   isUntrustedCustomerIp,
+  latestOrdersByIdentity,
   normalizePhone,
   orderIdentityKey,
   ordersShareCustomerIdentity,
@@ -71,6 +72,14 @@ assert(
 assert(
   orderIdentityKey({ phone: '8801712345678', id: 'x' }) === 'phone:01712345678',
   'group key prefers normalized phone'
+);
+
+assert(
+  latestOrdersByIdentity([
+    { id: 'old', phone: '01712345678', createdAtMs: now - 60_000 },
+    { id: 'new', phone: '01712345678', createdAtMs: now },
+  ]).map(o => o.id).join() === 'new',
+  'list keeps the newest order per identity'
 );
 
 console.log('orderIdentity checks passed');
