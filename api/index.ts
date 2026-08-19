@@ -6,7 +6,7 @@ import cors from 'cors';
 import cron from 'node-cron';
 import admin from 'firebase-admin';
 import { getFirestore as getAdminFirestore, FieldValue } from 'firebase-admin/firestore';
-import { initializeApp } from 'firebase/app';
+import { getApp, getApps, initializeApp } from 'firebase/app';
 import { getFirestore, doc, getDoc, collection, addDoc, setDoc, updateDoc, deleteDoc, serverTimestamp, query, where, getDocs, orderBy, limit, Timestamp } from 'firebase/firestore';
 import fs from 'fs';
 import dotenv from 'dotenv';
@@ -63,7 +63,7 @@ try {
   const firebaseConfigPath = path.join(process.cwd(), 'firebase-applet-config.json');
   if (fs.existsSync(firebaseConfigPath)) {
     const firebaseConfig = JSON.parse(fs.readFileSync(firebaseConfigPath, 'utf8'));
-    firebaseApp = initializeApp(firebaseConfig);
+    firebaseApp = getApps().length ? getApp() : initializeApp(firebaseConfig);
     db = firebaseConfig.firestoreDatabaseId 
       ? getFirestore(firebaseApp, firebaseConfig.firestoreDatabaseId) 
       : getFirestore(firebaseApp);
@@ -123,7 +123,7 @@ try {
     const altPath = path.join(__dirname, '..', 'firebase-applet-config.json');
     if (fs.existsSync(altPath)) {
        const firebaseConfig = JSON.parse(fs.readFileSync(altPath, 'utf8'));
-       firebaseApp = initializeApp(firebaseConfig);
+       firebaseApp = getApps().length ? getApp() : initializeApp(firebaseConfig);
        db = firebaseConfig.firestoreDatabaseId 
          ? getFirestore(firebaseApp, firebaseConfig.firestoreDatabaseId) 
          : getFirestore(firebaseApp);
