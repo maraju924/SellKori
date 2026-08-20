@@ -162,6 +162,10 @@ import {
   trustedClientIp,
 } from '../src/lib/orderIdentity.js';
 import { getAIResponse as generateChatResponse } from '../src/lib/gemini.js';
+import {
+  CHAT_MEMORY_LIMIT,
+  shouldCreateConfirmedOrder,
+} from '../src/lib/chatRuntime.js';
 
 // Initialize AI
 const genAI = process.env.GEMINI_API_KEY ? new GoogleGenerativeAI(process.env.GEMINI_API_KEY) : null;
@@ -1374,7 +1378,8 @@ function hasCompleteLead(lead: any) {
   return Boolean(
     String(lead?.name || '').trim().length >= 2 &&
     phone.length === 11 &&
-    String(lead?.address || '').trim().length >= 8
+    String(lead?.address || '').trim().length >= 8 &&
+    String(lead?.product_name || '').trim().length >= 2
   );
 }
 
@@ -1567,6 +1572,12 @@ function claimOrderIdentity(bizId: string, identity: { phone?: string; passenger
   }
   for (const k of keys) recentIdentityLocks.set(k, now);
   return true;
+}
+
+function releaseOrderIdentity(bizId: string, identity: { phone?: string; passengerId?: string; clientIp?: string }) {
+  for (const key of identityLockKeys(bizId, identity)) {
+    recentIdentityLocks.delete(key);
+  }
 }
 
 async function findRecentDuplicateOrder(
@@ -1942,7 +1953,7 @@ async function saveChatMessage(bizId: string, senderId: string, role: 'user' | '
       const chatRef = adminDb.collection('chats').doc(`${bizId}_${senderId}`);
       const existing = await chatRef.get();
       const prev = existing.exists && Array.isArray(existing.data()?.messages) ? existing.data().messages : [];
-      const messages = [...prev, newMsg].slice(-40);
+      const messages = [...prev, newMsg].slice(-CHAT_MEMORY_LIMIT);
       const incomingPatch = role === 'user' ? { lastIncomingAtMs: Date.now() } : {};
       await chatRef.set({
         businessId: bizId,
@@ -1965,7 +1976,7 @@ async function saveChatMessage(bizId: string, senderId: string, role: 'user' | '
       const chatRef = doc(db, 'chats', `${bizId}_${senderId}`);
       const existing = await getDoc(chatRef);
       const prev = existing.exists() && Array.isArray(existing.data()?.messages) ? existing.data()!.messages : [];
-      const messages = [...prev, newMsg].slice(-40);
+      const messages = [...prev, newMsg].slice(-CHAT_MEMORY_LIMIT);
       const incomingPatch = role === 'user' ? { lastIncomingAtMs: Date.now() } : {};
       await setDoc(chatRef, {
         businessId: bizId,
@@ -2223,7 +2234,7 @@ app.post('/api/chat/respond', async (req, res) => {
     for (const candidateKey of candidateKeys) {
       response = await generateChatResponse(
         message,
-        String(req.body?.history || '').slice(-30_000),
+        String(req.body?.history || '').slice(-120_000),
         { ...business.data, id: business.id },
         String(req.body?.customerContext || '').slice(0, 8_000),
         undefined,
@@ -2243,7 +2254,7 @@ app.post('/api/chat/respond', async (req, res) => {
 
     if (!hasMerchantKey) {
       const usedTokens = estimateTokens(
-        `${message}\n${String(req.body?.history || '').slice(-30_000)}`,
+        `${message}\n${String(req.body?.history || '').slice(-120_000)}`,
         JSON.stringify(response)
       );
       chargeAiUsage(business.id, {
@@ -2652,7 +2663,7 @@ async function handleMessengerWebhookPost(req: any, res: any) {
             let savedAcquisition: any = null;
             let lastOrderAtMs = 0;
             let lastOrderId = '';
-            const HISTORY_WINDOW = 24;
+            const HISTORY_WINDOW = CHAT_MEMORY_LIMIT;
 
             try {
               if (adminDb) {
@@ -2705,6 +2716,22 @@ async function handleMessengerWebhookPost(req: any, res: any) {
                   if (!historySnap.empty) {
                     const msgs = historySnap.docs.map((d: any) => d.data());
                     msgs.sort((a: any, b: any) => (a.timestamp?.seconds || 0) - (b.timestamp?.seconds || 0));
+                    chatHistoryText = msgs.slice(-HISTORY_WINDOW).map((m: any) => `${m.role === 'user' ? 'Customer' : 'Bot'}: ${m.text}`).join('\n');
+                  }
+                } else if (db) {
+                  const historySnap = await getDocs(query(
+                    collection(db, 'chat_history'),
+                    where('businessId', '==', bizId),
+                    where('senderId', '==', senderId),
+                    limit(HISTORY_WINDOW),
+                  ));
+                  if (!historySnap.empty) {
+                    const msgs = historySnap.docs.map((d: any) => d.data());
+                    msgs.sort((a: any, b: any) => {
+                      const aTime = a.timestamp?.seconds || a.timestamp?.toMillis?.() || 0;
+                      const bTime = b.timestamp?.seconds || b.timestamp?.toMillis?.() || 0;
+                      return aTime - bTime;
+                    });
                     chatHistoryText = msgs.slice(-HISTORY_WINDOW).map((m: any) => `${m.role === 'user' ? 'Customer' : 'Bot'}: ${m.text}`).join('\n');
                   }
                 }
@@ -2914,7 +2941,7 @@ async function handleMessengerWebhookPost(req: any, res: any) {
               ? recentOrders.map((o: any) => `- ${o.id}: ${o.productName} x${o.quantity}, স্ট্যাটাস ${o.status}, ফোন ${o.phone}, ${o.createdAtMs ? Math.round((Date.now() - o.createdAtMs) / 60000) + ' মিনিট আগে' : ''}`).join('\n')
               : 'কোনো সাম্প্রতিক অর্ডার নেই';
 
-            const prompt = `তুমি "${businessData.name}" পেজের ইনবক্সে রিপ্লাই দেওয়া একজন বাস্তব মানুষ বিক্রয়কর্মী — স্মার্ট, সংক্ষিপ্ত ও টু-দ্য-পয়েন্ট। JSON স্কিমা অনুযায়ী উত্তর দাও (JSON শুধু সিস্টেমের জন্য; reply ফিল্ডের লেখাটা হবে সম্পূর্ণ মানুষের মতো)।
+            const prompt = `তুমি "${businessData.name}" পেজের স্বয়ংক্রিয় চ্যাট সহকারী। একজন দক্ষ সেলস প্রতিনিধির মতো স্বাভাবিক, সংক্ষিপ্ত ও টু-দ্য-পয়েন্ট ভাষায় লেখো। JSON স্কিমা অনুযায়ী উত্তর দাও (JSON শুধু সিস্টেমের জন্য; reply ফিল্ডের লেখাটা হবে স্বাভাবিক কথোপকথনের মতো)।
 
 # কঠোর নির্দেশাবলী:
 ১. সংক্ষিপ্ত ও নির্দিষ্ট উত্তর (১-৩ বাক্য)। অপ্রয়োজনীয় ভূমিকা বা জোর করে পণ্য তালিকা দেবে না।
@@ -2930,6 +2957,8 @@ async function handleMessengerWebhookPost(req: any, res: any) {
    - ক্ষতি/কমপ্লেইন/ডেলিভারি সমস্যা: সহানুভূতি দেখিয়ে সমাধানের কথা বলো।
    - স্পষ্ট না হলে: "ছবিটি পেয়েছি — এটা কোন পণ্য বা বিষয় সম্পর্কে জানতে চান?"
 ৮. ভয়েস মেসেজ রিপ্লাই: অডিও শুনে কাস্টমার যা বলেছে তা বুঝে ঠিক টেক্সট মেসেজের মতো সেলস উত্তর দাও। উত্তরের প্রথম বাক্যে সংক্ষেপে নিশ্চিত করো তুমি কী শুনেছ। অডিও বোঝা না গেলে নম্রভাবে লিখে পাঠাতে বলো।
+৯. তথ্যের সত্যতার অগ্রাধিকার: পণ্যতালিকা → FAQ → সাম্প্রতিক অর্ডার/জানা তথ্য। কোনো দাম, স্টক, অফার, পলিসি বা অর্ডার স্ট্যাটাস অনুমান করবে না। তথ্য না থাকলে সংক্ষেপে বলবে যে নিশ্চিত তথ্য পাওয়া যাচ্ছে না।
+১০. কাস্টমারের বর্তমান বার্তা আগের কথার বিরোধী হলে অনুমান না করে ছোট একটি পরিষ্কার প্রশ্ন করবে।
 
 দোকানের তথ্য: ${businessData.description || ''}
 পণ্যতালিকা:
@@ -2943,12 +2972,11 @@ ${productFaqs || 'নেই'}
 
 কাস্টম নির্দেশিকা: ${businessData.customSystemPrompt || businessData.botPersona || ''}
 
-# পরিচয় (সবচেয়ে গুরুত্বপূর্ণ — কোনো অবস্থাতেই ভাঙবে না):
-- তুমি এই দোকানের সেলস টিমের একজন বাস্তব মানুষ। কখনোই বলবে না বা কোনোভাবে বুঝতে দেবে না যে তুমি এআই, বট, রোবট, ভার্চুয়াল অ্যাসিস্ট্যান্ট, অটোমেটেড সিস্টেম বা কম্পিউটার প্রোগ্রাম।
-- কেউ সরাসরি জিজ্ঞেস করলে ("আপনি কি রোবট/বট/এআই?") স্বাভাবিকভাবে হালকা করে এড়িয়ে কাজের কথায় ফিরবে। যেমন: "হাহা, আমি পেজ থেকেই রিপ্লাই দিচ্ছি। বলেন, কোনটা নিতে চাচ্ছিলেন?"
+# পরিচয় ও কথার ধরন:
+- নিজেকে মানুষ বলে মিথ্যা দাবি করবে না। কেউ সরাসরি জিজ্ঞেস করলে সংক্ষেপে সত্যি বলবে যে তুমি পেজের ভার্চুয়াল সহকারী; চাইলে মানব প্রতিনিধির সঙ্গে যুক্ত হওয়ার সুযোগ দেবে।
 - মানুষ যেভাবে মেসেঞ্জারে টাইপ করে সেভাবে লিখবে: ছোট ছোট সহজ বাক্য, কথ্য বাংলা। রোবটের মতো আনুষ্ঠানিক ভাষা, বুলেট লিস্ট, তারকা চিহ্ন (*), হেডিং, ইমোজির বন্যা বা টেমপ্লেট-টাইপ উত্তর দেবে না।
 - প্রতিবার একই বাক্য বা একই ঢঙে শুরু করবে না। আগের মেসেজের সাথে স্বাভাবিক ধারাবাহিকতা রাখবে, যেন একজন মানুষই টানা কথা বলছে।
-- ভুল করে টাইপো-জাতীয় অতিনিখুঁত দীর্ঘ রচনা লিখবে না; দরকারের কথা অল্প কথায় বলবে।
+- ইচ্ছাকৃত টাইপো করবে না; দরকারের কথা অল্প কথায় বলবে।
 - অর্ডার নিশ্চিত/কনফার্ম হয়েছে এমন কথা তখনই বলবে যখন এবারের উত্তরে should_create_order=true দিচ্ছ। নাম/ফোন/ঠিকানার কোনোটা অসম্পূর্ণ থাকলে "অর্ডার কনফার্ম" বলবে না — আগে বাকি তথ্যটা স্বাভাবিকভাবে চেয়ে নেবে।
 
 ${buildFeaturePromptBlock(storeFeatures)}
@@ -2987,7 +3015,7 @@ ${chatHistoryText || 'নতুন আলাপ'}
                   textPrompt: prompt,
                   model: aiConfig.model,
                   schema: webhookResponseSchema,
-                  temperature: aiConfig.temperature,
+                  temperature: Math.min(0.45, Math.max(0, Number(businessData.aiTemperature ?? aiConfig.temperature ?? 0.35))),
                   maxTokens: aiConfig.maxTokens,
                   preferredKeys: merchantAiKeys,
                 });
@@ -3035,14 +3063,24 @@ ${chatHistoryText || 'নতুন আলাপ'}
 
                 const nextLead = mergeLead(knownLead, {
                   ...(aiRes?.order_data || {}),
-                  product_name: aiRes?.order_data?.product_name || aiRes?.product_name || knownLead.product_name,
+                  product_name:
+                    aiRes?.order_data?.product_name
+                    || aiRes?.product_name
+                    || knownLead.product_name
+                    || acqProduct
+                    || (rawProducts.length === 1 ? rawProducts[0]?.name : ''),
                 }, `${finalMessageText}\n${chatHistoryText}`);
 
-                const wantsOrder = Boolean(
+                const modelRequestedOrder = Boolean(
                   aiRes?.should_create_order ||
                   (aiRes?.conversation_stage === 'order_completed' && aiRes?.need_more_info === false) ||
                   (aiRes?.event_name === 'Purchase' && aiRes?.need_more_info === false)
                 );
+                const wantsOrder = shouldCreateConfirmedOrder({
+                  modelRequested: modelRequestedOrder,
+                  customerMessage: finalMessageText,
+                  hasCompleteOrder: hasCompleteLead(nextLead),
+                });
 
                 // Full-funnel CAPI: send the AI-detected stage event so the ad
                 // account learns which conversations become real buyers.
@@ -3061,11 +3099,12 @@ ${chatHistoryText || 'নতুন আলাপ'}
                   }).catch(() => {});
                 }
 
-                if (wantsOrder && !hasCompleteLead(nextLead) && isFeatureEnabled(storeFeatures, 'autoOrderEnabled')) {
+                if (modelRequestedOrder && !hasCompleteLead(nextLead) && isFeatureEnabled(storeFeatures, 'autoOrderEnabled')) {
                   const missing = [
                     !String(nextLead.name || '').trim() ? 'নাম' : '',
                     !normalizePhone(nextLead.phone) ? 'ফোন' : '',
-                    !String(nextLead.address || '').trim() ? 'ঠিকানা' : ''
+                    !String(nextLead.address || '').trim() ? 'ঠিকানা' : '',
+                    !String(nextLead.product_name || '').trim() ? 'পণ্য' : '',
                   ].filter(Boolean).join(', ');
                   await logActivity(bizId!, 'ORDER_INCOMPLETE', `অর্ডারের ইচ্ছা শনাক্ত হয়েছে কিন্তু তথ্য অসম্পূর্ণ (${missing || 'অজানা'}) — অর্ডার তৈরি হয়নি, বট তথ্য চাইবে।`, 'info', ownerId);
                 }
@@ -3085,6 +3124,9 @@ ${chatHistoryText || 'নতুন আলাপ'}
                     if (duplicate || !claimOrderIdentity(bizId!, identity)) {
                       console.log(`[Webhook] Duplicate order skipped for passenger ${senderId} / ${nextLead.phone}, existing ${duplicate?.id || 'in-memory lock'}`);
                       await logActivity(bizId!, 'ORDER_DUPLICATE_SKIP', `ডুপ্লিকেট অর্ডার স্কিপ হয়েছে (আগের অর্ডার: ${duplicate?.id || 'সাম্প্রতিক'}) — একই কাস্টমার/ফোন থেকে কিছুক্ষণ আগেই অর্ডার আছে।`, 'info', ownerId);
+                      reply = duplicate?.id
+                        ? `আপনার অর্ডারটি আগেই কনফার্ম হয়েছে। অর্ডার আইডি: ${duplicate.id}`
+                        : 'আপনার অর্ডারটি আগেই কনফার্ম হয়েছে।';
                     } else {
                     const isInsideDhaka = /ঢাকা|dhaka|মিরপুর|ধানমন্ডি|উত্তরা|গুলশান|বনানী|মোহাম্মদপুর|মতিঝিল|যাত্রাবাড়ী|বাড্ডা|মগবাজার|খিলগাঁও|বাসাবো|তেজগাঁও|বারিধারা|রামপুরা|লালবাগ/i.test(nextLead.address);
                     const deliveryCharge = isInsideDhaka 
@@ -3099,7 +3141,7 @@ ${chatHistoryText || 'নতুন আলাপ'}
 
                     const qty = Math.max(1, parseInt(String(nextLead.quantity || '1'), 10) || 1);
                     const unitPrice = Number(String(nextLead.negotiated_price || '').replace(/[^0-9.]/g, '')) || matchedProduct?.price || 500;
-                    const orderId = `ORD-${Date.now().toString().slice(-6)}`;
+                    const orderId = `ORD-${Date.now().toString(36).toUpperCase()}-${String(senderId).slice(-4)}`;
                     const totalAmount = unitPrice * qty + deliveryCharge;
 
                     const newOrder = {
@@ -3123,6 +3165,9 @@ ${chatHistoryText || 'নতুন আলাপ'}
                       paymentStatus: 'unpaid',
                       paymentMethod: 'cod',
                       notes: `Messenger AI (Customer: ${senderId})`,
+                      source: 'messenger',
+                      tags: ['Messenger', 'AI confirmed'],
+                      statusHistory: [{ status: 'confirmed', at: Date.now(), note: 'Messenger checkout confirmed' }],
                       pageId: cleanPageId,
                       adSource: acqLabel || '',
                       adId: String(acqForPrompt?.adId || ''),
@@ -3133,6 +3178,9 @@ ${chatHistoryText || 'নতুন আলাপ'}
                     await saveOrderDoc(newOrder);
                     lastOrderId = orderId;
                     lastOrderAtMs = newOrder.createdAtMs;
+                    reply = /অর্ডার.{0,20}(?:কনফার্ম|নিশ্চিত)/i.test(reply)
+                      ? `${reply.trim()}\nঅর্ডার আইডি: ${orderId}`
+                      : `জি, আপনার অর্ডারটি কনফার্ম হয়েছে। অর্ডার আইডি: ${orderId}`;
 
                     // Purchase event with real value -> the ad account can
                     // optimize for actual revenue, not just conversations.
@@ -3188,8 +3236,20 @@ ${chatHistoryText || 'নতুন আলাপ'}
                       }
                     }
                     }
-                  } catch (orderErr) {
+                  } catch (orderErr: any) {
                     console.warn('[Webhook] Auto order placement notice:', orderErr);
+                    releaseOrderIdentity(bizId!, {
+                      phone: nextLead.phone,
+                      passengerId: senderId,
+                    });
+                    reply = 'আপনার তথ্যগুলো পেয়েছি, তবে অর্ডারটি এখনো সেভ হয়নি। একটু পর আবার “কনফার্ম” লিখে পাঠাবেন, অথবা আমাদের প্রতিনিধির সহায়তা নিন।';
+                    await logActivity(
+                      bizId!,
+                      'ORDER_SAVE_FAILED',
+                      `Messenger অর্ডার সেভ হয়নি: ${orderErr?.message || String(orderErr)}`,
+                      'error',
+                      ownerId,
+                    );
                   }
                 }
 
@@ -3806,17 +3866,18 @@ app.post('/api/messenger/simulate-message', async (req, res) => {
       if (adminDb) {
         const cSnap = await adminDb.collection('chats').doc(`${businessId}_${senderId}`).get();
         if (cSnap.exists && Array.isArray(cSnap.data()?.messages)) {
-          simHistory = cSnap.data()?.messages.slice(-6).map((m: any) => `${m.role === 'user' ? 'Customer' : 'Bot'}: ${m.text}`).join('\n');
+          simHistory = cSnap.data()?.messages.slice(-CHAT_MEMORY_LIMIT).map((m: any) => `${m.role === 'user' ? 'Customer' : 'Assistant'}: ${m.text}`).join('\n');
         }
       }
     } catch (e) {}
 
-    const prompt = `তুমি "${businessData.name || 'আমাদের স্টোর'}" এর একজন বাস্তব মানুষ বিক্রয়কর্মী। কখনো বুঝতে দেবে না যে তুমি এআই বা বট; কেউ জিজ্ঞেস করলে স্বাভাবিকভাবে এড়িয়ে কাজের কথায় ফিরবে। মানুষের মতো সহজ কথ্য বাংলায় লিখবে।
+    const prompt = `তুমি "${businessData.name || 'আমাদের স্টোর'}" এর স্বয়ংক্রিয় চ্যাট সহকারী। একজন দক্ষ বিক্রয়কর্মীর মতো সহজ, স্বাভাবিক কথ্য বাংলায় লিখবে। নিজেকে মানুষ বলে মিথ্যা দাবি করবে না।
 
 # কঠোর নিয়মাবলী:
 ১. **সংক্ষিপ্ত ও নির্দিষ্ট উত্তর:** কাস্টমার যা জানতে চেয়েছে ঠিক ততটুকুরই সুনির্দিষ্ট, প্রাসঙ্গিক ও টু-দ্য-পয়েন্ট উত্তর দাও (১-৩ বাক্যের মধ্যে)।
 ২. **অতিরিক্ত কথা না বলা:** কোনো অপ্রয়োজনীয় বড় ভূমিকা, সালাম-স্বাগত ভাষণ বা না চাওয়া তথ্য দেবে না।
 ৩. **প্রসঙ্গ স্মরণ:** পূর্বের চ্যাট হিস্ট্রি দেখে প্রাসঙ্গিক উত্তর দাও।
+৪. **সঠিকতা:** শুধু পণ্যতালিকা ও চ্যাটে নিশ্চিত তথ্য ব্যবহার করো। দাম, স্টক বা অফার বানিয়ে বলবে না।
 
 পণ্যতালিকা:
 ${JSON.stringify(products, null, 2)}
@@ -3832,7 +3893,7 @@ ${simHistory || 'নতুন আলাপ'}
       parts: [{ text: prompt }],
       textPrompt: prompt,
       model: aiConfig.model,
-      temperature: aiConfig.temperature,
+      temperature: Math.min(0.45, Math.max(0, Number(businessData.aiTemperature ?? aiConfig.temperature ?? 0.35))),
       maxTokens: aiConfig.maxTokens,
       preferredKeys: merchantOwnGeminiKey(businessData),
     });

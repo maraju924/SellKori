@@ -28,6 +28,7 @@ import {
   CollectedOrderInfo,
 } from '../../lib/chatOrder';
 import { isFeatureEnabled } from '../../lib/featureFlags';
+import { takeRecentMessages } from '../../lib/chatRuntime';
 
 interface MerchantTestChatProps {
   business: BusinessConfig;
@@ -96,8 +97,7 @@ export function MerchantTestChat({ business }: MerchantTestChatProps) {
       const liveCollected = mergeOrderData(collected, {
         phone: extractBdPhone(textToSend) || collected.phone,
       });
-      const historyStr = [...messages, userMsg]
-        .slice(-24)
+      const historyStr = takeRecentMessages([...messages, userMsg])
         .map(m => `${m.role === 'user' ? 'Customer' : 'Bot'}: ${m.content}`)
         .join('\n');
 
@@ -134,7 +134,7 @@ export function MerchantTestChat({ business }: MerchantTestChatProps) {
 
       setMessages(prev => [...prev, assistantMsg]);
 
-      if (isFeatureEnabled(business.features, 'autoOrderEnabled') && shouldPlaceOrder(aiResponse, nextCollected, Boolean(orderPlacedId))) {
+      if (isFeatureEnabled(business.features, 'autoOrderEnabled') && shouldPlaceOrder(aiResponse, nextCollected, Boolean(orderPlacedId), textToSend)) {
         const saved = await saveConfirmedOrder({
           business,
           collected: nextCollected,

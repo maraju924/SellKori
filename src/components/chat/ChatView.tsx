@@ -37,6 +37,7 @@ import {
   loadChatSession,
   saveChatSession,
 } from '../../lib/chatSession';
+import { takeRecentMessages } from '../../lib/chatRuntime';
 
 const MAX_MESSAGE_LENGTH = 1_000;
 
@@ -231,8 +232,7 @@ export function ChatView() {
       const liveCollected = mergeOrderData(collected, {
         phone: extractBdPhone(cleanText) || collected.phone,
       });
-      const history = conversation
-        .slice(-24)
+      const history = takeRecentMessages(conversation)
         .map((message) => `${message.role === 'user' ? 'Customer' : 'Assistant'}: ${message.content}`)
         .join('\n');
       const recentOrderNote = orderPlacedId
@@ -262,18 +262,12 @@ export function ChatView() {
       });
       setCollected(nextCollected);
       if (aiResponse.summary) setChatSummary(aiResponse.summary);
-      setMessages((previous) => [...previous, {
-        id: messageId('assistant'),
-        role: 'assistant',
-        content: aiResponse.reply,
-        timestamp: Date.now(),
-        aiMetadata: aiResponse,
-      }]);
 
       let placedId = orderPlacedId;
+      let assistantReply = aiResponse.reply;
       if (
         isFeatureEnabled(business.features, 'autoOrderEnabled')
-        && shouldPlaceOrder(aiResponse, nextCollected, Boolean(orderPlacedId))
+        && shouldPlaceOrder(aiResponse, nextCollected, Boolean(orderPlacedId), cleanText)
       ) {
         const saved = await saveConfirmedOrder({
           business,
@@ -286,12 +280,23 @@ export function ChatView() {
         if (saved) {
           placedId = saved.id;
           setOrderPlacedId(saved.id);
+          assistantReply = /অর্ডার.{0,20}(?:কনফার্ম|নিশ্চিত)/i.test(assistantReply)
+            ? `${assistantReply.trim()}\nঅর্ডার আইডি: ${saved.id}`
+            : `জি, আপনার অর্ডারটি কনফার্ম হয়েছে। অর্ডার আইডি: ${saved.id}`;
           await maybeAutoBookSteadfast(business, saved.id, false);
           toast.success('অর্ডার সফলভাবে গ্রহণ করা হয়েছে', {
             description: `অর্ডার রেফারেন্স: ${saved.id}`,
           });
         }
       }
+
+      setMessages((previous) => [...previous, {
+        id: messageId('assistant'),
+        role: 'assistant',
+        content: assistantReply,
+        timestamp: Date.now(),
+        aiMetadata: aiResponse,
+      }]);
 
       // Keep the legacy memory fresh for older deployed clients.
       try {
