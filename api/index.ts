@@ -34,6 +34,8 @@ import {
   type BroadcastAudience
 } from '../src/lib/outreach.js';
 
+export const maxDuration = 60;
+
 dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
@@ -216,23 +218,55 @@ const responseSchema = {
 };
 
 // Meta Webhook Message Deduplication Cache (Idempotency Engine)
-const processedMessagesCache = new Map<string, number>();
+interface ProcessedMessageState {
+  startedAt: number;
+  completedAt?: number;
+}
+
+const processedMessagesCache = new Map<string, ProcessedMessageState>();
+const MESSAGE_PROCESSING_STALE_MS = 15 * 1000;
+const MESSAGE_DEDUP_TTL_MS = 10 * 60 * 1000;
+
 function isDuplicateMessage(mid: string): boolean {
   if (!mid) return false;
   const now = Date.now();
   if (processedMessagesCache.size > 2000) {
-    for (const [key, timestamp] of processedMessagesCache.entries()) {
-      if (now - timestamp > 10 * 60 * 1000) {
+    for (const [key, state] of processedMessagesCache.entries()) {
+      const timestamp = state.completedAt || state.startedAt;
+      const ttl = state.completedAt ? MESSAGE_DEDUP_TTL_MS : MESSAGE_PROCESSING_STALE_MS;
+      if (now - timestamp > ttl) {
         processedMessagesCache.delete(key);
       }
     }
   }
-  if (processedMessagesCache.has(mid)) {
+  const existing = processedMessagesCache.get(mid);
+  if (
+    existing
+    && (
+      (existing.completedAt !== undefined && now - existing.completedAt <= MESSAGE_DEDUP_TTL_MS)
+      || (existing.completedAt === undefined && now - existing.startedAt <= MESSAGE_PROCESSING_STALE_MS)
+    )
+  ) {
     console.log(`[Webhook Deduplication] Skipping duplicate message ID: ${mid}`);
     return true;
   }
-  processedMessagesCache.set(mid, now);
+  processedMessagesCache.set(mid, { startedAt: now });
   return false;
+}
+
+function markMessageProcessed(mid: string) {
+  if (!mid) return;
+  const now = Date.now();
+  processedMessagesCache.set(mid, {
+    startedAt: processedMessagesCache.get(mid)?.startedAt || now,
+    completedAt: now
+  });
+}
+
+function releaseMessageForRetry(mid: string) {
+  if (!mid) return;
+  const state = processedMessagesCache.get(mid);
+  if (state && !state.completedAt) processedMessagesCache.delete(mid);
 }
 
 // Send a product image to Messenger as an image attachment
@@ -396,7 +430,9 @@ async function sendTypingOn(pageAccessToken: string, senderId: string) {
 // Keep the typing bubble visible a bit longer for very fast AI replies so
 // responses feel hand-typed rather than instant.
 async function humanTypingPause(pageAccessToken: string, senderId: string, replyText: string, alreadyElapsedMs: number) {
-  const targetMs = Math.min(4000, 1200 + String(replyText || '').length * 15);
+  // Never spend several seconds of a webhook's delivery budget on cosmetic
+  // delay; reliability and a prompt answer are more important.
+  const targetMs = Math.min(1200, 500 + String(replyText || '').length * 5);
   const remaining = targetMs - Math.max(0, alreadyElapsedMs);
   if (remaining < 250) return;
   await sendTypingOn(pageAccessToken, senderId);
@@ -855,8 +891,12 @@ async function handlePageFeedComments(entry: any, pathBizId?: string) {
   const products = Array.isArray(businessData.products) ? businessData.products : [];
 
   for (const event of events) {
-    if (isDuplicateMessage(`comment:${event.commentId}`)) continue;
-    if (!shouldPrivateReplyToComment(event, keywords)) continue;
+    const dedupKey = `comment:${event.commentId}`;
+    if (isDuplicateMessage(dedupKey)) continue;
+    if (!shouldPrivateReplyToComment(event, keywords)) {
+      markMessageProcessed(dedupKey);
+      continue;
+    }
 
     const product = findMentionedProductName(event.message, products);
     const inboxText = personalizeOutreachMessage(
@@ -895,7 +935,9 @@ async function handlePageFeedComments(entry: any, pathBizId?: string) {
         status: 'replied',
         source: 'comment'
       });
+      markMessageProcessed(dedupKey);
     } catch (err: any) {
+      releaseMessageForRetry(dedupKey);
       const fbError = err.response?.data?.error;
       const errorMsg = fbError?.message || err.message || 'কমেন্ট প্রাইভেট রিপ্লাই ব্যর্থ';
       console.error('[Webhook] Comment-to-inbox failed:', fbError || err.message);
@@ -1085,18 +1127,43 @@ function estimateTokens(promptText: string, replyText: string): number {
   return Math.max(50, Math.ceil((String(promptText).length + String(replyText).length) / 4));
 }
 
+function withDeadline<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(`${label} timed out after ${timeoutMs}ms`)),
+      timeoutMs
+    );
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      }
+    );
+  });
+}
+
 async function aiGenerate(opts: AiGenerateOptions): Promise<AiGenerateResult> {
   const pool = await getAiPool();
   const models = Array.from(new Set([opts.model, 'gemini-3.1-flash-lite'].filter(Boolean)));
   const geminiCandidates: PooledGeminiKey[] = [
     ...(opts.preferredKeys || []),
     ...pool.geminiKeys,
-  ];
+  ].filter((candidate, index, all) =>
+    Boolean(candidate.key) && all.findIndex((item) => item.key === candidate.key) === index
+  );
+  const deadlineAt = Date.now() + 15_000;
+  const remainingMs = () => Math.max(0, deadlineAt - Date.now());
   let lastErr: any = null;
 
+  geminiKeys:
   for (const gk of geminiCandidates) {
     if (!gk.enabled || !gk.key || !aiKeyAvailable(gk.key)) continue;
     for (const modelName of models) {
+      if (remainingMs() < 500) break geminiKeys;
       try {
         const ai = new GoogleGenAI({ apiKey: gk.key });
         const config: any = {
@@ -1107,11 +1174,15 @@ async function aiGenerate(opts: AiGenerateOptions): Promise<AiGenerateResult> {
           config.responseMimeType = 'application/json';
           config.responseSchema = opts.schema;
         }
-        const r = await ai.models.generateContent({
-          model: modelName,
-          contents: [{ role: 'user', parts: opts.parts }],
-          config,
-        });
+        const r = await withDeadline(
+          ai.models.generateContent({
+            model: modelName,
+            contents: [{ role: 'user', parts: opts.parts }],
+            config,
+          }),
+          Math.min(10_000, remainingMs()),
+          `Gemini ${modelName}`
+        );
         const text = r.text?.trim() || '';
         if (text) {
           const usage: any = (r as any).usageMetadata || {};
@@ -1145,6 +1216,7 @@ async function aiGenerate(opts: AiGenerateOptions): Promise<AiGenerateResult> {
     { name: 'openai', key: pool.openAiKey, base: 'https://api.openai.com/v1', model: pool.openAiModel },
   ];
   for (const p of fallbackProviders) {
+    if (remainingMs() < 500) break;
     if (!p.key || !aiKeyAvailable(p.key)) continue;
     try {
       const r = await axios.post(`${p.base}/chat/completions`, {
@@ -1154,7 +1226,7 @@ async function aiGenerate(opts: AiGenerateOptions): Promise<AiGenerateResult> {
         max_tokens: opts.maxTokens ?? 1024,
       }, {
         headers: { Authorization: `Bearer ${p.key}` },
-        timeout: 30000,
+        timeout: Math.min(10_000, remainingMs()),
       });
       const text = String(r.data?.choices?.[0]?.message?.content || '').trim();
       if (text) {
@@ -2440,6 +2512,7 @@ async function handleMessengerWebhookPost(req: any, res: any) {
   (req as any)._messengerWebhookHandled = true;
   const pathBizId = webhookBusinessIdFromReq(req);
   const body = req.body;
+  let webhookHadFailure = false;
 
   // IMPORTANT: We used to ack Facebook immediately with res.send() and then
   // process the message in a detached async IIFE "in the background".
@@ -2448,9 +2521,9 @@ async function handleMessengerWebhookPost(req: any, res: any) {
   // guarantee that code after res.send() keeps running. This was the root
   // cause of the bot "sometimes replying, sometimes not": whether the
   // background work finished before Vercel froze the instance was random.
-  // Fix: fully await processing and only respond once it's done. Facebook
-  // allows up to ~20s before it considers the webhook a timeout/retry,
-  // which is comfortably more than a Gemini call + Graph API send.
+  // Fix: fully await processing and only respond once it's done. All AI work
+  // is deadline-bounded below, and transient failures return 503 so Meta can
+  // retry instead of permanently dropping the customer's message.
   try {
       // Diagnostic log
       await logActivity(pathBizId || 'system', 'WEBHOOK_PROCESSED', `Webhook hit. Entries: ${body.entry?.length || 0}`, 'info', 'system', body);
@@ -2470,6 +2543,8 @@ async function handleMessengerWebhookPost(req: any, res: any) {
         if (!messaging) continue;
 
         for (const webhookEvent of messaging) {
+          let claimedMessageMid = '';
+          let eventFailed = false;
           try {
             const senderId = String(webhookEvent.sender?.id || '').trim();
             const messageText = webhookEvent.message?.text || '';
@@ -2493,6 +2568,7 @@ async function handleMessengerWebhookPost(req: any, res: any) {
               console.log(`[Webhook] Duplicate message mid=${messageMid} ignored.`);
               continue;
             }
+            claimedMessageMid = messageMid;
 
             // Identify Store by Page ID (Multi-Strategy Bulletproof Matcher)
             const cleanPageId = String(pageId).trim();
@@ -2778,7 +2854,16 @@ async function handleMessengerWebhookPost(req: any, res: any) {
 
             let downloadedMedia: DownloadedMedia[] = [];
             if (incomingMedia.length > 0) {
-              downloadedMedia = await downloadIncomingMedia(incomingMedia, pageAccessToken);
+              try {
+                downloadedMedia = await withDeadline(
+                  downloadIncomingMedia(incomingMedia, pageAccessToken),
+                  10_000,
+                  'Messenger media download'
+                );
+              } catch (mediaErr: any) {
+                console.warn('[Webhook] Media download deadline reached; continuing with text context:', mediaErr?.message);
+                downloadedMedia = [];
+              }
               if (!isFeatureEnabled(storeFeatures, 'photoReplyEnabled')) {
                 downloadedMedia = downloadedMedia.filter((m) => m.kind !== 'image');
               }
@@ -3230,22 +3315,35 @@ ${chatHistoryText || 'নতুন আলাপ'}
                     });
                   } catch (fallbackErr: any) {
                     console.error('[Webhook] Resilient fallback send failed:', fallbackErr.response?.data || fallbackErr.message);
+                    throw fallbackErr;
                   }
                 }
               }
 
           } catch (e: any) {
+            eventFailed = true;
+            webhookHadFailure = true;
             console.error('[Event Loop Error]', e.message);
+          } finally {
+            if (claimedMessageMid) {
+              if (eventFailed) releaseMessageForRetry(claimedMessageMid);
+              else markMessageProcessed(claimedMessageMid);
+            }
           }
         }
       }
     } catch (e) {
+      webhookHadFailure = true;
       console.error('Webhook Process error', e);
     } finally {
-      // Respond only after processing has actually finished (success or
-      // failure) so Vercel doesn't freeze the function mid-way through
-      // sending the AI reply. See note above.
-      try { res.status(200).send('EVENT_RECEIVED'); } catch (_) {}
+      // 503 is intentional for transient failures: Meta retries delivery.
+      // Successfully handled message IDs remain deduplicated; failed IDs are
+      // released above so the retry can complete them.
+      try {
+        res.status(webhookHadFailure ? 503 : 200).send(
+          webhookHadFailure ? 'RETRY_EVENT' : 'EVENT_RECEIVED'
+        );
+      } catch (_) {}
     }
 }
 
