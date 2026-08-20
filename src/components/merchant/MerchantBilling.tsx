@@ -60,35 +60,6 @@ export function MerchantBilling({ business }: MerchantBillingProps) {
     })();
   }, [payments, business.id]);
 
-  // Returning from the ZiniPay hosted page: ?payment=verify&valId=...
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    if (params.get('payment') !== 'verify') return;
-    const valId = params.get('valId');
-    if (!valId) return;
-    window.history.replaceState({}, '', window.location.pathname);
-    (async () => {
-      try {
-        toast.info('পেমেন্ট যাচাই হচ্ছে...');
-        const res = await fetch('/api/billing/verify', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ valId })
-        });
-        const data = await parseJsonResponse(res);
-        if (res.ok && data.success && data.paid) {
-          toast.success(`৳${data.amount} পেমেন্ট সফল!`, {
-            description: `${Number(data.tokens).toLocaleString()} টোকেন যুক্ত ${data.credited ? 'হয়েছে' : 'হচ্ছে'}।`
-          });
-        } else {
-          toast.error(data.error || `পেমেন্ট এখনো সম্পন্ন হয়নি (${data.status || 'PENDING'})`);
-        }
-      } catch (e: any) {
-        toast.error(e.message || 'পেমেন্ট যাচাই ব্যর্থ');
-      }
-    })();
-  }, []);
-
   const tokenPacks = [
     {
       id: 1,

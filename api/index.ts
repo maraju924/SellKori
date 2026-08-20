@@ -3196,6 +3196,26 @@ app.get(['/api/messenger/health', '/api/webhook/health'], (_req, res) => {
 // ---------------------------------------------------------------------------
 const ZINIPAY_BASE = 'https://api.zinipay.com';
 
+function zinipayErrorMessage(err: unknown, fallback: string): string {
+  if (axios.isAxiosError(err)) {
+    const data = err.response?.data as unknown;
+    if (typeof data === 'string' && data.trim()) return data.trim().slice(0, 400);
+    if (data && typeof data === 'object') {
+      const o = data as Record<string, unknown>;
+      const msg = o.message || o.error || o.msg;
+      if (typeof msg === 'string' && msg.trim()) return msg.trim();
+    }
+    return err.message || fallback;
+  }
+  return err instanceof Error ? err.message : fallback;
+}
+
+function zinipayDomainHint(message: string): string {
+  return /domain|redirect|brand|website/i.test(message)
+    ? ' — ZiniPay ড্যাশবোর্ড → Brands-এ Website URL এই সাইটের ডোমেইনের সাথে হুবহু মিলতে হবে (যেমন https://sell-kori.vercel.app)।'
+    : '';
+}
+
 async function getBillingSettings() {
   let zinipayApiKey = '';
   let tokenRatePerLakh = 20;
@@ -3253,6 +3273,25 @@ async function loadPaymentDoc(valId: string): Promise<any | null> {
   return null;
 }
 
+// ZiniPay's webhook sends THEIR invoice_id (from the payment_url), so we also
+// need to find our payment record by that id.
+async function findPaymentByInvoiceId(invoiceId: string): Promise<any | null> {
+  if (!invoiceId) return null;
+  try {
+    if (adminDb) {
+      const snap = await adminDb.collection('payments').where('invoiceId', '==', invoiceId).limit(1).get();
+      if (!snap.empty) return { id: snap.docs[0].id, ...snap.docs[0].data() };
+    }
+  } catch (_) {}
+  try {
+    if (db) {
+      const snap = await getDocs(query(collection(db, 'payments'), where('invoiceId', '==', invoiceId), limit(1)));
+      if (!snap.empty) return { id: snap.docs[0].id, ...snap.docs[0].data() };
+    }
+  } catch (_) {}
+  return null;
+}
+
 // Credits the merchant's token wallet server-side (Admin SDK only — client
 // SDK from the server is unauthenticated and rules would deny it). Returns
 // true when credited so the caller can mark the payment as settled.
@@ -3271,8 +3310,11 @@ async function creditPaymentTokens(payment: any): Promise<boolean> {
   return false;
 }
 
-async function settleZinipayPayment(valId: string): Promise<{ paid: boolean; credited: boolean; payment: any | null; status?: string }> {
-  const payment = await loadPaymentDoc(valId);
+async function settleZinipayPayment(lookupId: string): Promise<{ paid: boolean; credited: boolean; payment: any | null; status?: string }> {
+  // lookupId can be our own valId (payments doc id, used in redirect_url)
+  // or ZiniPay's invoice_id (used in their webhook callback).
+  let payment = await loadPaymentDoc(lookupId);
+  if (!payment) payment = await findPaymentByInvoiceId(lookupId);
   if (!payment) return { paid: false, credited: false, payment: null, status: 'not_found' };
   if (payment.status === 'paid') {
     return { paid: true, credited: payment.credited === true, payment };
@@ -3280,13 +3322,22 @@ async function settleZinipayPayment(valId: string): Promise<{ paid: boolean; cre
   const { zinipayApiKey } = await getBillingSettings();
   if (!zinipayApiKey) return { paid: false, credited: false, payment, status: 'gateway_not_configured' };
 
-  const verifyRes = await axios.post(`${ZINIPAY_BASE}/v1/payment/verify`, { invoice_id: valId }, {
+  // Verify against ZiniPay's own invoice id (parsed from payment_url at
+  // create time); fall back to the lookup id.
+  const invoiceId = String(payment.invoiceId || lookupId).trim();
+  const verifyRes = await axios.post(`${ZINIPAY_BASE}/v1/payment/verify`, { invoice_id: invoiceId }, {
     headers: { 'Content-Type': 'application/json', 'zini-api-key': zinipayApiKey },
     timeout: 20000,
   });
   const v = verifyRes.data || {};
   const completed = String(v.status || '').toUpperCase() === 'COMPLETED';
   if (!completed) return { paid: false, credited: false, payment, status: String(v.status || 'PENDING') };
+
+  // Defense: the paid amount must cover what this payment record promised
+  if (Number(v.amount) > 0 && Number(v.amount) < Number(payment.amount)) {
+    console.warn(`[Billing] amount mismatch for ${payment.id}: expected ${payment.amount}, got ${v.amount}`);
+    return { paid: false, credited: false, payment, status: 'AMOUNT_MISMATCH' };
+  }
 
   const credited = await creditPaymentTokens(payment);
   await savePaymentDoc({
@@ -3300,6 +3351,43 @@ async function settleZinipayPayment(valId: string): Promise<{ paid: boolean; cre
   await logActivity(payment.businessId, 'PAYMENT_RECEIVED', `৳${payment.amount} পেমেন্ট সফল (${v.payment_method || 'zinipay'}) — ${Number(payment.tokens).toLocaleString()} টোকেন${credited ? ' যুক্ত হয়েছে' : ' যুক্ত হবে ড্যাশবোর্ড খুললেই'}।`, 'success', payment.ownerId);
   return { paid: true, credited, payment: { ...payment, credited } };
 }
+
+// Admin one-click gateway test: creates a tiny hosted invoice (nothing is
+// charged unless someone actually pays it) and surfaces ZiniPay's exact
+// error when the key or brand domain is wrong.
+app.post('/api/billing/test-gateway', async (req, res) => {
+  const testKey = String(req.body?.apiKey || '').trim();
+  const { zinipayApiKey } = await getBillingSettings();
+  const effectiveKey = testKey || zinipayApiKey;
+  if (!effectiveKey) {
+    return res.status(400).json({ success: false, error: 'ZiniPay API Key দিন বা আগে সেভ করুন' });
+  }
+  try {
+    const origin = publicOriginFromReq(req);
+    if (!origin) {
+      return res.status(500).json({ success: false, error: 'অ্যাপের পাবলিক URL নির্ধারণ করা যায়নি (PUBLIC_APP_URL সেট করুন)' });
+    }
+    const r = await axios.post(`${ZINIPAY_BASE}/v1/payment/create`, {
+      cus_name: 'Gateway Test',
+      cus_email: 'test@sellkori.app',
+      amount: 10,
+      metadata: { test: true },
+      redirect_url: `${origin}/admin`,
+      cancel_url: `${origin}/admin`,
+      webhook_url: `${origin}/api/billing/zinipay-webhook`,
+    }, {
+      headers: { 'Content-Type': 'application/json', 'zini-api-key': effectiveKey },
+      timeout: 20000,
+    });
+    if (r.data?.status === true && r.data?.payment_url) {
+      return res.json({ success: true, paymentUrl: r.data.payment_url, message: 'গেটওয়ে সচল! টেস্ট ইনভয়েস তৈরি হয়েছে।' });
+    }
+    return res.status(502).json({ success: false, error: r.data?.message || 'ইনভয়েস তৈরি হয়নি', raw: r.data });
+  } catch (err: unknown) {
+    const msg = zinipayErrorMessage(err, 'গেটওয়ে টেস্ট ব্যর্থ');
+    return res.status(502).json({ success: false, error: `${msg}${zinipayDomainHint(msg)}` });
+  }
+});
 
 app.post('/api/billing/create-payment', async (req, res) => {
   const businessId = String(req.body?.businessId || '').trim();
@@ -3318,17 +3406,18 @@ app.post('/api/billing/create-payment', async (req, res) => {
 
     const tokens = Math.round((amount / Math.max(1, tokenRatePerLakh)) * 100000);
     const valId = `PAY-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
-    const host = String(req.headers['x-forwarded-host'] || req.headers.host || '');
-    const origin = `https://${host}`;
+    const origin = publicOriginFromReq(req);
+    if (!origin) {
+      return res.status(500).json({ success: false, error: 'অ্যাপের পাবলিক URL নির্ধারণ করা যায়নি (PUBLIC_APP_URL সেট করুন)' });
+    }
 
     const createRes = await axios.post(`${ZINIPAY_BASE}/v1/payment/create`, {
       cus_name: String(loaded.data?.name || 'SellKori Merchant').slice(0, 80),
       cus_email: String(req.body?.email || 'merchant@sellkori.app').slice(0, 120),
       amount,
       metadata: { businessId, valId, tokens },
-      redirect_url: `${origin}/?payment=verify&valId=${encodeURIComponent(valId)}`,
-      cancel_url: `${origin}/?payment=cancelled`,
-      val_id: valId,
+      redirect_url: `${origin}/dashboard?payment=verify&valId=${encodeURIComponent(valId)}`,
+      cancel_url: `${origin}/dashboard?payment=cancelled`,
       webhook_url: `${origin}/api/billing/zinipay-webhook`,
     }, {
       headers: { 'Content-Type': 'application/json', 'zini-api-key': zinipayApiKey },
@@ -3336,12 +3425,19 @@ app.post('/api/billing/create-payment', async (req, res) => {
     });
 
     const paymentUrl = String(createRes.data?.payment_url || '');
-    if (!paymentUrl) {
+    if (createRes.data?.status !== true || !paymentUrl) {
       return res.status(502).json({ success: false, error: createRes.data?.message || 'পেমেন্ট লিংক তৈরি করা যায়নি' });
     }
 
+    // ZiniPay generates the invoice id — it is the last segment of
+    // payment_url (https://secure.zinipay.com/payment/INVOICE_ID) and it is
+    // what verify/webhook use.
+    const invoiceId = String(createRes.data?.invoice_id || '').trim()
+      || (paymentUrl.split('?')[0].split('/').filter(Boolean).pop() || '');
+
     await savePaymentDoc({
       id: valId,
+      invoiceId,
       businessId,
       ownerId: loaded.data?.ownerId || '',
       amount,
@@ -3353,10 +3449,10 @@ app.post('/api/billing/create-payment', async (req, res) => {
     });
 
     return res.json({ success: true, paymentUrl, valId, tokens, amount });
-  } catch (err: any) {
-    const msg = err.response?.data?.message || err.message || 'পেমেন্ট তৈরি ব্যর্থ';
-    console.error('[Billing] create-payment error:', err.response?.data || err.message);
-    return res.status(500).json({ success: false, error: msg });
+  } catch (err: unknown) {
+    const fbMsg = zinipayErrorMessage(err, 'পেমেন্ট তৈরি ব্যর্থ');
+    console.error('[Billing] create-payment error:', axios.isAxiosError(err) ? err.response?.data : err);
+    return res.status(502).json({ success: false, error: `${fbMsg}${zinipayDomainHint(fbMsg)}` });
   }
 });
 
@@ -3375,24 +3471,28 @@ app.post('/api/billing/verify', async (req, res) => {
       amount: result.payment.amount,
       businessId: result.payment.businessId,
     });
-  } catch (err: any) {
-    const msg = err.response?.data?.message || err.message || 'ভেরিফিকেশন ব্যর্থ';
+  } catch (err: unknown) {
+    const msg = zinipayErrorMessage(err, 'ভেরিফিকেশন ব্যর্থ');
     return res.status(500).json({ success: false, error: msg });
   }
 });
 
-// ZiniPay server-to-server callback
-app.post('/api/billing/zinipay-webhook', async (req, res) => {
-  const valId = String(req.body?.val_id || req.body?.invoice_id || req.body?.metadata?.valId || '').trim();
-  if (valId) {
+// ZiniPay server-to-server callback — arrives as JSON body OR query params
+// ({invoice_id, status} / ?invoice_id=...&status=true), GET or POST.
+async function handleZinipayWebhook(req: any, res: any) {
+  const src = { ...(req.query || {}), ...(req.body || {}) };
+  const lookupId = String(src.invoice_id || src.val_id || src.metadata?.valId || '').trim();
+  if (lookupId) {
     try {
-      await settleZinipayPayment(valId);
+      await settleZinipayPayment(lookupId);
     } catch (e: any) {
       console.error('[Billing] webhook settle error:', e?.message);
     }
   }
   return res.status(200).json({ received: true });
-});
+}
+app.post('/api/billing/zinipay-webhook', handleZinipayWebhook);
+app.get('/api/billing/zinipay-webhook', handleZinipayWebhook);
 
 // Fire a CAPI test event so the merchant can verify Pixel + token in one click
 app.post('/api/capi/test', async (req, res) => {

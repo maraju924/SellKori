@@ -13,6 +13,7 @@ import { Input } from '../ui/input';
 import { Badge } from '../ui/badge';
 import { db } from '../../lib/firebase';
 import { doc, getDoc, setDoc, collection, onSnapshot, query, limit } from 'firebase/firestore';
+import { parseJsonResponse } from '../../lib/safeJson';
 import { toast } from 'sonner';
 
 export function AdminBillingGateway() {
@@ -20,7 +21,38 @@ export function AdminBillingGateway() {
   const [tokenRatePerLakh, setTokenRatePerLakh] = useState<number>(20);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
+  const [isTesting, setIsTesting] = useState(false);
+  const [testResult, setTestResult] = useState<{ success: boolean; message: string; paymentUrl?: string } | null>(null);
   const [payments, setPayments] = useState<any[]>([]);
+
+  const handleTestGateway = async () => {
+    if (!zinipayApiKey.trim()) {
+      toast.error('আগে ZiniPay API Key দিন');
+      return;
+    }
+    setIsTesting(true);
+    setTestResult(null);
+    try {
+      const res = await fetch('/api/billing/test-gateway', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ apiKey: zinipayApiKey.trim() })
+      });
+      const data = await parseJsonResponse(res);
+      if (res.ok && data.success) {
+        setTestResult({ success: true, message: data.message, paymentUrl: data.paymentUrl });
+        toast.success('ZiniPay গেটওয়ে সচল!');
+      } else {
+        setTestResult({ success: false, message: data.error || 'গেটওয়ে টেস্ট ব্যর্থ' });
+        toast.error(data.error || 'গেটওয়ে টেস্ট ব্যর্থ');
+      }
+    } catch (e: any) {
+      setTestResult({ success: false, message: e.message });
+      toast.error('গেটওয়ে টেস্ট ব্যর্থ');
+    } finally {
+      setIsTesting(false);
+    }
+  };
 
   useEffect(() => {
     (async () => {
@@ -150,6 +182,34 @@ export function AdminBillingGateway() {
             />
             <p className="text-[10px] text-zinc-500">যেমন: ২০ টাকা রেটে কেউ ১০০ টাকা রিচার্জ করলে পাবে ৫,০০,০০০ টোকেন</p>
           </div>
+        </div>
+
+        <Button
+          onClick={handleTestGateway}
+          disabled={isTesting}
+          variant="outline"
+          className="w-full h-10 rounded-xl font-black text-xs border-orange-900 text-orange-400 hover:bg-orange-950/40"
+        >
+          {isTesting ? 'টেস্ট ইনভয়েস তৈরি হচ্ছে...' : 'গেটওয়ে টেস্ট করুন (১০৳ টেস্ট ইনভয়েস)'}
+        </Button>
+
+        {testResult && (
+          <div className={`p-3 rounded-xl text-[11px] font-bold ${
+            testResult.success
+              ? 'bg-emerald-950/30 text-emerald-300 border border-emerald-900/50'
+              : 'bg-red-950/30 text-red-300 border border-red-900/50'
+          }`}>
+            {testResult.message}
+            {testResult.paymentUrl && (
+              <a href={testResult.paymentUrl} target="_blank" rel="noreferrer" className="block mt-1 underline text-emerald-400">
+                টেস্ট পেমেন্ট পেজ দেখুন →
+              </a>
+            )}
+          </div>
+        )}
+
+        <div className="p-3 rounded-xl bg-orange-950/20 border border-orange-900/40 text-[10px] text-zinc-400 leading-relaxed">
+          <strong className="text-orange-300">গুরুত্বপূর্ণ:</strong> ZiniPay-র নিয়ম অনুযায়ী redirect ডোমেইন আর আপনার Brand-এর ওয়েবসাইট ডোমেইন এক হতে হবে। zinipay.com ড্যাশবোর্ড → Brands-এ আপনার সাইটের ডোমেইন (যেমন sell-kori.vercel.app) সেট করুন, তারপর সেই Brand-এর API Key এখানে দিন।
         </div>
       </div>
 

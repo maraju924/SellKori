@@ -46,6 +46,7 @@ import { MerchantFAQs } from './MerchantFAQs';
 import { MerchantFeatures } from './MerchantFeatures';
 import { MerchantInfo } from './MerchantInfo';
 import { toast } from 'sonner';
+import { parseJsonResponse } from '../../lib/safeJson';
 
 interface MerchantPanelProps {
   user: FirebaseUser | null;
@@ -62,6 +63,50 @@ export function MerchantPanel({ user, profile }: MerchantPanelProps) {
   const [orders, setOrders] = useState<Order[]>([]);
   const [isDark, setIsDark] = useState(false);
   const navigate = useNavigate();
+
+  // Returning from ZiniPay: billing tab is not mounted by default, so verify
+  // here (always mounted) then switch the merchant to the billing screen.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const paymentState = params.get('payment');
+    if (paymentState !== 'verify' && paymentState !== 'cancelled') return;
+
+    setActiveTab('billing');
+    const valId = params.get('valId');
+    window.history.replaceState({}, '', '/dashboard');
+
+    if (paymentState === 'cancelled') {
+      toast.info('পেমেন্ট বাতিল হয়েছে');
+      return;
+    }
+    if (!valId) return;
+
+    let cancelled = false;
+    (async () => {
+      try {
+        toast.info('পেমেন্ট যাচাই হচ্ছে...');
+        const res = await fetch('/api/billing/verify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ valId }),
+        });
+        const data = await parseJsonResponse(res);
+        if (cancelled) return;
+        if (res.ok && data.success && data.paid) {
+          toast.success(`৳${data.amount} পেমেন্ট সফল!`, {
+            description: `${Number(data.tokens).toLocaleString()} টোকেন যুক্ত ${data.credited ? 'হয়েছে' : 'হচ্ছে'}।`,
+          });
+        } else {
+          toast.error(data.error || `পেমেন্ট এখনো সম্পন্ন হয়নি (${data.status || 'PENDING'})`);
+        }
+      } catch (e: any) {
+        if (!cancelled) toast.error(e.message || 'পেমেন্ট যাচাই ব্যর্থ');
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Sync dark theme
   useEffect(() => {
