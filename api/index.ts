@@ -7,9 +7,8 @@ import cron from 'node-cron';
 import admin from 'firebase-admin';
 import { getFirestore as getAdminFirestore, FieldValue } from 'firebase-admin/firestore';
 import { getApp, getApps, initializeApp } from 'firebase/app';
-import { getFirestore, doc, getDoc, collection, addDoc, setDoc, updateDoc, deleteDoc, serverTimestamp, query, where, getDocs, orderBy, limit, Timestamp, increment } from 'firebase/firestore';
+import { getFirestore, doc, getDoc, collection, addDoc, setDoc, updateDoc, deleteDoc, serverTimestamp, query, where, getDocs, orderBy, limit, Timestamp } from 'firebase/firestore';
 import fs from 'fs';
-import { createHash } from 'crypto';
 import dotenv from 'dotenv';
 import {
   buildFeaturePromptBlock,
@@ -18,7 +17,6 @@ import {
   mergeFeatures,
   shouldRunAi
 } from '../src/lib/featureFlags.js';
-import { buildSalesFallbackReply } from '../src/lib/messengerFallback.js';
 import {
   BROADCAST_CONCURRENCY,
   DEFAULT_COMMENT_INBOX_MESSAGE,
@@ -33,8 +31,6 @@ import {
   shouldPrivateReplyToComment,
   type BroadcastAudience
 } from '../src/lib/outreach.js';
-
-export const maxDuration = 60;
 
 dotenv.config();
 
@@ -162,18 +158,6 @@ import {
   trustedClientIp,
 } from '../src/lib/orderIdentity.js';
 import { getAIResponse as generateChatResponse } from '../src/lib/gemini.js';
-import {
-  CHAT_MEMORY_LIMIT,
-  shouldCreateConfirmedOrder,
-} from '../src/lib/chatRuntime.js';
-import {
-  MAX_PRODUCT_PHOTOS,
-  MAX_REVIEW_PHOTOS,
-  normalizeImageLink,
-  pickProductForImages,
-  resolveImageSendFlags,
-  uniqueHttpUrls,
-} from '../src/lib/imageSend.js';
 
 // Initialize AI
 const genAI = process.env.GEMINI_API_KEY ? new GoogleGenerativeAI(process.env.GEMINI_API_KEY) : null;
@@ -230,59 +214,27 @@ const responseSchema = {
 };
 
 // Meta Webhook Message Deduplication Cache (Idempotency Engine)
-interface ProcessedMessageState {
-  startedAt: number;
-  completedAt?: number;
-}
-
-const processedMessagesCache = new Map<string, ProcessedMessageState>();
-const MESSAGE_PROCESSING_STALE_MS = 15 * 1000;
-const MESSAGE_DEDUP_TTL_MS = 10 * 60 * 1000;
-
+const processedMessagesCache = new Map<string, number>();
 function isDuplicateMessage(mid: string): boolean {
   if (!mid) return false;
   const now = Date.now();
   if (processedMessagesCache.size > 2000) {
-    for (const [key, state] of processedMessagesCache.entries()) {
-      const timestamp = state.completedAt || state.startedAt;
-      const ttl = state.completedAt ? MESSAGE_DEDUP_TTL_MS : MESSAGE_PROCESSING_STALE_MS;
-      if (now - timestamp > ttl) {
+    for (const [key, timestamp] of processedMessagesCache.entries()) {
+      if (now - timestamp > 10 * 60 * 1000) {
         processedMessagesCache.delete(key);
       }
     }
   }
-  const existing = processedMessagesCache.get(mid);
-  if (
-    existing
-    && (
-      (existing.completedAt !== undefined && now - existing.completedAt <= MESSAGE_DEDUP_TTL_MS)
-      || (existing.completedAt === undefined && now - existing.startedAt <= MESSAGE_PROCESSING_STALE_MS)
-    )
-  ) {
+  if (processedMessagesCache.has(mid)) {
     console.log(`[Webhook Deduplication] Skipping duplicate message ID: ${mid}`);
     return true;
   }
-  processedMessagesCache.set(mid, { startedAt: now });
+  processedMessagesCache.set(mid, now);
   return false;
 }
 
-function markMessageProcessed(mid: string) {
-  if (!mid) return;
-  const now = Date.now();
-  processedMessagesCache.set(mid, {
-    startedAt: processedMessagesCache.get(mid)?.startedAt || now,
-    completedAt: now
-  });
-}
-
-function releaseMessageForRetry(mid: string) {
-  if (!mid) return;
-  const state = processedMessagesCache.get(mid);
-  if (state && !state.completedAt) processedMessagesCache.delete(mid);
-}
-
 // Send a product image to Messenger as an image attachment
-async function sendImageMessage(pageAccessToken: string, senderId: string, imageUrl: string): Promise<boolean> {
+async function sendImageMessage(pageAccessToken: string, senderId: string, imageUrl: string) {
   const cleanToken = String(pageAccessToken).trim();
   const payload = {
     recipient: { id: senderId },
@@ -296,22 +248,10 @@ async function sendImageMessage(pageAccessToken: string, senderId: string, image
   };
   try {
     await axios.post(`https://graph.facebook.com/v21.0/me/messages?access_token=${encodeURIComponent(cleanToken)}`, payload, { timeout: 15000 });
-    return true;
   } catch (err: any) {
     console.warn('[Webhook] v21.0 image send failed, trying v18.0 fallback...', err.response?.data || err.message);
-    try {
-      await axios.post(`https://graph.facebook.com/v18.0/me/messages?access_token=${encodeURIComponent(cleanToken)}`, payload, { timeout: 15000 });
-      return true;
-    } catch (fallbackErr: any) {
-      console.warn('[Webhook] image send failed:', fallbackErr.response?.data || fallbackErr.message);
-      return false;
-    }
+    await axios.post(`https://graph.facebook.com/v18.0/me/messages?access_token=${encodeURIComponent(cleanToken)}`, payload, { timeout: 15000 });
   }
-}
-
-async function briefTypingPause(pageAccessToken: string, senderId: string, ms = 320) {
-  await sendTypingOn(pageAccessToken, senderId);
-  await new Promise((resolve) => setTimeout(resolve, Math.max(120, ms)));
 }
 
 type IncomingMediaKind = 'image' | 'audio' | 'video' | 'file' | 'sticker';
@@ -454,9 +394,7 @@ async function sendTypingOn(pageAccessToken: string, senderId: string) {
 // Keep the typing bubble visible a bit longer for very fast AI replies so
 // responses feel hand-typed rather than instant.
 async function humanTypingPause(pageAccessToken: string, senderId: string, replyText: string, alreadyElapsedMs: number) {
-  // Never spend several seconds of a webhook's delivery budget on cosmetic
-  // delay; reliability and a prompt answer are more important.
-  const targetMs = Math.min(1200, 500 + String(replyText || '').length * 5);
+  const targetMs = Math.min(4000, 1200 + String(replyText || '').length * 15);
   const remaining = targetMs - Math.max(0, alreadyElapsedMs);
   if (remaining < 250) return;
   await sendTypingOn(pageAccessToken, senderId);
@@ -687,132 +625,6 @@ async function subscribePageToMessenger(pageAccessToken: string) {
 
 const MANUAL_SUBSCRIBE_HINT = 'টোকেন বৈধ! তবে টোকেনে pages_manage_metadata পারমিশন না থাকায় অটো-সাবস্ক্রাইব করা যায়নি। একবার ম্যানুয়ালি করে দিন: developers.facebook.com → আপনার অ্যাপ → Messenger → Messenger API Settings → Webhooks অংশে আপনার পেজের পাশে "Add subscriptions" চেপে messages ও messaging_postbacks টিক দিন। আগে থেকেই করা থাকলে কিছু করার দরকার নেই — বট এমনিতেই সম্পূর্ণ কাজ করবে (মেসেজ পাঠাতে এই পারমিশন লাগে না)।';
 
-// ---------------------------------------------------------------------------
-// Multi-page support: one merchant panel can run many Facebook pages.
-// Pages live in business.messengerPages [{pageId, pageName, pageAccessToken,
-// enabled}] with business.connectedPageIds kept in sync for fast lookups.
-// Root-level token fields keep working as a legacy fallback.
-// ---------------------------------------------------------------------------
-function businessPagesOf(businessData: any): Array<{ pageId: string; pageName: string; pageAccessToken: string; enabled: boolean }> {
-  const pages = Array.isArray(businessData?.messengerPages) ? businessData.messengerPages : [];
-  return pages
-    .map((p: any) => ({
-      pageId: String(p?.pageId || '').trim(),
-      pageName: String(p?.pageName || '').trim(),
-      pageAccessToken: String(p?.pageAccessToken || '').trim(),
-      enabled: p?.enabled !== false,
-    }))
-    .filter((p: any) => p.pageId && p.pageAccessToken);
-}
-
-function pageTokenForBusiness(businessData: any, pageId?: string): string {
-  const pid = String(pageId || '').trim();
-  const pages = businessPagesOf(businessData);
-  if (pid) {
-    const exact = pages.find((p) => p.enabled && p.pageId === pid);
-    if (exact) return exact.pageAccessToken;
-  }
-  const rootToken = String(
-    businessData?.pageAccessToken || businessData?.facebookConfig?.accessToken || businessData?.accessToken || ''
-  ).trim();
-  if (rootToken) return rootToken;
-  const firstEnabled = pages.find((p) => p.enabled);
-  return firstEnabled?.pageAccessToken || '';
-}
-
-// ---------------------------------------------------------------------------
-// Ad attribution: capture Messenger referral payloads (Click-to-Messenger
-// ads, m.me/ref links, post CTAs) so the bot knows which ad brought the
-// customer and which product to pitch first.
-// ---------------------------------------------------------------------------
-interface ReferralInfo {
-  ref: string;
-  source: string;
-  type: string;
-  adId: string;
-  adTitle: string;
-  postId: string;
-  productId: string;
-  ctwaClid: string;
-}
-
-function extractReferralInfo(webhookEvent: any): ReferralInfo | null {
-  const r = webhookEvent?.referral || webhookEvent?.postback?.referral || webhookEvent?.optin?.referral || null;
-  if (!r) return null;
-  const ads = r.ads_context_data || {};
-  const info: ReferralInfo = {
-    ref: String(r.ref || '').trim(),
-    source: String(r.source || '').trim(),
-    type: String(r.type || '').trim(),
-    adId: String(r.ad_id || ads.ad_id || '').trim(),
-    adTitle: String(ads.ad_title || '').trim(),
-    postId: String(ads.post_id || '').trim(),
-    productId: String(ads.product_id || '').trim(),
-    ctwaClid: String(r.ctwa_clid || '').trim(),
-  };
-  if (!info.ref && !info.adId && !info.adTitle && !info.postId && !info.productId && !info.ctwaClid) return null;
-  return info;
-}
-
-// Merchant-defined mappings (business.adProductMappings: [{key, productName}])
-// win first; then we fuzzy-match the ad title against the catalog.
-function matchProductForReferral(businessData: any, referral: Partial<ReferralInfo> | null): string {
-  if (!referral) return '';
-  const keys = [referral.ref, referral.adId, referral.postId, referral.productId]
-    .map((k) => String(k || '').trim().toLowerCase())
-    .filter(Boolean);
-  const mappings = Array.isArray(businessData?.adProductMappings) ? businessData.adProductMappings : [];
-  for (const m of mappings) {
-    const mk = String(m?.key || '').trim().toLowerCase();
-    if (mk && keys.includes(mk)) return String(m.productName || '').trim();
-  }
-  const title = String(referral.adTitle || '').toLowerCase();
-  if (title) {
-    const products = Array.isArray(businessData?.products) ? businessData.products : [];
-    const hit = products.find((p: any) => p?.name && title.includes(String(p.name).toLowerCase()));
-    if (hit) return String(hit.name);
-  }
-  return '';
-}
-
-async function saveCustomerAcquisition(bizId: string, senderId: string, pageId: string, referral: ReferralInfo, matchedProduct: string) {
-  const acquisition = {
-    ref: referral.ref,
-    source: referral.source || 'ADS',
-    type: referral.type,
-    adId: referral.adId,
-    adTitle: referral.adTitle,
-    postId: referral.postId,
-    fbProductId: referral.productId,
-    ctwaClid: referral.ctwaClid,
-    matchedProduct: matchedProduct || '',
-    lastAtMs: Date.now(),
-  };
-  const payload: any = {
-    businessId: bizId,
-    messengerId: senderId,
-    pageId: pageId || '',
-    acquisition,
-    updatedAt: adminDb ? admin.firestore.FieldValue.serverTimestamp() : serverTimestamp(),
-  };
-  try {
-    if (adminDb) {
-      const ref = adminDb.collection('customers').doc(`${bizId}_${senderId}`);
-      const snap = await ref.get();
-      if (!snap.exists || !snap.data()?.acquisition?.firstAtMs) {
-        (payload.acquisition as any).firstAtMs = Date.now();
-      }
-      await ref.set(payload, { merge: true });
-      return;
-    }
-    if (db) {
-      await setDoc(doc(db, 'customers', `${bizId}_${senderId}`), payload, { merge: true });
-    }
-  } catch (e: any) {
-    console.warn('[Webhook] saveCustomerAcquisition notice:', e?.message);
-  }
-}
-
 async function resolveBusinessForWebhook(cleanPageId: string, pathBizId?: string): Promise<{ businessData: any | null; bizId: string | null }> {
   let businessData: any = null;
   let bizId: string | null = pathBizId || null;
@@ -829,9 +641,7 @@ async function resolveBusinessForWebhook(cleanPageId: string, pathBizId?: string
     if (adminDb) {
       try {
         for (const pid of possiblePageIds) {
-          // Multi-page lookup first (connectedPageIds is kept in sync with messengerPages)
-          let snap = await adminDb.collection('businesses').where('connectedPageIds', 'array-contains', pid).limit(1).get();
-          if (snap.empty) snap = await adminDb.collection('businesses').where('facebookPageId', '==', pid).limit(1).get();
+          let snap = await adminDb.collection('businesses').where('facebookPageId', '==', pid).limit(1).get();
           if (snap.empty) snap = await adminDb.collection('businesses').where('pageId', '==', pid).limit(1).get();
           if (snap.empty) snap = await adminDb.collection('businesses').where('facebookConfig.pageId', '==', pid).limit(1).get();
           if (snap.empty) snap = await adminDb.collection('businesses').where('facebookConfig.facebookPageId', '==', pid).limit(1).get();
@@ -847,8 +657,7 @@ async function resolveBusinessForWebhook(cleanPageId: string, pathBizId?: string
     if (db) {
       try {
         for (const pid of possiblePageIds) {
-          let snap = await getDocs(query(collection(db, 'businesses'), where('connectedPageIds', 'array-contains', pid), limit(1)));
-          if (snap.empty) snap = await getDocs(query(collection(db, 'businesses'), where('facebookPageId', '==', pid), limit(1)));
+          let snap = await getDocs(query(collection(db, 'businesses'), where('facebookPageId', '==', pid), limit(1)));
           if (snap.empty) snap = await getDocs(query(collection(db, 'businesses'), where('pageId', '==', pid), limit(1)));
           if (!snap.empty) {
             return { businessData: snap.docs[0].data(), bizId: snap.docs[0].id };
@@ -871,8 +680,6 @@ async function resolveBusinessForWebhook(cleanPageId: string, pathBizId?: string
     }
 
     const matched = allDocs.find((b: any) => {
-      const multiIds = businessPagesOf(b).map((p) => p.pageId);
-      if (multiIds.includes(cleanPageId)) return true;
       const bPageId = String(b.facebookPageId || b.pageId || b.facebookConfig?.pageId || b.facebookConfig?.facebookPageId || '').trim();
       return bPageId && (bPageId === cleanPageId || cleanPageId.includes(bPageId) || bPageId.includes(cleanPageId));
     });
@@ -905,7 +712,7 @@ async function handlePageFeedComments(entry: any, pathBizId?: string) {
     return;
   }
 
-  const pageAccessToken = pageTokenForBusiness(businessData, pageId);
+  const pageAccessToken = businessData.pageAccessToken || businessData.facebookConfig?.accessToken || businessData.accessToken;
   if (!pageAccessToken) {
     await logActivity(bizId, 'ERROR', 'কমেন্ট-টু-ইনবক্স: পেজ অ্যাক্সেস টোকেন নেই।', 'error', businessData.ownerId);
     return;
@@ -915,12 +722,8 @@ async function handlePageFeedComments(entry: any, pathBizId?: string) {
   const products = Array.isArray(businessData.products) ? businessData.products : [];
 
   for (const event of events) {
-    const dedupKey = `comment:${event.commentId}`;
-    if (isDuplicateMessage(dedupKey)) continue;
-    if (!shouldPrivateReplyToComment(event, keywords)) {
-      markMessageProcessed(dedupKey);
-      continue;
-    }
+    if (isDuplicateMessage(`comment:${event.commentId}`)) continue;
+    if (!shouldPrivateReplyToComment(event, keywords)) continue;
 
     const product = findMentionedProductName(event.message, products);
     const inboxText = personalizeOutreachMessage(
@@ -959,9 +762,7 @@ async function handlePageFeedComments(entry: any, pathBizId?: string) {
         status: 'replied',
         source: 'comment'
       });
-      markMessageProcessed(dedupKey);
     } catch (err: any) {
-      releaseMessageForRetry(dedupKey);
       const fbError = err.response?.data?.error;
       const errorMsg = fbError?.message || err.message || 'কমেন্ট প্রাইভেট রিপ্লাই ব্যর্থ';
       console.error('[Webhook] Comment-to-inbox failed:', fbError || err.message);
@@ -982,7 +783,7 @@ async function handlePageFeedComments(entry: any, pathBizId?: string) {
 async function getEffectiveGeminiConfig() {
   let apiKey = process.env.GEMINI_API_KEY || '';
   let model = 'gemini-3.7-flash';
-  let temperature = 0.4;
+  let temperature = 0.7;
   let maxTokens = 800;
 
   try {
@@ -1027,299 +828,7 @@ async function getEffectiveGeminiConfig() {
     model = 'gemini-3.7-flash';
   }
 
-  if (!apiKey) {
-    // Fall back to the multi-key pool so the platform keeps running as long
-    // as ANY provider key exists.
-    const pool = await getAiPool();
-    apiKey = pool.geminiKeys.find(k => k.enabled)?.key || pool.openRouterKey || pool.openAiKey || '';
-  }
-
   return { apiKey: (apiKey || '').trim(), model, temperature, maxTokens };
-}
-
-// ---------------------------------------------------------------------------
-// AI Provider Pool with automatic failover.
-// The super admin can register MANY Gemini keys plus one OpenRouter and one
-// OpenAI key. When a key hits its quota (429 / RESOURCE_EXHAUSTED) it is put
-// on cooldown and the next key takes over automatically — so free-tier keys
-// can be chained and a single dead key never stops the bots.
-// ---------------------------------------------------------------------------
-interface PooledGeminiKey { key: string; label: string; enabled: boolean }
-interface AiPool {
-  geminiKeys: PooledGeminiKey[];
-  openRouterKey: string;
-  openRouterModel: string;
-  openAiKey: string;
-  openAiModel: string;
-}
-
-let aiPoolCache: { pool: AiPool; at: number } | null = null;
-const AI_POOL_CACHE_MS = 60 * 1000;
-
-async function getAiPool(): Promise<AiPool> {
-  if (aiPoolCache && Date.now() - aiPoolCache.at < AI_POOL_CACHE_MS) return aiPoolCache.pool;
-  const pool: AiPool = {
-    geminiKeys: [],
-    openRouterKey: '',
-    openRouterModel: 'openrouter/auto',
-    openAiKey: '',
-    openAiModel: 'gpt-4o-mini',
-  };
-  try {
-    let d: any = null;
-    if (adminDb) {
-      const s = await adminDb.collection('system').doc('settings').get();
-      if (s.exists) d = s.data();
-    } else if (db) {
-      const s = await getDoc(doc(db, 'system', 'settings'));
-      if (s.exists()) d = s.data();
-    }
-    if (d) {
-      if (Array.isArray(d.geminiKeys)) {
-        pool.geminiKeys = d.geminiKeys
-          .map((k: any) => ({
-            key: String(k?.key || '').trim(),
-            label: String(k?.label || '').trim() || 'Gemini Key',
-            enabled: k?.enabled !== false,
-          }))
-          .filter((k: PooledGeminiKey) => k.key);
-      }
-      if (d.openRouterKey) pool.openRouterKey = String(d.openRouterKey).trim();
-      if (d.openRouterModel) pool.openRouterModel = String(d.openRouterModel).trim();
-      if (d.openAiKey) pool.openAiKey = String(d.openAiKey).trim();
-      if (d.openAiModel) pool.openAiModel = String(d.openAiModel).trim();
-      // Legacy single-key field keeps working as an extra pool member
-      const legacy = String(d.geminiApiKey || '').trim();
-      if (legacy && !pool.geminiKeys.some(k => k.key === legacy)) {
-        pool.geminiKeys.push({ key: legacy, label: 'Legacy Key', enabled: true });
-      }
-    }
-  } catch (e: any) {
-    console.warn('[AI Pool] config load notice:', e?.message);
-  }
-  const envKey = String(process.env.GEMINI_API_KEY || '').trim();
-  if (envKey && !pool.geminiKeys.some(k => k.key === envKey)) {
-    pool.geminiKeys.push({ key: envKey, label: 'ENV Key', enabled: true });
-  }
-  aiPoolCache = { pool, at: Date.now() };
-  return pool;
-}
-
-// key (or provider key) -> cooldown-until timestamp
-const aiKeyCooldownUntil = new Map<string, number>();
-const AI_QUOTA_COOLDOWN_MS = 15 * 60 * 1000;
-const AI_AUTH_COOLDOWN_MS = 6 * 60 * 60 * 1000;
-
-function aiKeyAvailable(key: string): boolean {
-  return (aiKeyCooldownUntil.get(key) || 0) < Date.now();
-}
-
-function classifyAiError(err: any): 'quota' | 'auth' | 'other' {
-  const status = Number(err?.response?.status || err?.status || 0);
-  const msg = String(err?.response?.data?.error?.message || err?.message || '').toLowerCase();
-  if (status === 429 || msg.includes('resource_exhausted') || msg.includes('quota') || msg.includes('rate limit') || msg.includes('exceeded')) return 'quota';
-  if (status === 401 || status === 403 || msg.includes('api key not valid') || msg.includes('api_key_invalid') || msg.includes('permission')) return 'auth';
-  return 'other';
-}
-
-function cooldownAiKey(key: string, kind: 'quota' | 'auth', label: string) {
-  const ms = kind === 'auth' ? AI_AUTH_COOLDOWN_MS : AI_QUOTA_COOLDOWN_MS;
-  aiKeyCooldownUntil.set(key, Date.now() + ms);
-  console.warn(`[AI Pool] Key "${label}" on cooldown (${kind}) for ${Math.round(ms / 60000)} min — rotating to next key.`);
-}
-
-interface AiGenerateOptions {
-  parts: any[];           // Gemini multimodal parts (text + media)
-  textPrompt: string;     // text-only version for OpenRouter/OpenAI fallback
-  model: string;
-  schema?: any;
-  temperature?: number;
-  maxTokens?: number;
-  // Merchant's own Gemini key tried first — usage on it is NOT billed
-  preferredKeys?: PooledGeminiKey[];
-}
-
-interface AiGenerateResult {
-  text: string;
-  provider: string;
-  keyLabel: string;
-  tokensUsed: number;
-  merchantKeyUsed: boolean;
-}
-
-function estimateTokens(promptText: string, replyText: string): number {
-  return Math.max(50, Math.ceil((String(promptText).length + String(replyText).length) / 4));
-}
-
-function withDeadline<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(
-      () => reject(new Error(`${label} timed out after ${timeoutMs}ms`)),
-      timeoutMs
-    );
-    promise.then(
-      (value) => {
-        clearTimeout(timer);
-        resolve(value);
-      },
-      (error) => {
-        clearTimeout(timer);
-        reject(error);
-      }
-    );
-  });
-}
-
-async function aiGenerate(opts: AiGenerateOptions): Promise<AiGenerateResult> {
-  const pool = await getAiPool();
-  const models = Array.from(new Set([opts.model, 'gemini-3.1-flash-lite'].filter(Boolean)));
-  const geminiCandidates: PooledGeminiKey[] = [
-    ...(opts.preferredKeys || []),
-    ...pool.geminiKeys,
-  ].filter((candidate, index, all) =>
-    Boolean(candidate.key) && all.findIndex((item) => item.key === candidate.key) === index
-  );
-  const deadlineAt = Date.now() + 15_000;
-  const remainingMs = () => Math.max(0, deadlineAt - Date.now());
-  let lastErr: any = null;
-
-  geminiKeys:
-  for (const gk of geminiCandidates) {
-    if (!gk.enabled || !gk.key || !aiKeyAvailable(gk.key)) continue;
-    for (const modelName of models) {
-      if (remainingMs() < 500) break geminiKeys;
-      try {
-        const ai = new GoogleGenAI({ apiKey: gk.key });
-        const config: any = {
-          temperature: opts.temperature ?? 0.6,
-          maxOutputTokens: opts.maxTokens ?? 1024,
-        };
-        if (opts.schema) {
-          config.responseMimeType = 'application/json';
-          config.responseSchema = opts.schema;
-        }
-        const r = await withDeadline(
-          ai.models.generateContent({
-            model: modelName,
-            contents: [{ role: 'user', parts: opts.parts }],
-            config,
-          }),
-          Math.min(10_000, remainingMs()),
-          `Gemini ${modelName}`
-        );
-        const text = r.text?.trim() || '';
-        if (text) {
-          const usage: any = (r as any).usageMetadata || {};
-          const tokensUsed = Number(usage.totalTokenCount) || estimateTokens(opts.textPrompt, text);
-          return {
-            text,
-            provider: 'gemini',
-            keyLabel: gk.label,
-            tokensUsed,
-            merchantKeyUsed: gk.label === 'merchant-own',
-          };
-        }
-      } catch (err: any) {
-        lastErr = err;
-        const kind = classifyAiError(err);
-        if (kind === 'quota' || kind === 'auth') {
-          cooldownAiKey(gk.key, kind, gk.label);
-          break; // this key is done — move to the next key
-        }
-        // 'other' (e.g. unsupported media on this model): try the next model
-      }
-    }
-  }
-
-  // Text-only fallback providers (OpenAI-compatible chat completions)
-  const jsonInstruction = opts.schema
-    ? '\n\nCRITICAL: Respond with ONLY one valid JSON object using exactly the fields described above. No markdown, no extra text.'
-    : '';
-  const fallbackProviders = [
-    { name: 'openrouter', key: pool.openRouterKey, base: 'https://openrouter.ai/api/v1', model: pool.openRouterModel },
-    { name: 'openai', key: pool.openAiKey, base: 'https://api.openai.com/v1', model: pool.openAiModel },
-  ];
-  for (const p of fallbackProviders) {
-    if (remainingMs() < 500) break;
-    if (!p.key || !aiKeyAvailable(p.key)) continue;
-    try {
-      const r = await axios.post(`${p.base}/chat/completions`, {
-        model: p.model,
-        messages: [{ role: 'user', content: opts.textPrompt + jsonInstruction }],
-        temperature: opts.temperature ?? 0.6,
-        max_tokens: opts.maxTokens ?? 1024,
-      }, {
-        headers: { Authorization: `Bearer ${p.key}` },
-        timeout: Math.min(10_000, remainingMs()),
-      });
-      const text = String(r.data?.choices?.[0]?.message?.content || '').trim();
-      if (text) {
-        const tokensUsed = Number(r.data?.usage?.total_tokens) || estimateTokens(opts.textPrompt, text);
-        return { text, provider: p.name, keyLabel: p.name, tokensUsed, merchantKeyUsed: false };
-      }
-    } catch (err: any) {
-      lastErr = err;
-      const kind = classifyAiError(err);
-      if (kind === 'quota' || kind === 'auth') cooldownAiKey(p.key, kind, p.name);
-    }
-  }
-
-  throw lastErr || new Error('সব AI প্রোভাইডার ব্যর্থ হয়েছে — অ্যাডমিন প্যানেলে API Key যাচাই করুন।');
-}
-
-// ---------------------------------------------------------------------------
-// Token metering: every AI answer on the central pool is billed against the
-// merchant's token wallet. Merchants using their OWN Gemini key are free.
-// When the wallet is empty the bot stops answering (silently to customers,
-// loudly to the merchant via the activity log).
-// ---------------------------------------------------------------------------
-function merchantOwnGeminiKey(businessData: any): PooledGeminiKey[] {
-  const ownKey = businessData?.useOwnApiKey ? String(businessData?.customGeminiApiKey || '').trim() : '';
-  return ownKey ? [{ key: ownKey, label: 'merchant-own', enabled: true }] : [];
-}
-
-function hasTokenBalance(businessData: any): boolean {
-  if (merchantOwnGeminiKey(businessData).length > 0) return true; // own key = own cost
-  const bal = businessData?.tokenBalance;
-  // Legacy stores without the field get grace: the first charge materializes
-  // the field (negative), after which the gate enforces normally.
-  if (bal === undefined || bal === null) return true;
-  return Number(bal) > 0;
-}
-
-async function chargeAiUsage(bizId: string, result: AiGenerateResult, source: string) {
-  if (!bizId || result.merchantKeyUsed) return;
-  const tokens = Math.max(1, Math.round(result.tokensUsed));
-  try {
-    if (adminDb) {
-      await adminDb.collection('businesses').doc(bizId).update({
-        tokenBalance: admin.firestore.FieldValue.increment(-tokens),
-        totalTokensUsed: admin.firestore.FieldValue.increment(tokens),
-        aiMessagesCount: admin.firestore.FieldValue.increment(1),
-      });
-      return;
-    }
-    if (db) {
-      // Unauthenticated fallback — succeeds only if rules permit; usage is
-      // still recorded in logs either way.
-      await updateDoc(doc(db, 'businesses', bizId), {
-        tokenBalance: increment(-tokens),
-        totalTokensUsed: increment(tokens),
-        aiMessagesCount: increment(1),
-      } as any);
-    }
-  } catch (e: any) {
-    console.warn(`[TokenMeter] charge failed for ${bizId} (${source}):`, e?.message);
-  }
-}
-
-// Notify the merchant at most once per 30 minutes that the wallet is empty
-const tokenEmptyNotifiedAt = new Map<string, number>();
-async function notifyTokensEmpty(bizId: string, ownerId?: string) {
-  const last = tokenEmptyNotifiedAt.get(bizId) || 0;
-  if (Date.now() - last < 30 * 60 * 1000) return;
-  tokenEmptyNotifiedAt.set(bizId, Date.now());
-  await logActivity(bizId, 'TOKEN_EMPTY', 'টোকেন ব্যালেন্স শেষ! বট কাস্টমারদের উত্তর দেওয়া বন্ধ রেখেছে — বিলিং থেকে রিচার্জ করুন।', 'error', ownerId);
 }
 
 function sanitizeProductsForPrompt(products: any[] = []) {
@@ -1339,48 +848,6 @@ function sanitizeProductsForPrompt(products: any[] = []) {
   }));
 }
 
-// Large catalogs (10-500 products): send full details only for the most
-// relevant items and compact name/price stubs for the rest, so the prompt
-// stays fast, cheap and accurate no matter the store size.
-const PROMPT_FULL_DETAIL_LIMIT = 40;
-const PROMPT_STUB_LIMIT = 500;
-
-function selectProductsForPrompt(products: any[] = [], contextText = '') {
-  if (!Array.isArray(products)) return [];
-  if (products.length <= PROMPT_FULL_DETAIL_LIMIT) return sanitizeProductsForPrompt(products);
-
-  const ctx = String(contextText || '').toLowerCase();
-  const tokenSet = new Set(ctx.split(/[^\p{L}\p{N}]+/u).filter(t => t.length >= 2));
-
-  const scored = products.map((p: any, i: number) => {
-    const name = String(p?.name || '').toLowerCase();
-    const category = String(p?.category || '').toLowerCase();
-    let score = 0;
-    if (name && ctx.includes(name)) score += 100;
-    for (const w of name.split(/[^\p{L}\p{N}]+/u)) {
-      if (w.length >= 2 && tokenSet.has(w)) score += 10;
-    }
-    if (category && tokenSet.has(category)) score += 3;
-    return { p, i, score };
-  });
-  scored.sort((a, b) => (b.score - a.score) || (a.i - b.i));
-
-  const detailed = scored.slice(0, PROMPT_FULL_DETAIL_LIMIT).map(s => s.p);
-  const rest = scored.slice(PROMPT_FULL_DETAIL_LIMIT, PROMPT_STUB_LIMIT).map(s => s.p);
-  return [
-    ...sanitizeProductsForPrompt(detailed),
-    ...rest.map((p: any) => ({
-      id: p.id,
-      name: p.name,
-      price: p.price,
-      minPrice: p.minPrice || p.price,
-      stock: p.stock ?? p.stockCount ?? 10,
-      category: p.category || 'General',
-      summary_only: true,
-    })),
-  ];
-}
-
 function mergeLead(prev: any = {}, next: any = {}, extraText = '') {
   const phone = normalizePhone(next?.phone) || normalizePhone(prev?.phone) || extractBdPhone(extraText) || '';
   return {
@@ -1398,8 +865,7 @@ function hasCompleteLead(lead: any) {
   return Boolean(
     String(lead?.name || '').trim().length >= 2 &&
     phone.length === 11 &&
-    String(lead?.address || '').trim().length >= 8 &&
-    String(lead?.product_name || '').trim().length >= 2
+    String(lead?.address || '').trim().length >= 8
   );
 }
 
@@ -1457,11 +923,10 @@ async function readMediaDoc(id: string) {
 
 async function ensurePublicImageUrl(image: string, businessId: string, req?: any): Promise<string | null> {
   if (!image) return null;
-  const converted = image.startsWith('data:') ? image : (normalizeImageLink(image) || image);
-  if (converted.startsWith('https://') || converted.startsWith('http://')) return converted;
-  if (!converted.startsWith('data:')) return null;
+  if (image.startsWith('https://') || image.startsWith('http://')) return image;
+  if (!image.startsWith('data:')) return null;
   try {
-    const id = await storeMediaDoc(converted, businessId, 'relay');
+    const id = await storeMediaDoc(image, businessId, 'relay');
     const origin = publicOriginFromReq(req);
     return origin ? `${origin}/api/media/${id}` : `/api/media/${id}`;
   } catch (e) {
@@ -1527,25 +992,16 @@ async function saveOrderDoc(order: any) {
     ...order,
     createdAtMs: order.createdAtMs || Date.now(),
   };
-  // Admin SDK first, but NEVER lose an order: if the admin write fails
-  // (e.g. missing service-account credentials on the host), fall back to
-  // the client SDK before giving up.
   if (adminDb) {
-    try {
-      await adminDb.collection('orders').doc(order.id).set({
-        ...payload,
-        createdAt: admin.firestore.FieldValue.serverTimestamp(),
-      }, { merge: true });
-      return;
-    } catch (adminErr: any) {
-      console.error('[saveOrderDoc] Admin write failed, falling back to client SDK:', adminErr?.message);
-    }
+    await adminDb.collection('orders').doc(order.id).set({
+      ...payload,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    }, { merge: true });
+    return;
   }
   if (db) {
     await setDoc(doc(db, 'orders', order.id), { ...payload, createdAt: serverTimestamp() }, { merge: true });
-    return;
   }
-  throw new Error('No Firestore connection available to save order');
 }
 
 async function queryOrdersByField(bizId: string, field: string, value: string) {
@@ -1593,12 +1049,6 @@ function claimOrderIdentity(bizId: string, identity: { phone?: string; passenger
   }
   for (const k of keys) recentIdentityLocks.set(k, now);
   return true;
-}
-
-function releaseOrderIdentity(bizId: string, identity: { phone?: string; passengerId?: string; clientIp?: string }) {
-  for (const key of identityLockKeys(bizId, identity)) {
-    recentIdentityLocks.delete(key);
-  }
 }
 
 async function findRecentDuplicateOrder(
@@ -1738,42 +1188,6 @@ async function saveMessengerLog(businessId: string, logData: {
   }
 }
 
-async function sendResilientSalesFallback(input: {
-  businessId: string;
-  businessData: any;
-  ownerId?: string;
-  pageId: string;
-  pageAccessToken: string;
-  senderId: string;
-  message: string;
-  mediaKinds?: string[];
-  reason: string;
-}): Promise<string> {
-  const reply = buildSalesFallbackReply(
-    input.message,
-    input.businessData,
-    input.mediaKinds || []
-  );
-  await sendPlainText(input.pageAccessToken, input.senderId, reply);
-  await saveChatMessage(input.businessId, input.senderId, 'bot', reply).catch(() => {});
-  await saveMessengerLog(input.businessId, {
-    senderId: input.senderId,
-    pageId: input.pageId,
-    message: input.message,
-    reply,
-    status: 'replied',
-    source: `resilient-fallback:${input.reason}`
-  });
-  await logActivity(
-    input.businessId,
-    'FALLBACK_REPLY_SENT',
-    `AI অনুপলভ্য থাকায় ক্যাটালগ/FAQ থেকে নিরাপদ উত্তর পাঠানো হয়েছে (${input.reason})।`,
-    'info',
-    input.ownerId
-  ).catch(() => {});
-  return reply;
-}
-
 // Helper to get system settings
 async function getSystemSettings() {
   const defaultSettings = { tokenPricePerLakh: 20, monthlyServerCost: 1000, freeTrialTokens: 100000 };
@@ -1795,114 +1209,31 @@ async function getSystemSettings() {
   return defaultSettings;
 }
 
-// ---------------------------------------------------------------------------
-// Meta Conversions API (CAPI) — Business Messaging spec.
-// Sends full-funnel chat events (Lead → ViewContent → AddToCart →
-// InitiateCheckout → Purchase) so Click-to-Messenger ads can optimize on
-// real conversations and purchases.
-// ---------------------------------------------------------------------------
-function sha256Lower(value: string): string {
-  return createHash('sha256').update(String(value).trim().toLowerCase()).digest('hex');
-}
+// Helper to send Facebook Conversions API events
+async function fireFacebookEvent(bizConfig: any, eventName: string, userData: any, customData: any = {}) {
+  if (!bizConfig.facebookConfig?.pixelId || !bizConfig.facebookConfig?.accessToken) return;
 
-function normalizedPhoneForCapi(phone: string): string {
-  // Meta expects digits only with country code; BD numbers: 01XXXXXXXXX -> 8801XXXXXXXXX
-  let p = String(phone || '').replace(/[^0-9]/g, '');
-  if (p.startsWith('01') && p.length === 11) p = `88${p}`;
-  return p;
-}
-
-const CAPI_ALLOWED_EVENTS = new Set(['Lead', 'ViewContent', 'AddToCart', 'InitiateCheckout', 'Purchase', 'Contact', 'CompleteRegistration']);
-// In-memory dedup so one funnel stage fires once per customer per day per page.
-const capiSentCache = new Map<string, number>();
-
-interface CapiEventOptions {
-  psid: string;
-  pageId?: string;
-  phone?: string;
-  name?: string;
-  ctwaClid?: string;
-  value?: number;
-  currency?: string;
-  contentName?: string;
-  contentIds?: string[];
-  orderId?: string;
-  bizId?: string;
-  ownerId?: string;
-  allowRepeat?: boolean;
-}
-
-async function sendCapiEvent(businessData: any, eventName: string, opts: CapiEventOptions) {
   try {
-    const fbCfg = businessData?.facebookConfig || {};
-    const pixelId = String(fbCfg.pixelId || '').trim();
-    const capiToken = String(fbCfg.accessToken || '').trim();
-    if (!pixelId || !capiToken || fbCfg.capiEnabled === false) return;
-    if (!CAPI_ALLOWED_EVENTS.has(eventName)) return;
-
-    const pageId = String(opts.pageId || businessData.facebookPageId || businessData.pageId || fbCfg.pageId || '').trim();
-    const psid = String(opts.psid || '').trim();
-    if (!psid) return;
-
-    // Dedup identical funnel events (Purchase always allowed via orderId-based id)
-    const dayBucket = new Date().toISOString().slice(0, 10);
-    const dedupKey = `${pixelId}:${psid}:${eventName}:${opts.orderId || dayBucket}`;
-    if (!opts.allowRepeat && eventName !== 'Purchase') {
-      if (capiSentCache.has(dedupKey)) return;
-      if (capiSentCache.size > 5000) capiSentCache.clear();
-      capiSentCache.set(dedupKey, Date.now());
-    }
-
-    const userData: any = {
-      // Business messaging match keys
-      page_id: pageId || undefined,
-      page_scoped_user_id: psid,
-      external_id: [sha256Lower(psid)],
-    };
-    if (opts.ctwaClid) userData.ctwa_clid = String(opts.ctwaClid).trim();
-    const cleanPhone = normalizedPhoneForCapi(opts.phone || '');
-    if (cleanPhone.length >= 12) userData.ph = [sha256Lower(cleanPhone)];
-    const firstName = String(opts.name || '').trim().split(/\s+/)[0];
-    if (firstName) userData.fn = [sha256Lower(firstName)];
-
-    const customData: any = {
-      currency: opts.currency || 'BDT',
-      ...(typeof opts.value === 'number' && opts.value > 0 ? { value: Math.round(opts.value * 100) / 100 } : {}),
-      ...(opts.contentName ? { content_name: String(opts.contentName).slice(0, 100), content_type: 'product' } : {}),
-      ...(opts.contentIds?.length ? { content_ids: opts.contentIds.slice(0, 10) } : {}),
-      ...(opts.orderId ? { order_id: opts.orderId } : {}),
-    };
-
-    const payload: any = {
+    const payload = {
       data: [{
         event_name: eventName,
         event_time: Math.floor(Date.now() / 1000),
-        event_id: `${eventName}_${psid}_${opts.orderId || dayBucket}`,
-        action_source: 'business_messaging',
-        messaging_channel: 'messenger',
-        user_data: userData,
-        custom_data: customData,
+        action_source: "chat",
+        user_data: {
+          client_user_agent: "AI_Sales_Bot_Messenger",
+          external_id: userData.external_id,
+          ph: userData.phone ? [userData.phone] : [],
+          fn: userData.name ? [userData.name] : [],
+        },
+        custom_data: customData
       }],
+      test_event_code: bizConfig.facebookConfig.testEventCode || undefined
     };
-    if (fbCfg.testEventCode) payload.test_event_code = fbCfg.testEventCode;
 
-    await axios.post(
-      `https://graph.facebook.com/v21.0/${encodeURIComponent(pixelId)}/events?access_token=${encodeURIComponent(capiToken)}`,
-      payload,
-      { timeout: 10000 }
-    );
-    console.log(`[CAPI] ${eventName} fired for psid=${psid.slice(-6)} pixel=${pixelId}`);
-    if (opts.bizId) {
-      const detail = eventName === 'Purchase'
-        ? `CAPI Purchase ইভেন্ট পাঠানো হয়েছে (৳${opts.value || 0}) — অ্যাড অপ্টিমাইজেশনে যুক্ত হলো।`
-        : `CAPI ${eventName} ইভেন্ট পিক্সেলে পাঠানো হয়েছে।`;
-      logActivity(opts.bizId, 'CAPI_EVENT', detail, 'success', opts.ownerId).catch(() => {});
-    }
+    await axios.post(`https://graph.facebook.com/v18.0/${bizConfig.facebookConfig.pixelId}/events?access_token=${bizConfig.facebookConfig.accessToken}`, payload);
+    console.log(`[CAPI] Event Fired: ${eventName}`);
   } catch (err: any) {
     console.error('[CAPI Error]', err.response?.data || err.message);
-    if (opts.bizId) {
-      logActivity(opts.bizId, 'CAPI_EVENT', `CAPI ${eventName} পাঠানো যায়নি: ${err.response?.data?.error?.message || err.message}`, 'error', opts.ownerId).catch(() => {});
-    }
   }
 }
 
@@ -1952,68 +1283,6 @@ async function logActivity(bizId: string | null, type: string, detail: string, s
   }
 }
 
-function chatHistoryTime(row: any): number {
-  const ts = row?.timestamp;
-  if (!ts) return 0;
-  if (typeof ts.toMillis === 'function') return ts.toMillis();
-  if (typeof ts.seconds === 'number') return ts.seconds * 1000;
-  const parsed = Date.parse(String(ts));
-  return Number.isFinite(parsed) ? parsed : 0;
-}
-
-async function loadChatHistoryFallback(bizId: string, senderId: string, limitCount: number) {
-  const normalize = (docs: any[]) => docs
-    .map((d: any) => (typeof d.data === 'function' ? d.data() : d))
-    .sort((a: any, b: any) => chatHistoryTime(a) - chatHistoryTime(b))
-    .slice(-limitCount);
-
-  try {
-    if (adminDb) {
-      try {
-        const ordered = await adminDb.collection('chat_history')
-          .where('businessId', '==', bizId)
-          .where('senderId', '==', senderId)
-          .orderBy('timestamp', 'desc')
-          .limit(limitCount)
-          .get();
-        if (!ordered.empty) return normalize(ordered.docs);
-      } catch (orderedErr) {
-        console.warn('[Webhook] Ordered chat_history query unavailable, using unordered fallback:', orderedErr);
-      }
-      const unordered = await adminDb.collection('chat_history')
-        .where('businessId', '==', bizId)
-        .where('senderId', '==', senderId)
-        .limit(limitCount)
-        .get();
-      return unordered.empty ? [] : normalize(unordered.docs);
-    }
-    if (db) {
-      try {
-        const ordered = await getDocs(query(
-          collection(db, 'chat_history'),
-          where('businessId', '==', bizId),
-          where('senderId', '==', senderId),
-          orderBy('timestamp', 'desc'),
-          limit(limitCount),
-        ));
-        if (!ordered.empty) return normalize(ordered.docs);
-      } catch (orderedErr) {
-        console.warn('[Webhook] Ordered chat_history query unavailable, using unordered fallback:', orderedErr);
-      }
-      const unordered = await getDocs(query(
-        collection(db, 'chat_history'),
-        where('businessId', '==', bizId),
-        where('senderId', '==', senderId),
-        limit(limitCount),
-      ));
-      return unordered.empty ? [] : normalize(unordered.docs);
-    }
-  } catch (err) {
-    console.warn('[Webhook] chat_history fallback failed:', err);
-  }
-  return [];
-}
-
 async function saveChatMessage(bizId: string, senderId: string, role: 'user' | 'bot' | 'merchant', text: string) {
   const logBase = {
     businessId: bizId,
@@ -2036,7 +1305,7 @@ async function saveChatMessage(bizId: string, senderId: string, role: 'user' | '
       const chatRef = adminDb.collection('chats').doc(`${bizId}_${senderId}`);
       const existing = await chatRef.get();
       const prev = existing.exists && Array.isArray(existing.data()?.messages) ? existing.data().messages : [];
-      const messages = [...prev, newMsg].slice(-CHAT_MEMORY_LIMIT);
+      const messages = [...prev, newMsg].slice(-40);
       const incomingPatch = role === 'user' ? { lastIncomingAtMs: Date.now() } : {};
       await chatRef.set({
         businessId: bizId,
@@ -2059,7 +1328,7 @@ async function saveChatMessage(bizId: string, senderId: string, role: 'user' | '
       const chatRef = doc(db, 'chats', `${bizId}_${senderId}`);
       const existing = await getDoc(chatRef);
       const prev = existing.exists() && Array.isArray(existing.data()?.messages) ? existing.data()!.messages : [];
-      const messages = [...prev, newMsg].slice(-CHAT_MEMORY_LIMIT);
+      const messages = [...prev, newMsg].slice(-40);
       const incomingPatch = role === 'user' ? { lastIncomingAtMs: Date.now() } : {};
       await setDoc(chatRef, {
         businessId: bizId,
@@ -2297,58 +1566,22 @@ app.post('/api/chat/respond', async (req, res) => {
       });
     }
 
-    // Prepaid gate: central-pool usage requires wallet balance
-    if (!hasMerchantKey && !hasTokenBalance(business.data)) {
-      return res.status(402).json({
-        code: 'TOKENS_EXHAUSTED',
-        error: 'এই স্টোরের AI ব্যালেন্স শেষ। স্টোর মালিক রিচার্জ করলে আবার চালু হবে।',
-      });
-    }
-
-    // Try up to 3 keys from the pool so one exhausted free-tier key never
-    // takes the public chat down.
-    const pool = await getAiPool();
-    const candidateKeys = [
+    const response = await generateChatResponse(
+      message,
+      String(req.body?.history || '').slice(-30_000),
+      { ...business.data, id: business.id },
+      String(req.body?.customerContext || '').slice(0, 8_000),
+      undefined,
       aiConfig.apiKey,
-      ...pool.geminiKeys.filter(k => k.enabled && aiKeyAvailable(k.key)).map(k => k.key),
-    ].filter((k, i, arr) => k && arr.indexOf(k) === i).slice(0, 3);
+      String(req.body?.chatSummary || '').slice(0, 8_000),
+    );
 
-    let response: any = null;
-    for (const candidateKey of candidateKeys) {
-      response = await generateChatResponse(
-        message,
-        String(req.body?.history || '').slice(-120_000),
-        { ...business.data, id: business.id },
-        String(req.body?.customerContext || '').slice(0, 8_000),
-        undefined,
-        candidateKey,
-        String(req.body?.chatSummary || '').slice(0, 8_000),
-      );
-      if (!response.errorCode) break;
-      cooldownAiKey(candidateKey, 'quota', 'chat-pool');
-    }
-
-    if (!response || response.errorCode) {
+    if (response.errorCode) {
       return res.status(502).json({
-        code: response?.errorCode || 'AI_UNAVAILABLE',
+        code: response.errorCode,
         error: 'AI সহকারী এই মুহূর্তে উত্তর দিতে পারছে না।',
       });
     }
-
-    if (!hasMerchantKey) {
-      const usedTokens = estimateTokens(
-        `${message}\n${String(req.body?.history || '').slice(-120_000)}`,
-        JSON.stringify(response)
-      );
-      chargeAiUsage(business.id, {
-        text: '',
-        provider: 'gemini',
-        keyLabel: 'chat',
-        tokensUsed: usedTokens,
-        merchantKeyUsed: false,
-      }, 'web-chat').catch(() => {});
-    }
-
     res.setHeader('Cache-Control', 'no-store');
     return res.json({ response });
   } catch (error: any) {
@@ -2606,7 +1839,6 @@ async function handleMessengerWebhookPost(req: any, res: any) {
   (req as any)._messengerWebhookHandled = true;
   const pathBizId = webhookBusinessIdFromReq(req);
   const body = req.body;
-  let webhookHadFailure = false;
 
   // IMPORTANT: We used to ack Facebook immediately with res.send() and then
   // process the message in a detached async IIFE "in the background".
@@ -2615,9 +1847,9 @@ async function handleMessengerWebhookPost(req: any, res: any) {
   // guarantee that code after res.send() keeps running. This was the root
   // cause of the bot "sometimes replying, sometimes not": whether the
   // background work finished before Vercel froze the instance was random.
-  // Fix: fully await processing and only respond once it's done. All AI work
-  // is deadline-bounded below, and transient failures return 503 so Meta can
-  // retry instead of permanently dropping the customer's message.
+  // Fix: fully await processing and only respond once it's done. Facebook
+  // allows up to ~20s before it considers the webhook a timeout/retry,
+  // which is comfortably more than a Gemini call + Graph API send.
   try {
       // Diagnostic log
       await logActivity(pathBizId || 'system', 'WEBHOOK_PROCESSED', `Webhook hit. Entries: ${body.entry?.length || 0}`, 'info', 'system', body);
@@ -2637,8 +1869,6 @@ async function handleMessengerWebhookPost(req: any, res: any) {
         if (!messaging) continue;
 
         for (const webhookEvent of messaging) {
-          let claimedMessageMid = '';
-          let eventFailed = false;
           try {
             const senderId = String(webhookEvent.sender?.id || '').trim();
             const messageText = webhookEvent.message?.text || '';
@@ -2662,7 +1892,6 @@ async function handleMessengerWebhookPost(req: any, res: any) {
               console.log(`[Webhook] Duplicate message mid=${messageMid} ignored.`);
               continue;
             }
-            claimedMessageMid = messageMid;
 
             // Identify Store by Page ID (Multi-Strategy Bulletproof Matcher)
             const cleanPageId = String(pageId).trim();
@@ -2691,25 +1920,6 @@ async function handleMessengerWebhookPost(req: any, res: any) {
 
             const ownerId = businessData.ownerId;
             const shopName = businessData.name || "আমাদের স্টোর";
-
-            // Ad referral attribution: know which ad/link brought this customer
-            // and which product to pitch first.
-            const referralInfo = extractReferralInfo(webhookEvent);
-            let referralProduct = '';
-            if (referralInfo) {
-              referralProduct = matchProductForReferral(businessData, referralInfo);
-              await saveCustomerAcquisition(bizId!, senderId, cleanPageId, referralInfo, referralProduct);
-              const refLabel = referralInfo.adTitle || referralInfo.ref || referralInfo.adId || referralInfo.postId;
-              await logActivity(bizId!, 'AD_REFERRAL', `কাস্টমার বিজ্ঞাপন/লিংক থেকে এসেছে${refLabel ? ` (${refLabel})` : ''}${referralProduct ? ` → টার্গেট পণ্য: ${referralProduct}` : ''}`, 'info', ownerId);
-              sendCapiEvent(businessData, 'Lead', {
-                psid: senderId,
-                pageId: cleanPageId,
-                ctwaClid: referralInfo.ctwaClid,
-                contentName: referralProduct || referralInfo.adTitle || undefined,
-                bizId: bizId!,
-                ownerId
-              }).catch(() => {});
-            }
 
             const incomingMedia = isPostback ? [] : extractMessengerAttachments(webhookEvent);
 
@@ -2743,10 +1953,9 @@ async function handleMessengerWebhookPost(req: any, res: any) {
             let chatHistoryText = '';
             let longTermSummary = '';
             let savedLead: any = {};
-            let savedAcquisition: any = null;
             let lastOrderAtMs = 0;
             let lastOrderId = '';
-            const HISTORY_WINDOW = CHAT_MEMORY_LIMIT;
+            const HISTORY_WINDOW = 24;
 
             try {
               if (adminDb) {
@@ -2755,7 +1964,6 @@ async function handleMessengerWebhookPost(req: any, res: any) {
                   const c = custSnap.data() || {};
                   longTermSummary = c.chatSummary || '';
                   savedLead = c.leadInfo || {};
-                  savedAcquisition = c.acquisition || null;
                   lastOrderAtMs = Number(c.lastOrderAtMs) || 0;
                   lastOrderId = String(c.lastOrderId || '');
                 }
@@ -2765,7 +1973,6 @@ async function handleMessengerWebhookPost(req: any, res: any) {
                   const c = custSnap.data() || {};
                   longTermSummary = c.chatSummary || '';
                   savedLead = c.leadInfo || {};
-                  savedAcquisition = c.acquisition || null;
                   lastOrderAtMs = Number(c.lastOrderAtMs) || 0;
                   lastOrderId = String(c.lastOrderId || '');
                 }
@@ -2790,11 +1997,17 @@ async function handleMessengerWebhookPost(req: any, res: any) {
                 chatHistoryText = recentMsgs.map((m: any) => `${m.role === 'user' ? 'Customer' : 'Bot'}: ${m.text}`).join('\n');
               } else {
                 // 2. Fallback to chat_history collection query
-                const historyRows = await loadChatHistoryFallback(bizId!, senderId, HISTORY_WINDOW);
-                if (historyRows.length > 0) {
-                  chatHistoryText = historyRows
-                    .map((m: any) => `${m.role === 'user' ? 'Customer' : 'Bot'}: ${m.text}`)
-                    .join('\n');
+                if (adminDb) {
+                  const historySnap = await adminDb.collection('chat_history')
+                    .where('businessId', '==', bizId)
+                    .where('senderId', '==', senderId)
+                    .limit(HISTORY_WINDOW)
+                    .get();
+                  if (!historySnap.empty) {
+                    const msgs = historySnap.docs.map((d: any) => d.data());
+                    msgs.sort((a: any, b: any) => (a.timestamp?.seconds || 0) - (b.timestamp?.seconds || 0));
+                    chatHistoryText = msgs.slice(-HISTORY_WINDOW).map((m: any) => `${m.role === 'user' ? 'Customer' : 'Bot'}: ${m.text}`).join('\n');
+                  }
                 }
               }
             } catch (histErr) {
@@ -2807,7 +2020,9 @@ async function handleMessengerWebhookPost(req: any, res: any) {
             await touchMessengerCustomer(bizId!, senderId).catch(() => {});
             await saveMessengerLog(bizId!, { senderId, pageId: cleanPageId, message: finalMessageText, status: 'received' });
 
-            const pageAccessToken = pageTokenForBusiness(businessData, cleanPageId);
+            const pageAccessToken = businessData.pageAccessToken || 
+                                   businessData.facebookConfig?.accessToken || 
+                                   businessData.accessToken;
 
             if (!pageAccessToken) {
               console.error(`[Webhook] No access token for biz: ${bizId}. Data:`, JSON.stringify(businessData));
@@ -2890,68 +2105,17 @@ async function handleMessengerWebhookPost(req: any, res: any) {
             }
 
             const aiConfig = await getEffectiveGeminiConfig();
-            const merchantAiKeys = merchantOwnGeminiKey(businessData);
-            if (!aiConfig.apiKey && merchantAiKeys.length === 0) {
+            if (!aiConfig.apiKey) {
               console.error('[Webhook] Gemini AI API key not configured in system');
               const noAiMsg = 'সেন্ট্রাল জেমিনি এপিআই কি কনফিগার করা নেই। অ্যাডমিন প্যানেলে API Key প্রদান করুন।';
               await logActivity(bizId!, 'ERROR', noAiMsg, 'error', ownerId);
               await saveMessengerLog(bizId!, { senderId, pageId: cleanPageId, message: finalMessageText, status: 'error', error: noAiMsg });
-              if (isFeatureEnabled(storeFeatures, 'messengerRepliesEnabled')) {
-                await sendResilientSalesFallback({
-                  businessId: bizId!,
-                  businessData,
-                  ownerId,
-                  pageId: cleanPageId,
-                  pageAccessToken,
-                  senderId,
-                  message: finalMessageText,
-                  mediaKinds: incomingMedia.map((item) => item.kind),
-                  reason: 'ai-not-configured'
-                });
-              }
-              continue;
-            }
-
-            // Token wallet gate: central-pool AI is prepaid. Empty wallet =
-            // use the no-cost catalog/FAQ fallback so the storefront stays
-            // responsive without bypassing paid AI usage.
-            if (!hasTokenBalance(businessData)) {
-              await notifyTokensEmpty(bizId!, ownerId);
-              await saveMessengerLog(bizId!, {
-                senderId,
-                pageId: cleanPageId,
-                message: finalMessageText,
-                status: 'error',
-                error: 'টোকেন ব্যালেন্স শেষ — AI ব্যবহার হয়নি; নিরাপদ fallback উত্তর পাঠানো হয়েছে।'
-              });
-              if (isFeatureEnabled(storeFeatures, 'messengerRepliesEnabled')) {
-                await sendResilientSalesFallback({
-                  businessId: bizId!,
-                  businessData,
-                  ownerId,
-                  pageId: cleanPageId,
-                  pageAccessToken,
-                  senderId,
-                  message: finalMessageText,
-                  mediaKinds: incomingMedia.map((item) => item.kind),
-                  reason: 'token-balance-empty'
-                });
-              }
               continue;
             }
 
             let downloadedMedia: DownloadedMedia[] = [];
             if (incomingMedia.length > 0) {
-              try {
-                downloadedMedia = await withDeadline(
-                  downloadIncomingMedia(incomingMedia, pageAccessToken),
-                  10_000,
-                  'Messenger media download'
-                );
-              } catch (mediaErr: any) {
-                console.warn('[Webhook] Media download deadline reached; continuing with text context:', mediaErr?.message);
-                downloadedMedia = [];
-              }
+              downloadedMedia = await downloadIncomingMedia(incomingMedia, pageAccessToken);
               if (!isFeatureEnabled(storeFeatures, 'photoReplyEnabled')) {
                 downloadedMedia = downloadedMedia.filter((m) => m.kind !== 'image');
               }
@@ -2967,10 +2131,7 @@ async function handleMessengerWebhookPost(req: any, res: any) {
             console.log(`[Webhook] Starting AI processing with model: ${aiConfig.model}`);
             await logActivity(bizId!, 'AI_START', `বটের কাছে পাঠানো হচ্ছে (${aiConfig.model})...`, 'info', ownerId);
 
-            const products = selectProductsForPrompt(
-              businessData.products || [],
-              `${referralProduct} ${savedAcquisition?.matchedProduct || ''} ${finalMessageText}\n${chatHistoryText}`
-            );
+            const products = sanitizeProductsForPrompt(businessData.products || []);
             const rawProducts = businessData.products || [];
 
             const allFaqs = isFeatureEnabled(storeFeatures, 'faqEnabled') ? (businessData.faqs || []) : [];
@@ -2985,16 +2146,6 @@ async function handleMessengerWebhookPost(req: any, res: any) {
               .join('\n');
 
             const knownLead = mergeLead(savedLead, {}, `${finalMessageText}\n${chatHistoryText}`);
-
-            // Which ad brought this customer -> which product to pitch first
-            const acqForPrompt = referralInfo
-              ? { adTitle: referralInfo.adTitle, ref: referralInfo.ref, adId: referralInfo.adId, matchedProduct: referralProduct }
-              : savedAcquisition;
-            const acqLabel = String(acqForPrompt?.adTitle || acqForPrompt?.ref || acqForPrompt?.adId || '').trim();
-            const acqProduct = String(acqForPrompt?.matchedProduct || matchProductForReferral(businessData, acqForPrompt || null) || '').trim();
-            const adSourceBlock = (acqLabel || acqProduct)
-              ? `\nঅ্যাড সোর্স (গুরুত্বপূর্ণ): কাস্টমার ফেসবুক বিজ্ঞাপন${acqLabel ? ` "${acqLabel}"` : ''} থেকে এসেছে।${acqProduct ? ` টার্গেট পণ্য: "${acqProduct}" — কাস্টমার ভিন্ন কিছু না চাইলে প্রথমে এই পণ্যটি নিয়েই কথা বলবে এবং এর দাম ও অফার জানাবে। ছবি তখনই পাঠাবে যখন কাস্টমার নিজে ছবি চাইবে।` : ' কাস্টমার কোন পণ্যের অ্যাড দেখে এসেছে বুঝে সেই পণ্য নিয়ে কথা বলবে।'}\n`
-              : '';
             const recentOrders = isFeatureEnabled(storeFeatures, 'orderTrackingEnabled')
               ? await loadRecentOrdersForCustomer(bizId!, senderId, knownLead.phone)
               : [];
@@ -3002,24 +2153,22 @@ async function handleMessengerWebhookPost(req: any, res: any) {
               ? recentOrders.map((o: any) => `- ${o.id}: ${o.productName} x${o.quantity}, স্ট্যাটাস ${o.status}, ফোন ${o.phone}, ${o.createdAtMs ? Math.round((Date.now() - o.createdAtMs) / 60000) + ' মিনিট আগে' : ''}`).join('\n')
               : 'কোনো সাম্প্রতিক অর্ডার নেই';
 
-            const prompt = `তুমি "${businessData.name}" পেজের স্বয়ংক্রিয় চ্যাট সহকারী। একজন দক্ষ সেলস প্রতিনিধির মতো স্বাভাবিক, সংক্ষিপ্ত ও টু-দ্য-পয়েন্ট ভাষায় লেখো। JSON স্কিমা অনুযায়ী উত্তর দাও (JSON শুধু সিস্টেমের জন্য; reply ফিল্ডের লেখাটা হবে স্বাভাবিক কথোপকথনের মতো)।
+            const prompt = `তুমি "${businessData.name}" পেজের ইনবক্সে রিপ্লাই দেওয়া একজন বাস্তব মানুষ বিক্রয়কর্মী — স্মার্ট, সংক্ষিপ্ত ও টু-দ্য-পয়েন্ট। JSON স্কিমা অনুযায়ী উত্তর দাও (JSON শুধু সিস্টেমের জন্য; reply ফিল্ডের লেখাটা হবে সম্পূর্ণ মানুষের মতো)।
 
 # কঠোর নির্দেশাবলী:
 ১. সংক্ষিপ্ত ও নির্দিষ্ট উত্তর (১-৩ বাক্য)। অপ্রয়োজনীয় ভূমিকা বা জোর করে পণ্য তালিকা দেবে না।
 ২. জানা তথ্য (নাম/ফোন/ঠিকানা) আর কখনো জিজ্ঞেস করবে না — order_data-তে প্রতিবার কপি করবে।
 ৩. সাম্প্রতিক অর্ডার থাকলে আবার অর্ডার করতে বলবে না; স্ট্যাটাস জানাবে।
-৪. রিভিউ/প্রুফ/কাস্টমার ফটো চাইলেই শুধু show_review_images=true। সাধারণ ছবি চাইলে show_product_image=true, রিভিউ মিশাবে না। দাম জানতে চাইলে ছবি পাঠাবে না। ছবি পাঠালে reply-তে "ইমেজ অ্যাটাচ" বা "কাস্টমার রিভিউ" লিখবে না — সাধারণ মানুষের মতো ছোট করে বলবে যেমন "এই দেখেন"।
+৪. রিভিউ/প্রুফ/কাস্টমার ফটো চাইলে show_review_images=true। ছবি চাইলে show_product_image=true।
 ৫. নাম+১১ ডিজিট ফোন+পূর্ণ ঠিকানা+পণ্য জানা এবং কাস্টমার কনফার্ম করলে should_create_order=true, conversation_stage=order_completed, event_name=Purchase, need_more_info=false।
 ৬. minPrice-এর নিচে দাম দিবে না।
 ৭. ফটো/ছবি রিপ্লাই: কাস্টমার ছবি পাঠালে অবশ্যই ছবিটি দেখে উত্তর দাও — নীরব থাকবে না।
-   - পণ্য/ক্যাটালগ স্ক্রিনশট: ক্যাটালগের সাথে মিলিয়ে নাম, দাম ও স্টক বলো; অর্ডার করতে চান কিনা জিজ্ঞেস করো। কাস্টমার নিজে ছবি না চাইলে show_product_image true করবে না।
+   - পণ্য/ক্যাটালগ স্ক্রিনশট: ক্যাটালগের সাথে মিলিয়ে নাম, দাম ও স্টক বলো; অর্ডার করতে চান কিনা জিজ্ঞেস করো। মিললে show_product_image true করতে পারো।
    - পেমেন্ট/বিকাশ/নগদ/রকেট স্ক্রিনশট: "স্ক্রিনশট পেয়েছি, আমাদের টিম ভেরিফাই করে আপনাকে জানাবে" — নিজে থেকে পেমেন্ট কনফার্মড বলবে না।
    - নাম/ঠিকানা/ফোন লেখা ছবি: পড়ে নিশ্চিত করে নাও।
    - ক্ষতি/কমপ্লেইন/ডেলিভারি সমস্যা: সহানুভূতি দেখিয়ে সমাধানের কথা বলো।
    - স্পষ্ট না হলে: "ছবিটি পেয়েছি — এটা কোন পণ্য বা বিষয় সম্পর্কে জানতে চান?"
 ৮. ভয়েস মেসেজ রিপ্লাই: অডিও শুনে কাস্টমার যা বলেছে তা বুঝে ঠিক টেক্সট মেসেজের মতো সেলস উত্তর দাও। উত্তরের প্রথম বাক্যে সংক্ষেপে নিশ্চিত করো তুমি কী শুনেছ। অডিও বোঝা না গেলে নম্রভাবে লিখে পাঠাতে বলো।
-৯. তথ্যের সত্যতার অগ্রাধিকার: পণ্যতালিকা → FAQ → সাম্প্রতিক অর্ডার/জানা তথ্য। কোনো দাম, স্টক, অফার, পলিসি বা অর্ডার স্ট্যাটাস অনুমান করবে না। তথ্য না থাকলে সংক্ষেপে বলবে যে নিশ্চিত তথ্য পাওয়া যাচ্ছে না।
-১০. কাস্টমারের বর্তমান বার্তা আগের কথার বিরোধী হলে অনুমান না করে ছোট একটি পরিষ্কার প্রশ্ন করবে।
 
 দোকানের তথ্য: ${businessData.description || ''}
 পণ্যতালিকা:
@@ -3033,15 +2182,15 @@ ${productFaqs || 'নেই'}
 
 কাস্টম নির্দেশিকা: ${businessData.customSystemPrompt || businessData.botPersona || ''}
 
-# পরিচয় ও কথার ধরন:
-- নিজেকে মানুষ বলে মিথ্যা দাবি করবে না। কেউ সরাসরি জিজ্ঞেস করলে সংক্ষেপে সত্যি বলবে যে তুমি পেজের ভার্চুয়াল সহকারী; চাইলে মানব প্রতিনিধির সঙ্গে যুক্ত হওয়ার সুযোগ দেবে।
+# পরিচয় (সবচেয়ে গুরুত্বপূর্ণ — কোনো অবস্থাতেই ভাঙবে না):
+- তুমি এই দোকানের সেলস টিমের একজন বাস্তব মানুষ। কখনোই বলবে না বা কোনোভাবে বুঝতে দেবে না যে তুমি এআই, বট, রোবট, ভার্চুয়াল অ্যাসিস্ট্যান্ট, অটোমেটেড সিস্টেম বা কম্পিউটার প্রোগ্রাম।
+- কেউ সরাসরি জিজ্ঞেস করলে ("আপনি কি রোবট/বট/এআই?") স্বাভাবিকভাবে হালকা করে এড়িয়ে কাজের কথায় ফিরবে। যেমন: "হাহা, আমি পেজ থেকেই রিপ্লাই দিচ্ছি। বলেন, কোনটা নিতে চাচ্ছিলেন?"
 - মানুষ যেভাবে মেসেঞ্জারে টাইপ করে সেভাবে লিখবে: ছোট ছোট সহজ বাক্য, কথ্য বাংলা। রোবটের মতো আনুষ্ঠানিক ভাষা, বুলেট লিস্ট, তারকা চিহ্ন (*), হেডিং, ইমোজির বন্যা বা টেমপ্লেট-টাইপ উত্তর দেবে না।
 - প্রতিবার একই বাক্য বা একই ঢঙে শুরু করবে না। আগের মেসেজের সাথে স্বাভাবিক ধারাবাহিকতা রাখবে, যেন একজন মানুষই টানা কথা বলছে।
-- ইচ্ছাকৃত টাইপো করবে না; দরকারের কথা অল্প কথায় বলবে।
-- অর্ডার নিশ্চিত/কনফার্ম হয়েছে এমন কথা তখনই বলবে যখন এবারের উত্তরে should_create_order=true দিচ্ছ। নাম/ফোন/ঠিকানার কোনোটা অসম্পূর্ণ থাকলে "অর্ডার কনফার্ম" বলবে না — আগে বাকি তথ্যটা স্বাভাবিকভাবে চেয়ে নেবে।
+- ভুল করে টাইপো-জাতীয় অতিনিখুঁত দীর্ঘ রচনা লিখবে না; দরকারের কথা অল্প কথায় বলবে।
 
 ${buildFeaturePromptBlock(storeFeatures)}
-${adSourceBlock}
+
 কাস্টমারের জানা তথ্য (আবার চাইবে না):
 নাম: ${knownLead.name || 'অজানা'} | ফোন: ${knownLead.phone || 'অজানা'} | ঠিকানা: ${knownLead.address || 'অজানা'} | পণ্য: ${knownLead.product_name || 'অজানা'}
 
@@ -3062,30 +2211,41 @@ ${chatHistoryText || 'নতুন আলাপ'}
               for (const media of downloadedMedia) {
                 geminiParts.push({ inlineData: { mimeType: media.mimeType, data: media.data } });
               }
-              let primaryReplySent = false;
 
               try {
-                console.log(`[Webhook] Calling AI pool for biz: ${bizId}${downloadedMedia.length ? ` with ${downloadedMedia.length} media part(s)` : ''}`);
+                console.log(`[Webhook] Calling Gemini AI for biz: ${bizId}${downloadedMedia.length ? ` with ${downloadedMedia.length} media part(s)` : ''}`);
                 let responseText = '';
+                
+                const generateJson = async (modelName: string, parts: any[]) => {
+                  const ai = new GoogleGenAI({ apiKey: aiConfig.apiKey });
+                  const aiResponse = await ai.models.generateContent({
+                    model: modelName,
+                    contents: [{ role: 'user', parts }],
+                    config: {
+                      responseMimeType: 'application/json',
+                      responseSchema: webhookResponseSchema,
+                      temperature: aiConfig.temperature,
+                      maxOutputTokens: aiConfig.maxTokens,
+                    }
+                  });
+                  return aiResponse.text?.trim() || '';
+                };
 
-                // Multi-key pool with automatic failover: every enabled Gemini
-                // key is tried (quota-hit keys rotate out), then OpenRouter,
-                // then OpenAI as text-only fallbacks.
-                const aiResult = await aiGenerate({
-                  parts: geminiParts,
-                  textPrompt: prompt,
-                  model: aiConfig.model,
-                  schema: webhookResponseSchema,
-                  temperature: Math.min(0.45, Math.max(0, Number(businessData.aiTemperature ?? aiConfig.temperature ?? 0.35))),
-                  maxTokens: aiConfig.maxTokens,
-                  preferredKeys: merchantAiKeys,
-                });
-                responseText = aiResult.text;
-                if (aiResult.provider !== 'gemini') {
-                  console.log(`[Webhook] Reply served by fallback provider: ${aiResult.provider}`);
+                try {
+                  responseText = await generateJson(aiConfig.model, geminiParts);
+                } catch (primaryAiErr: any) {
+                  console.warn(`[Webhook] Primary model ${aiConfig.model} failed, falling back to gemini-3.1-flash-lite...`, primaryAiErr?.message);
+                  try {
+                    responseText = await generateJson('gemini-3.1-flash-lite', geminiParts);
+                  } catch (fallbackErr: any) {
+                    if (geminiParts.length > 1) {
+                      console.warn('[Webhook] Multimodal fallback failed, retrying text-only JSON...', fallbackErr?.message);
+                      responseText = await generateJson('gemini-3.1-flash-lite', [{ text: prompt }]);
+                    } else {
+                      throw new Error(`AI Generation failed on all models: ${fallbackErr?.message}`);
+                    }
+                  }
                 }
-                // Bill the merchant's wallet with the REAL token usage
-                chargeAiUsage(bizId!, aiResult, 'messenger').catch(() => {});
 
                 const latencyMs = Date.now() - startTime;
                 
@@ -3116,9 +2276,6 @@ ${chatHistoryText || 'নতুন আলাপ'}
                 }
 
                 if (aiRes) {
-                  const imageFlags = resolveImageSendFlags(finalMessageText, aiRes);
-                  aiRes.show_product_image = imageFlags.show_product_image;
-                  aiRes.show_review_images = imageFlags.show_review_images;
                   if (!isFeatureEnabled(storeFeatures, 'imageDisplayEnabled')) aiRes.show_product_image = false;
                   if (!isFeatureEnabled(storeFeatures, 'reviewImagesEnabled')) aiRes.show_review_images = false;
                   if (!isFeatureEnabled(storeFeatures, 'autoOrderEnabled')) aiRes.should_create_order = false;
@@ -3127,51 +2284,14 @@ ${chatHistoryText || 'নতুন আলাপ'}
 
                 const nextLead = mergeLead(knownLead, {
                   ...(aiRes?.order_data || {}),
-                  product_name:
-                    aiRes?.order_data?.product_name
-                    || aiRes?.product_name
-                    || knownLead.product_name
-                    || acqProduct
-                    || (rawProducts.length === 1 ? rawProducts[0]?.name : ''),
+                  product_name: aiRes?.order_data?.product_name || aiRes?.product_name || knownLead.product_name,
                 }, `${finalMessageText}\n${chatHistoryText}`);
 
-                const modelRequestedOrder = Boolean(
+                const wantsOrder = Boolean(
                   aiRes?.should_create_order ||
                   (aiRes?.conversation_stage === 'order_completed' && aiRes?.need_more_info === false) ||
                   (aiRes?.event_name === 'Purchase' && aiRes?.need_more_info === false)
                 );
-                const wantsOrder = shouldCreateConfirmedOrder({
-                  modelRequested: modelRequestedOrder,
-                  customerMessage: finalMessageText,
-                  hasCompleteOrder: hasCompleteLead(nextLead),
-                });
-
-                // Full-funnel CAPI: send the AI-detected stage event so the ad
-                // account learns which conversations become real buyers.
-                // Purchase is sent separately (only when an order is created).
-                const funnelEvent = String(aiRes?.event_name || '').trim();
-                if (funnelEvent && funnelEvent !== 'Purchase') {
-                  sendCapiEvent(businessData, funnelEvent, {
-                    psid: senderId,
-                    pageId: cleanPageId,
-                    phone: nextLead.phone,
-                    name: nextLead.name,
-                    ctwaClid: savedAcquisition?.ctwaClid || referralInfo?.ctwaClid,
-                    contentName: aiRes?.product_name || nextLead.product_name || acqProduct || undefined,
-                    bizId: bizId!,
-                    ownerId
-                  }).catch(() => {});
-                }
-
-                if (modelRequestedOrder && !hasCompleteLead(nextLead) && isFeatureEnabled(storeFeatures, 'autoOrderEnabled')) {
-                  const missing = [
-                    !String(nextLead.name || '').trim() ? 'নাম' : '',
-                    !normalizePhone(nextLead.phone) ? 'ফোন' : '',
-                    !String(nextLead.address || '').trim() ? 'ঠিকানা' : '',
-                    !String(nextLead.product_name || '').trim() ? 'পণ্য' : '',
-                  ].filter(Boolean).join(', ');
-                  await logActivity(bizId!, 'ORDER_INCOMPLETE', `অর্ডারের ইচ্ছা শনাক্ত হয়েছে কিন্তু তথ্য অসম্পূর্ণ (${missing || 'অজানা'}) — অর্ডার তৈরি হয়নি, বট তথ্য চাইবে।`, 'info', ownerId);
-                }
 
                 if (wantsOrder && isFeatureEnabled(storeFeatures, 'autoOrderEnabled') && hasCompleteLead(nextLead)) {
                   try {
@@ -3187,10 +2307,6 @@ ${chatHistoryText || 'নতুন আলাপ'}
                     const duplicate = recentCustomerOrder || await findRecentDuplicateOrder(bizId!, identity);
                     if (duplicate || !claimOrderIdentity(bizId!, identity)) {
                       console.log(`[Webhook] Duplicate order skipped for passenger ${senderId} / ${nextLead.phone}, existing ${duplicate?.id || 'in-memory lock'}`);
-                      await logActivity(bizId!, 'ORDER_DUPLICATE_SKIP', `ডুপ্লিকেট অর্ডার স্কিপ হয়েছে (আগের অর্ডার: ${duplicate?.id || 'সাম্প্রতিক'}) — একই কাস্টমার/ফোন থেকে কিছুক্ষণ আগেই অর্ডার আছে।`, 'info', ownerId);
-                      reply = duplicate?.id
-                        ? `আপনার অর্ডারটি আগেই কনফার্ম হয়েছে। অর্ডার আইডি: ${duplicate.id}`
-                        : 'আপনার অর্ডারটি আগেই কনফার্ম হয়েছে।';
                     } else {
                     const isInsideDhaka = /ঢাকা|dhaka|মিরপুর|ধানমন্ডি|উত্তরা|গুলশান|বনানী|মোহাম্মদপুর|মতিঝিল|যাত্রাবাড়ী|বাড্ডা|মগবাজার|খিলগাঁও|বাসাবো|তেজগাঁও|বারিধারা|রামপুরা|লালবাগ/i.test(nextLead.address);
                     const deliveryCharge = isInsideDhaka 
@@ -3201,14 +2317,11 @@ ${chatHistoryText || 'নতুন আলাপ'}
                       const n = String(p.name || '').toLowerCase();
                       const w = productName.toLowerCase();
                       return n && w && (n === w || n.includes(w) || w.includes(n));
-                    }) || (rawProducts.length === 1 ? rawProducts[0] : undefined);
-                    if (!matchedProduct && !productName) {
-                      throw new Error('Product not identified for confirmed order');
-                    }
+                    }) || rawProducts.find((p: any) => chatHistoryText.toLowerCase().includes(String(p.name || '').toLowerCase())) || rawProducts[0];
 
                     const qty = Math.max(1, parseInt(String(nextLead.quantity || '1'), 10) || 1);
-                    const unitPrice = Number(String(nextLead.negotiated_price || '').replace(/[^0-9.]/g, '')) || matchedProduct?.price || 0;
-                    const orderId = `ORD-${Date.now().toString(36).toUpperCase()}-${String(senderId).slice(-4)}`;
+                    const unitPrice = Number(String(nextLead.negotiated_price || '').replace(/[^0-9.]/g, '')) || matchedProduct?.price || 500;
+                    const orderId = `ORD-${Date.now().toString().slice(-6)}`;
                     const totalAmount = unitPrice * qty + deliveryCharge;
 
                     const newOrder = {
@@ -3232,39 +2345,12 @@ ${chatHistoryText || 'নতুন আলাপ'}
                       paymentStatus: 'unpaid',
                       paymentMethod: 'cod',
                       notes: `Messenger AI (Customer: ${senderId})`,
-                      source: 'messenger',
-                      tags: ['Messenger', 'AI confirmed'],
-                      statusHistory: [{ status: 'confirmed', at: Date.now(), note: 'Messenger checkout confirmed' }],
-                      pageId: cleanPageId,
-                      adSource: acqLabel || '',
-                      adId: String(acqForPrompt?.adId || ''),
-                      adRef: String(acqForPrompt?.ref || ''),
                       createdAtMs: Date.now(),
                     };
 
                     await saveOrderDoc(newOrder);
                     lastOrderId = orderId;
                     lastOrderAtMs = newOrder.createdAtMs;
-                    reply = /অর্ডার.{0,20}(?:কনফার্ম|নিশ্চিত)/i.test(reply)
-                      ? `${reply.trim()}\nঅর্ডার আইডি: ${orderId}`
-                      : `জি, আপনার অর্ডারটি কনফার্ম হয়েছে। অর্ডার আইডি: ${orderId}`;
-
-                    // Purchase event with real value -> the ad account can
-                    // optimize for actual revenue, not just conversations.
-                    sendCapiEvent(businessData, 'Purchase', {
-                      psid: senderId,
-                      pageId: cleanPageId,
-                      phone: newOrder.phone,
-                      name: newOrder.customerName,
-                      value: totalAmount,
-                      orderId,
-                      contentName: newOrder.productName,
-                      contentIds: newOrder.productId ? [String(newOrder.productId)] : undefined,
-                      ctwaClid: savedAcquisition?.ctwaClid || referralInfo?.ctwaClid,
-                      bizId: bizId!,
-                      ownerId,
-                      allowRepeat: true
-                    }).catch(() => {});
 
                     if (isFeatureEnabled(storeFeatures, 'inventoryEnabled') && matchedProduct && (matchedProduct.stock || matchedProduct.stockCount) > 0 && adminDb) {
                       const updatedProducts = (businessData.products || []).map((p: any) => {
@@ -3303,20 +2389,8 @@ ${chatHistoryText || 'নতুন আলাপ'}
                       }
                     }
                     }
-                  } catch (orderErr: any) {
+                  } catch (orderErr) {
                     console.warn('[Webhook] Auto order placement notice:', orderErr);
-                    releaseOrderIdentity(bizId!, {
-                      phone: nextLead.phone,
-                      passengerId: senderId,
-                    });
-                    reply = 'আপনার তথ্যগুলো পেয়েছি, তবে অর্ডারটি এখনো সেভ হয়নি। একটু পর আবার “কনফার্ম” লিখে পাঠাবেন, অথবা আমাদের প্রতিনিধির সহায়তা নিন।';
-                    await logActivity(
-                      bizId!,
-                      'ORDER_SAVE_FAILED',
-                      `Messenger অর্ডার সেভ হয়নি: ${orderErr?.message || String(orderErr)}`,
-                      'error',
-                      ownerId,
-                    );
                   }
                 }
 
@@ -3342,36 +2416,25 @@ ${chatHistoryText || 'নতুন আলাপ'}
                     message: { text: reply.trim() }
                   }, { timeout: 15000 });
                 }
-                primaryReplySent = true;
 
-                const imageFlags = resolveImageSendFlags(finalMessageText, aiRes);
-                const wantsProductImg = isFeatureEnabled(storeFeatures, 'imageDisplayEnabled') && imageFlags.show_product_image;
-                const wantsReviewImg = isFeatureEnabled(storeFeatures, 'reviewImagesEnabled') && imageFlags.show_review_images;
+                const wantsProductImg = isFeatureEnabled(storeFeatures, 'imageDisplayEnabled') && Boolean(aiRes?.show_product_image);
+                const wantsReviewImg = isFeatureEnabled(storeFeatures, 'reviewImagesEnabled') && (Boolean(aiRes?.show_review_images) || /রিভিউ|review|প্রুফ|proof|ফিডব্যাক|feedback|আনবক্সিং/i.test(finalMessageText));
                 if (wantsProductImg || wantsReviewImg) {
                   try {
-                    const imageProduct = pickProductForImages(
-                      rawProducts,
-                      aiRes?.product_name || nextLead.product_name || acqProduct,
-                      `${finalMessageText}\n${chatHistoryText}`,
-                    );
-                    const productUrls = wantsProductImg
-                      ? uniqueHttpUrls(imageProduct?.images || [], MAX_PRODUCT_PHOTOS)
-                      : [];
-                    const reviewUrls = wantsReviewImg
-                      ? uniqueHttpUrls(imageProduct?.reviewImages || [], MAX_REVIEW_PHOTOS)
-                      : [];
-
-                    for (const rawUrl of productUrls) {
-                      const publicUrl = await ensurePublicImageUrl(rawUrl, bizId!, req);
-                      if (publicUrl && publicUrl.startsWith('http')) {
-                        await briefTypingPause(pageAccessToken, senderId, 280);
-                        await sendImageMessage(pageAccessToken, senderId, publicUrl);
-                      }
+                    const wantedName = String(aiRes?.product_name || nextLead.product_name || '').toLowerCase().trim();
+                    let imageProduct = wantedName
+                      ? rawProducts.find((p: any) => p.name?.toLowerCase().includes(wantedName) || wantedName.includes(p.name?.toLowerCase() || '\u0000'))
+                      : null;
+                    if (!imageProduct) {
+                      imageProduct = rawProducts.find((p: any) => p.name && finalMessageText.toLowerCase().includes(p.name.toLowerCase()));
                     }
-                    for (const rawUrl of reviewUrls) {
+                    if (!imageProduct) imageProduct = rawProducts[0];
+                    const urls: string[] = [];
+                    if (wantsProductImg) urls.push(...(imageProduct?.images || []).slice(0, 3));
+                    if (wantsReviewImg) urls.push(...(imageProduct?.reviewImages || []).slice(0, 3));
+                    for (const rawUrl of urls) {
                       const publicUrl = await ensurePublicImageUrl(rawUrl, bizId!, req);
                       if (publicUrl && publicUrl.startsWith('http')) {
-                        await briefTypingPause(pageAccessToken, senderId, 340);
                         await sendImageMessage(pageAccessToken, senderId, publicUrl);
                       }
                     }
@@ -3391,8 +2454,13 @@ ${chatHistoryText || 'নতুন আলাপ'}
                   latencyMs
                 });
 
-                // (Token wallet already charged with real usage right after
-                // the AI call — see chargeAiUsage above.)
+                // Update Tenant AI Message & Token Counter
+                if (adminDb) {
+                  await adminDb.collection('businesses').doc(bizId!).update({
+                    aiMessagesCount: admin.firestore.FieldValue.increment(1),
+                    totalTokensUsed: admin.firestore.FieldValue.increment(180)
+                  }).catch(() => {});
+                }
 
                 console.log('[Webhook] Reply sequence finished successfully');
                 await logActivity(bizId!, 'REPLY_SENT', `উত্তর পাঠানো হয়েছে: "${reply.substring(0, 50)}..."`, 'success', ownerId);
@@ -3401,7 +2469,6 @@ ${chatHistoryText || 'নতুন আলাপ'}
                   businessId: bizId,
                   messengerId: senderId,
                   passengerId: senderId,
-                  pageId: cleanPageId,
                   name: nextLead.name || '',
                   phone: nextLead.phone || '',
                   address: nextLead.address || '',
@@ -3434,53 +2501,31 @@ ${chatHistoryText || 'নতুন আলাপ'}
                   latencyMs
                 });
                 
-                // If AI/provider processing failed before a real reply reached
-                // Facebook, answer from catalog/FAQ data instead of sending a
-                // dead-end "an assistant will join" acknowledgement.
-                if (!primaryReplySent && isFeatureEnabled(storeFeatures, 'messengerRepliesEnabled')) {
-                  try {
-                    await sendResilientSalesFallback({
-                      businessId: bizId!,
-                      businessData,
-                      ownerId,
-                      pageId: cleanPageId,
-                      pageAccessToken,
-                      senderId,
-                      message: finalMessageText,
-                      mediaKinds: incomingMedia.map((item) => item.kind),
-                      reason: 'ai-or-send-error'
-                    });
-                  } catch (fallbackErr: any) {
-                    console.error('[Webhook] Resilient fallback send failed:', fallbackErr.response?.data || fallbackErr.message);
-                    throw fallbackErr;
-                  }
-                }
+                // Fallback messaging to Facebook
+                try {
+                  await axios.post(`https://graph.facebook.com/v21.0/me/messages?access_token=${pageAccessToken}`, {
+                    recipient: { id: senderId },
+                    message: { text: incomingMedia.some((m) => m.kind === 'audio')
+                      ? "আপনার ভয়েস মেসেজটি পেয়েছি। আমাদের সেলস অ্যাসিস্ট্যান্ট শীঘ্রই আপনার সাথে যুক্ত হচ্ছে।"
+                      : incomingMedia.some((m) => m.kind === 'image')
+                        ? "আপনার ছবিটি পেয়েছি। আমাদের সেলস অ্যাসিস্ট্যান্ট শীঘ্রই আপনার সাথে যুক্ত হচ্ছে।"
+                        : "ধন্যবাদ আপনার বার্তার জন্য! আমাদের সেলস অ্যাসিস্ট্যান্ট শীঘ্রই আপনার সাথে যুক্ত হচ্ছে।" }
+                  });
+                } catch (e) {}
               }
 
           } catch (e: any) {
-            eventFailed = true;
-            webhookHadFailure = true;
             console.error('[Event Loop Error]', e.message);
-          } finally {
-            if (claimedMessageMid) {
-              if (eventFailed) releaseMessageForRetry(claimedMessageMid);
-              else markMessageProcessed(claimedMessageMid);
-            }
           }
         }
       }
     } catch (e) {
-      webhookHadFailure = true;
       console.error('Webhook Process error', e);
     } finally {
-      // 503 is intentional for transient failures: Meta retries delivery.
-      // Successfully handled message IDs remain deduplicated; failed IDs are
-      // released above so the retry can complete them.
-      try {
-        res.status(webhookHadFailure ? 503 : 200).send(
-          webhookHadFailure ? 'RETRY_EVENT' : 'EVENT_RECEIVED'
-        );
-      } catch (_) {}
+      // Respond only after processing has actually finished (success or
+      // failure) so Vercel doesn't freeze the function mid-way through
+      // sending the AI reply. See note above.
+      try { res.status(200).send('EVENT_RECEIVED'); } catch (_) {}
     }
 }
 
@@ -3500,350 +2545,6 @@ app.get(['/api/messenger/health', '/api/webhook/health'], (_req, res) => {
 });
 
 // Meta Graph API Token Health Test + page subscription
-// ---------------------------------------------------------------------------
-// ZiniPay billing — the gateway API key belongs to the SUPER ADMIN only
-// (system/settings.zinipayApiKey). Merchants recharge their token wallet
-// through these endpoints and never see the gateway credentials.
-// ---------------------------------------------------------------------------
-const ZINIPAY_BASE = 'https://api.zinipay.com';
-
-function zinipayErrorMessage(err: unknown, fallback: string): string {
-  if (axios.isAxiosError(err)) {
-    const data = err.response?.data as unknown;
-    if (typeof data === 'string' && data.trim()) return data.trim().slice(0, 400);
-    if (data && typeof data === 'object') {
-      const o = data as Record<string, unknown>;
-      const msg = o.message || o.error || o.msg;
-      if (typeof msg === 'string' && msg.trim()) return msg.trim();
-    }
-    return err.message || fallback;
-  }
-  return err instanceof Error ? err.message : fallback;
-}
-
-function zinipayDomainHint(message: string): string {
-  return /domain|redirect|brand|website/i.test(message)
-    ? ' — ZiniPay ড্যাশবোর্ড → Brands-এ Website URL এই সাইটের ডোমেইনের সাথে হুবহু মিলতে হবে (যেমন https://sell-kori.vercel.app)।'
-    : '';
-}
-
-async function getBillingSettings() {
-  let zinipayApiKey = '';
-  let tokenRatePerLakh = 20;
-  try {
-    let d: any = null;
-    if (adminDb) {
-      const s = await adminDb.collection('system').doc('settings').get();
-      if (s.exists) d = s.data();
-    } else if (db) {
-      const s = await getDoc(doc(db, 'system', 'settings'));
-      if (s.exists()) d = s.data();
-    }
-    if (d) {
-      zinipayApiKey = String(d.zinipayApiKey || '').trim();
-      if (d.tokenRatePerLakh) tokenRatePerLakh = Number(d.tokenRatePerLakh) || 20;
-    }
-  } catch (e: any) {
-    console.warn('[Billing] settings load notice:', e?.message);
-  }
-  return { zinipayApiKey, tokenRatePerLakh };
-}
-
-async function savePaymentDoc(payment: any) {
-  if (adminDb) {
-    try {
-      await adminDb.collection('payments').doc(payment.id).set({
-        ...payment,
-        createdAt: admin.firestore.FieldValue.serverTimestamp(),
-      }, { merge: true });
-      return;
-    } catch (e: any) {
-      console.error('[Billing] admin payment write failed, client fallback:', e?.message);
-    }
-  }
-  if (db) {
-    await setDoc(doc(db, 'payments', payment.id), { ...payment, createdAt: serverTimestamp() }, { merge: true });
-    return;
-  }
-  throw new Error('No Firestore connection to save payment');
-}
-
-async function loadPaymentDoc(valId: string): Promise<any | null> {
-  try {
-    if (adminDb) {
-      const s = await adminDb.collection('payments').doc(valId).get();
-      if (s.exists) return { id: s.id, ...s.data() };
-    }
-  } catch (_) {}
-  try {
-    if (db) {
-      const s = await getDoc(doc(db, 'payments', valId));
-      if (s.exists()) return { id: s.id, ...s.data() };
-    }
-  } catch (_) {}
-  return null;
-}
-
-// ZiniPay's webhook sends THEIR invoice_id (from the payment_url), so we also
-// need to find our payment record by that id.
-async function findPaymentByInvoiceId(invoiceId: string): Promise<any | null> {
-  if (!invoiceId) return null;
-  try {
-    if (adminDb) {
-      const snap = await adminDb.collection('payments').where('invoiceId', '==', invoiceId).limit(1).get();
-      if (!snap.empty) return { id: snap.docs[0].id, ...snap.docs[0].data() };
-    }
-  } catch (_) {}
-  try {
-    if (db) {
-      const snap = await getDocs(query(collection(db, 'payments'), where('invoiceId', '==', invoiceId), limit(1)));
-      if (!snap.empty) return { id: snap.docs[0].id, ...snap.docs[0].data() };
-    }
-  } catch (_) {}
-  return null;
-}
-
-// Credits the merchant's token wallet server-side (Admin SDK only — client
-// SDK from the server is unauthenticated and rules would deny it). Returns
-// true when credited so the caller can mark the payment as settled.
-async function creditPaymentTokens(payment: any): Promise<boolean> {
-  if (!payment?.businessId || !payment?.tokens) return false;
-  if (adminDb) {
-    try {
-      await adminDb.collection('businesses').doc(payment.businessId).update({
-        tokenBalance: admin.firestore.FieldValue.increment(Number(payment.tokens) || 0),
-      });
-      return true;
-    } catch (e: any) {
-      console.warn('[Billing] admin credit failed (client will settle):', e?.message);
-    }
-  }
-  return false;
-}
-
-async function settleZinipayPayment(lookupId: string): Promise<{ paid: boolean; credited: boolean; payment: any | null; status?: string }> {
-  // lookupId can be our own valId (payments doc id, used in redirect_url)
-  // or ZiniPay's invoice_id (used in their webhook callback).
-  let payment = await loadPaymentDoc(lookupId);
-  if (!payment) payment = await findPaymentByInvoiceId(lookupId);
-  if (!payment) return { paid: false, credited: false, payment: null, status: 'not_found' };
-  if (payment.status === 'paid') {
-    return { paid: true, credited: payment.credited === true, payment };
-  }
-  const { zinipayApiKey } = await getBillingSettings();
-  if (!zinipayApiKey) return { paid: false, credited: false, payment, status: 'gateway_not_configured' };
-
-  // Verify against ZiniPay's own invoice id (parsed from payment_url at
-  // create time); fall back to the lookup id.
-  const invoiceId = String(payment.invoiceId || lookupId).trim();
-  const verifyRes = await axios.post(`${ZINIPAY_BASE}/v1/payment/verify`, { invoice_id: invoiceId }, {
-    headers: { 'Content-Type': 'application/json', 'zini-api-key': zinipayApiKey },
-    timeout: 20000,
-  });
-  const v = verifyRes.data || {};
-  const completed = String(v.status || '').toUpperCase() === 'COMPLETED';
-  if (!completed) return { paid: false, credited: false, payment, status: String(v.status || 'PENDING') };
-
-  // Defense: the paid amount must cover what this payment record promised
-  if (Number(v.amount) > 0 && Number(v.amount) < Number(payment.amount)) {
-    console.warn(`[Billing] amount mismatch for ${payment.id}: expected ${payment.amount}, got ${v.amount}`);
-    return { paid: false, credited: false, payment, status: 'AMOUNT_MISMATCH' };
-  }
-
-  const credited = await creditPaymentTokens(payment);
-  await savePaymentDoc({
-    ...payment,
-    status: 'paid',
-    credited,
-    transactionId: String(v.transaction_id || ''),
-    paymentMethod: String(v.payment_method || ''),
-    paidAtMs: Date.now(),
-  });
-  await logActivity(payment.businessId, 'PAYMENT_RECEIVED', `৳${payment.amount} পেমেন্ট সফল (${v.payment_method || 'zinipay'}) — ${Number(payment.tokens).toLocaleString()} টোকেন${credited ? ' যুক্ত হয়েছে' : ' যুক্ত হবে ড্যাশবোর্ড খুললেই'}।`, 'success', payment.ownerId);
-  return { paid: true, credited, payment: { ...payment, credited } };
-}
-
-// Admin one-click gateway test: creates a tiny hosted invoice (nothing is
-// charged unless someone actually pays it) and surfaces ZiniPay's exact
-// error when the key or brand domain is wrong.
-app.post('/api/billing/test-gateway', async (req, res) => {
-  const testKey = String(req.body?.apiKey || '').trim();
-  const { zinipayApiKey } = await getBillingSettings();
-  const effectiveKey = testKey || zinipayApiKey;
-  if (!effectiveKey) {
-    return res.status(400).json({ success: false, error: 'ZiniPay API Key দিন বা আগে সেভ করুন' });
-  }
-  try {
-    const origin = publicOriginFromReq(req);
-    if (!origin) {
-      return res.status(500).json({ success: false, error: 'অ্যাপের পাবলিক URL নির্ধারণ করা যায়নি (PUBLIC_APP_URL সেট করুন)' });
-    }
-    const r = await axios.post(`${ZINIPAY_BASE}/v1/payment/create`, {
-      cus_name: 'Gateway Test',
-      cus_email: 'test@sellkori.app',
-      amount: 10,
-      metadata: { test: true },
-      redirect_url: `${origin}/admin`,
-      cancel_url: `${origin}/admin`,
-      webhook_url: `${origin}/api/billing/zinipay-webhook`,
-    }, {
-      headers: { 'Content-Type': 'application/json', 'zini-api-key': effectiveKey },
-      timeout: 20000,
-    });
-    if (r.data?.status === true && r.data?.payment_url) {
-      return res.json({ success: true, paymentUrl: r.data.payment_url, message: 'গেটওয়ে সচল! টেস্ট ইনভয়েস তৈরি হয়েছে।' });
-    }
-    return res.status(502).json({ success: false, error: r.data?.message || 'ইনভয়েস তৈরি হয়নি', raw: r.data });
-  } catch (err: unknown) {
-    const msg = zinipayErrorMessage(err, 'গেটওয়ে টেস্ট ব্যর্থ');
-    return res.status(502).json({ success: false, error: `${msg}${zinipayDomainHint(msg)}` });
-  }
-});
-
-app.post('/api/billing/create-payment', async (req, res) => {
-  const businessId = String(req.body?.businessId || '').trim();
-  const amount = Math.round(Number(req.body?.amount) || 0);
-  if (!businessId || amount < 10 || amount > 200000) {
-    return res.status(400).json({ success: false, error: 'সঠিক স্টোর আইডি ও পরিমাণ দিন (১০-২০০০০০ টাকা)' });
-  }
-  try {
-    const loaded = await loadBusinessById(businessId);
-    if (!loaded) return res.status(404).json({ success: false, error: 'স্টোর পাওয়া যায়নি' });
-
-    const { zinipayApiKey, tokenRatePerLakh } = await getBillingSettings();
-    if (!zinipayApiKey) {
-      return res.status(400).json({ success: false, error: 'পেমেন্ট গেটওয়ে এখনো চালু হয়নি। অ্যাডমিনের সাথে যোগাযোগ করুন।' });
-    }
-
-    const tokens = Math.round((amount / Math.max(1, tokenRatePerLakh)) * 100000);
-    const valId = `PAY-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
-    const origin = publicOriginFromReq(req);
-    if (!origin) {
-      return res.status(500).json({ success: false, error: 'অ্যাপের পাবলিক URL নির্ধারণ করা যায়নি (PUBLIC_APP_URL সেট করুন)' });
-    }
-
-    const createRes = await axios.post(`${ZINIPAY_BASE}/v1/payment/create`, {
-      cus_name: String(loaded.data?.name || 'SellKori Merchant').slice(0, 80),
-      cus_email: String(req.body?.email || 'merchant@sellkori.app').slice(0, 120),
-      amount,
-      metadata: { businessId, valId, tokens },
-      redirect_url: `${origin}/dashboard?payment=verify&valId=${encodeURIComponent(valId)}`,
-      cancel_url: `${origin}/dashboard?payment=cancelled`,
-      webhook_url: `${origin}/api/billing/zinipay-webhook`,
-    }, {
-      headers: { 'Content-Type': 'application/json', 'zini-api-key': zinipayApiKey },
-      timeout: 20000,
-    });
-
-    const paymentUrl = String(createRes.data?.payment_url || '');
-    if (createRes.data?.status !== true || !paymentUrl) {
-      return res.status(502).json({ success: false, error: createRes.data?.message || 'পেমেন্ট লিংক তৈরি করা যায়নি' });
-    }
-
-    // ZiniPay generates the invoice id — it is the last segment of
-    // payment_url (https://secure.zinipay.com/payment/INVOICE_ID) and it is
-    // what verify/webhook use.
-    const invoiceId = String(createRes.data?.invoice_id || '').trim()
-      || (paymentUrl.split('?')[0].split('/').filter(Boolean).pop() || '');
-
-    await savePaymentDoc({
-      id: valId,
-      invoiceId,
-      businessId,
-      ownerId: loaded.data?.ownerId || '',
-      amount,
-      tokens,
-      status: 'pending',
-      credited: false,
-      paymentUrl,
-      createdAtMs: Date.now(),
-    });
-
-    return res.json({ success: true, paymentUrl, valId, tokens, amount });
-  } catch (err: unknown) {
-    const fbMsg = zinipayErrorMessage(err, 'পেমেন্ট তৈরি ব্যর্থ');
-    console.error('[Billing] create-payment error:', axios.isAxiosError(err) ? err.response?.data : err);
-    return res.status(502).json({ success: false, error: `${fbMsg}${zinipayDomainHint(fbMsg)}` });
-  }
-});
-
-app.post('/api/billing/verify', async (req, res) => {
-  const valId = String(req.body?.valId || req.body?.invoice_id || '').trim();
-  if (!valId) return res.status(400).json({ success: false, error: 'Payment ID দিন' });
-  try {
-    const result = await settleZinipayPayment(valId);
-    if (!result.payment) return res.status(404).json({ success: false, error: 'পেমেন্ট রেকর্ড পাওয়া যায়নি' });
-    return res.json({
-      success: true,
-      paid: result.paid,
-      credited: result.credited,
-      status: result.status || (result.paid ? 'COMPLETED' : 'PENDING'),
-      tokens: result.payment.tokens,
-      amount: result.payment.amount,
-      businessId: result.payment.businessId,
-    });
-  } catch (err: unknown) {
-    const msg = zinipayErrorMessage(err, 'ভেরিফিকেশন ব্যর্থ');
-    return res.status(500).json({ success: false, error: msg });
-  }
-});
-
-// ZiniPay server-to-server callback — arrives as JSON body OR query params
-// ({invoice_id, status} / ?invoice_id=...&status=true), GET or POST.
-async function handleZinipayWebhook(req: any, res: any) {
-  const src = { ...(req.query || {}), ...(req.body || {}) };
-  const lookupId = String(src.invoice_id || src.val_id || src.metadata?.valId || '').trim();
-  if (lookupId) {
-    try {
-      await settleZinipayPayment(lookupId);
-    } catch (e: any) {
-      console.error('[Billing] webhook settle error:', e?.message);
-    }
-  }
-  return res.status(200).json({ received: true });
-}
-app.post('/api/billing/zinipay-webhook', handleZinipayWebhook);
-app.get('/api/billing/zinipay-webhook', handleZinipayWebhook);
-
-// Fire a CAPI test event so the merchant can verify Pixel + token in one click
-app.post('/api/capi/test', async (req, res) => {
-  const pixelId = String(req.body?.pixelId || '').trim();
-  const accessToken = String(req.body?.accessToken || '').trim();
-  const testEventCode = String(req.body?.testEventCode || '').trim();
-  if (!pixelId || !accessToken) {
-    return res.status(400).json({ success: false, error: 'Pixel ID এবং Access Token প্রয়োজন' });
-  }
-  try {
-    const payload: any = {
-      data: [{
-        event_name: 'Lead',
-        event_time: Math.floor(Date.now() / 1000),
-        event_id: `capi_test_${Date.now()}`,
-        action_source: 'business_messaging',
-        messaging_channel: 'messenger',
-        user_data: {
-          page_scoped_user_id: `test_${Date.now()}`,
-          external_id: [sha256Lower(`test_${Date.now()}`)]
-        },
-        custom_data: { currency: 'BDT', content_name: 'SellKori CAPI Connection Test' }
-      }]
-    };
-    if (testEventCode) payload.test_event_code = testEventCode;
-    const fbRes = await axios.post(
-      `https://graph.facebook.com/v21.0/${encodeURIComponent(pixelId)}/events?access_token=${encodeURIComponent(accessToken)}`,
-      payload,
-      { timeout: 10000 }
-    );
-    return res.json({ success: true, eventsReceived: fbRes.data?.events_received ?? 1, fbtraceId: fbRes.data?.fbtrace_id });
-  } catch (err: any) {
-    const fbErr = err.response?.data?.error;
-    return res.status(400).json({
-      success: false,
-      error: fbErr?.message ? `ফেসবুক এরর: ${fbErr.message}` : (err.message || 'CAPI টেস্ট ব্যর্থ')
-    });
-  }
-});
-
 app.post('/api/messenger/test-token', async (req, res) => {
   const { pageAccessToken } = req.body;
   if (!pageAccessToken || typeof pageAccessToken !== 'string') {
@@ -3924,12 +2625,9 @@ app.post('/api/messenger/simulate-message', async (req, res) => {
     return res.status(400).json({ success: false, error: 'সেন্ট্রাল জেমিনি এপিআই কি কনফিগার করা নেই। অ্যাডমিন প্যানেল থেকে দিন।' });
   }
 
-  if (!hasTokenBalance(businessData)) {
-    return res.status(402).json({ success: false, error: 'টোকেন ব্যালেন্স শেষ! বিলিং ট্যাব থেকে রিচার্জ করুন — তারপর বট আবার চলবে।' });
-  }
-
   const startTime = Date.now();
   try {
+    const ai = new GoogleGenAI({ apiKey: aiConfig.apiKey });
     const products = (businessData.products || []).map((p: any) => ({
       name: p.name,
       price: p.price,
@@ -3943,18 +2641,17 @@ app.post('/api/messenger/simulate-message', async (req, res) => {
       if (adminDb) {
         const cSnap = await adminDb.collection('chats').doc(`${businessId}_${senderId}`).get();
         if (cSnap.exists && Array.isArray(cSnap.data()?.messages)) {
-          simHistory = cSnap.data()?.messages.slice(-CHAT_MEMORY_LIMIT).map((m: any) => `${m.role === 'user' ? 'Customer' : 'Assistant'}: ${m.text}`).join('\n');
+          simHistory = cSnap.data()?.messages.slice(-6).map((m: any) => `${m.role === 'user' ? 'Customer' : 'Bot'}: ${m.text}`).join('\n');
         }
       }
     } catch (e) {}
 
-    const prompt = `তুমি "${businessData.name || 'আমাদের স্টোর'}" এর স্বয়ংক্রিয় চ্যাট সহকারী। একজন দক্ষ বিক্রয়কর্মীর মতো সহজ, স্বাভাবিক কথ্য বাংলায় লিখবে। নিজেকে মানুষ বলে মিথ্যা দাবি করবে না।
+    const prompt = `তুমি "${businessData.name || 'আমাদের স্টোর'}" এর একজন বাস্তব মানুষ বিক্রয়কর্মী। কখনো বুঝতে দেবে না যে তুমি এআই বা বট; কেউ জিজ্ঞেস করলে স্বাভাবিকভাবে এড়িয়ে কাজের কথায় ফিরবে। মানুষের মতো সহজ কথ্য বাংলায় লিখবে।
 
 # কঠোর নিয়মাবলী:
 ১. **সংক্ষিপ্ত ও নির্দিষ্ট উত্তর:** কাস্টমার যা জানতে চেয়েছে ঠিক ততটুকুরই সুনির্দিষ্ট, প্রাসঙ্গিক ও টু-দ্য-পয়েন্ট উত্তর দাও (১-৩ বাক্যের মধ্যে)।
 ২. **অতিরিক্ত কথা না বলা:** কোনো অপ্রয়োজনীয় বড় ভূমিকা, সালাম-স্বাগত ভাষণ বা না চাওয়া তথ্য দেবে না।
 ৩. **প্রসঙ্গ স্মরণ:** পূর্বের চ্যাট হিস্ট্রি দেখে প্রাসঙ্গিক উত্তর দাও।
-৪. **সঠিকতা:** শুধু পণ্যতালিকা ও চ্যাটে নিশ্চিত তথ্য ব্যবহার করো। দাম, স্টক বা অফার বানিয়ে বলবে না।
 
 পণ্যতালিকা:
 ${JSON.stringify(products, null, 2)}
@@ -3966,16 +2663,10 @@ ${simHistory || 'নতুন আলাপ'}
 
 টু-দ্য-পয়েন্ট উত্তর:`;
 
-    const aiResult = await aiGenerate({
-      parts: [{ text: prompt }],
-      textPrompt: prompt,
+    const response = await ai.models.generateContent({
       model: aiConfig.model,
-      temperature: Math.min(0.45, Math.max(0, Number(businessData.aiTemperature ?? aiConfig.temperature ?? 0.35))),
-      maxTokens: aiConfig.maxTokens,
-      preferredKeys: merchantOwnGeminiKey(businessData),
+      contents: prompt
     });
-    const response = { text: aiResult.text } as { text?: string };
-    chargeAiUsage(businessId, aiResult, 'simulator').catch(() => {});
 
     const reply = response.text?.trim() || 'ধন্যবাদ! আপনার মেসেজ পেয়েছি।';
     const latencyMs = Date.now() - startTime;
@@ -4140,7 +2831,7 @@ app.post('/api/broadcast', async (req, res) => {
     }
 
     const pageAccessToken = String(
-      pageTokenForBusiness(businessData) || req.body?.pageAccessToken || ''
+      businessData.pageAccessToken || businessData.facebookConfig?.accessToken || businessData.accessToken || req.body?.pageAccessToken || ''
     ).trim();
     if (!pageAccessToken && !dryRun) {
       return res.status(400).json({ success: false, error: 'পেজ অ্যাক্সেস টোকেন নেই। মেসেঞ্জার সেটাপে টোকেন দিন।' });
@@ -4191,9 +2882,7 @@ app.post('/api/broadcast', async (req, res) => {
         shop: businessData.name
       });
       try {
-        // Multi-page: message each customer through the page they chatted with
-        const perPageToken = pageTokenForBusiness(businessData, (customer as any).pageId) || pageAccessToken;
-        await sendBroadcastText(perPageToken, psid, text);
+        await sendBroadcastText(pageAccessToken, psid, text);
         await saveChatMessage(businessId, psid, 'merchant', `[BROADCAST] ${text}`);
         return { ok: true as const, psid };
       } catch (err: any) {

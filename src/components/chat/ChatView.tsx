@@ -10,6 +10,8 @@ import {
   PackageCheck,
   RefreshCw,
   Send,
+  ShieldCheck,
+  ShoppingBag,
   Store,
   Trash2,
   User,
@@ -17,7 +19,7 @@ import {
 import { toast } from 'sonner';
 
 import { Button } from '../ui/button';
-import type { BusinessConfig, Message } from '../../types';
+import type { BusinessConfig, Message, Product } from '../../types';
 import { fetchPublicBusiness, requestAIResponse } from '../../lib/chatApi';
 import { isFeatureEnabled, mergeFeatures, shouldRunAi } from '../../lib/featureFlags';
 import {
@@ -35,8 +37,6 @@ import {
   loadChatSession,
   saveChatSession,
 } from '../../lib/chatSession';
-import { takeRecentMessages } from '../../lib/chatRuntime';
-import { pickProductForImages, uniqueHttpUrls } from '../../lib/imageSend';
 
 const MAX_MESSAGE_LENGTH = 1_000;
 
@@ -61,6 +61,15 @@ function messageTime(timestamp: number) {
     hour: 'numeric',
     minute: '2-digit',
   }).format(timestamp);
+}
+
+function findProduct(products: Product[] | undefined, productName?: string) {
+  const wanted = productName?.trim().toLocaleLowerCase();
+  if (!wanted) return undefined;
+  return products?.find((product) => {
+    const name = product.name.trim().toLocaleLowerCase();
+    return name === wanted || name.includes(wanted) || wanted.includes(name);
+  });
 }
 
 export function ChatView() {
@@ -222,7 +231,8 @@ export function ChatView() {
       const liveCollected = mergeOrderData(collected, {
         phone: extractBdPhone(cleanText) || collected.phone,
       });
-      const history = takeRecentMessages<Message>(conversation)
+      const history = conversation
+        .slice(-24)
         .map((message) => `${message.role === 'user' ? 'Customer' : 'Assistant'}: ${message.content}`)
         .join('\n');
       const recentOrderNote = orderPlacedId
@@ -252,12 +262,18 @@ export function ChatView() {
       });
       setCollected(nextCollected);
       if (aiResponse.summary) setChatSummary(aiResponse.summary);
+      setMessages((previous) => [...previous, {
+        id: messageId('assistant'),
+        role: 'assistant',
+        content: aiResponse.reply,
+        timestamp: Date.now(),
+        aiMetadata: aiResponse,
+      }]);
 
       let placedId = orderPlacedId;
-      let assistantReply = aiResponse.reply;
       if (
         isFeatureEnabled(business.features, 'autoOrderEnabled')
-        && shouldPlaceOrder(aiResponse, nextCollected, Boolean(orderPlacedId), cleanText)
+        && shouldPlaceOrder(aiResponse, nextCollected, Boolean(orderPlacedId))
       ) {
         const saved = await saveConfirmedOrder({
           business,
@@ -270,23 +286,12 @@ export function ChatView() {
         if (saved) {
           placedId = saved.id;
           setOrderPlacedId(saved.id);
-          assistantReply = /অর্ডার.{0,20}(?:কনফার্ম|নিশ্চিত)/i.test(assistantReply)
-            ? `${assistantReply.trim()}\nঅর্ডার আইডি: ${saved.id}`
-            : `জি, আপনার অর্ডারটি কনফার্ম হয়েছে। অর্ডার আইডি: ${saved.id}`;
           await maybeAutoBookSteadfast(business, saved.id, false);
           toast.success('অর্ডার সফলভাবে গ্রহণ করা হয়েছে', {
             description: `অর্ডার রেফারেন্স: ${saved.id}`,
           });
         }
       }
-
-      setMessages((previous) => [...previous, {
-        id: messageId('assistant'),
-        role: 'assistant',
-        content: assistantReply,
-        timestamp: Date.now(),
-        aiMetadata: aiResponse,
-      }]);
 
       // Keep the legacy memory fresh for older deployed clients.
       try {
@@ -450,28 +455,20 @@ export function ChatView() {
           aria-relevant="additions"
         >
           <div className="space-y-5">
-            {messages.map((message, index) => {
-              const previousUserText = [...messages.slice(0, index + 1)]
-                .reverse()
-                .find((item) => item.role === 'user')?.content || '';
+            {messages.map((message) => {
               const product = message.role === 'assistant'
-                ? pickProductForImages(
-                  business.products,
-                  message.aiMetadata?.product_name,
-                  previousUserText,
-                )
+                ? findProduct(business.products, message.aiMetadata?.product_name)
                 : undefined;
               const productImages = product
                 && isFeatureEnabled(business.features, 'imageDisplayEnabled')
                 && message.aiMetadata?.show_product_image
-                ? uniqueHttpUrls(product.images || [], 3)
+                ? (product.images || []).slice(0, 3)
                 : [];
               const reviewImages = product
                 && isFeatureEnabled(business.features, 'reviewImagesEnabled')
                 && message.aiMetadata?.show_review_images
-                ? uniqueHttpUrls(product.reviewImages || [], 3)
+                ? (product.reviewImages || []).slice(0, 3)
                 : [];
-              const photoUrls = [...productImages, ...reviewImages];
 
               return (
                 <article
@@ -492,20 +489,28 @@ export function ChatView() {
                         : 'rounded-tl-md border border-zinc-200/80 bg-white text-zinc-800 shadow-sm'
                     }`}>
                       <p className="whitespace-pre-wrap break-words">{message.content}</p>
+
+                      {(productImages.length > 0 || reviewImages.length > 0) && product && (
+                        <div className="mt-3 border-t border-zinc-100 pt-3">
+                          <div className="mb-2 flex items-center gap-1.5 text-xs font-bold text-zinc-700">
+                            {reviewImages.length ? <ShieldCheck className="h-3.5 w-3.5 text-emerald-600" /> : <ShoppingBag className="h-3.5 w-3.5 text-orange-600" />}
+                            {reviewImages.length ? 'কাস্টমার রিভিউ' : product.name}
+                          </div>
+                          <div className="flex snap-x gap-2 overflow-x-auto pb-1">
+                            {[...productImages, ...reviewImages].map((image, index) => (
+                              <img
+                                key={`${image}-${index}`}
+                                src={image}
+                                alt={reviewImages.includes(image) ? `${product.name} কাস্টমার রিভিউ` : product.name}
+                                className="h-32 w-32 shrink-0 snap-start rounded-xl border border-zinc-200 object-cover"
+                                loading="lazy"
+                                referrerPolicy="no-referrer"
+                              />
+                            ))}
+                          </div>
+                        </div>
+                      )}
                     </div>
-                    {photoUrls.map((image, imageIndex) => (
-                      <img
-                        key={`${image}-${imageIndex}`}
-                        src={image}
-                        alt=""
-                        className="mt-1.5 max-h-56 w-auto max-w-[220px] rounded-2xl border border-zinc-200 object-cover shadow-sm"
-                        loading="lazy"
-                        referrerPolicy="no-referrer"
-                        onError={(event) => {
-                          event.currentTarget.style.display = 'none';
-                        }}
-                      />
-                    ))}
                     <div className={`mt-1 flex items-center gap-1 px-1 text-[10px] font-medium text-zinc-400 ${message.role === 'user' ? 'flex-row-reverse' : ''}`}>
                       <span>{messageTime(message.timestamp)}</span>
                       {message.role === 'user' && <Check className="h-3 w-3" aria-label="পাঠানো হয়েছে" />}

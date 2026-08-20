@@ -13,10 +13,10 @@
 
 import { ref, uploadString, getDownloadURL } from 'firebase/storage';
 import { storage } from './firebase';
-import { convertHostedImageLink, isPublicHttpUrl as isHttpUrl } from './imageSend';
 
 export function isPublicHttpUrl(url?: string | null): boolean {
-  return isHttpUrl(url);
+  if (!url || typeof url !== 'string') return false;
+  return url.startsWith('https://') || url.startsWith('http://');
 }
 
 export function isDataUrl(url?: string | null): boolean {
@@ -70,7 +70,7 @@ export async function persistImageDataUrl(
   kind: 'product' | 'review' | 'logo' = 'product'
 ): Promise<string> {
   if (!dataUrl) throw new Error('খালি ছবি আপলোড করা যায় না');
-  if (isPublicHttpUrl(dataUrl)) return convertHostedImageLink(dataUrl);
+  if (isPublicHttpUrl(dataUrl)) return dataUrl;
 
   const viaStorage = await uploadViaStorage(dataUrl, businessId, kind);
   if (viaStorage) return viaStorage;
