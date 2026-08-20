@@ -6,6 +6,7 @@ import {
   isRecentIdentityDuplicate,
   normalizePhone,
 } from './orderIdentity';
+import { shouldCreateConfirmedOrder } from './chatRuntime';
 
 export { extractBdPhone, normalizePhone } from './orderIdentity';
 
@@ -38,13 +39,15 @@ export function hasCompleteOrder(data?: CollectedOrderInfo | null): boolean {
   const phone = normalizePhone(data.phone);
   const address = (data.address || '').trim();
   const name = (data.name || '').trim();
-  return name.length >= 2 && phone.length === 11 && address.length >= 8;
+  const productName = (data.product_name || '').trim();
+  return name.length >= 2 && phone.length === 11 && address.length >= 8 && productName.length >= 2;
 }
 
 export function shouldPlaceOrder(
   ai: AIResponse,
   collected: CollectedOrderInfo,
-  alreadyPlaced: boolean
+  alreadyPlaced: boolean,
+  customerMessage = '',
 ): boolean {
   if (alreadyPlaced) return false;
   const merged = mergeOrderData(collected, {
@@ -52,20 +55,26 @@ export function shouldPlaceOrder(
     product_name: ai.order_data?.product_name || ai.product_name,
   });
   if (!hasCompleteOrder(merged)) return false;
-  if (ai.should_create_order) return true;
-  if (ai.conversation_stage === 'order_completed' && !ai.need_more_info) return true;
-  if (ai.event_name === 'Purchase' && !ai.need_more_info) return true;
-  return false;
+  const modelRequested = Boolean(
+    ai.should_create_order
+    || (ai.conversation_stage === 'order_completed' && !ai.need_more_info)
+    || (ai.event_name === 'Purchase' && !ai.need_more_info)
+  );
+  return shouldCreateConfirmedOrder({
+    modelRequested,
+    customerMessage,
+    hasCompleteOrder: true,
+  });
 }
 
 export function findMatchingProduct(business: BusinessConfig, productName?: string): Product | undefined {
   const wanted = (productName || '').toLowerCase().trim();
   const products = business.products || [];
-  if (!wanted) return products[0];
+  if (!wanted) return products.length === 1 ? products[0] : undefined;
   return (
     products.find(p => p.name?.toLowerCase() === wanted) ||
     products.find(p => p.name?.toLowerCase().includes(wanted) || wanted.includes(p.name?.toLowerCase() || '\0')) ||
-    products[0]
+    (products.length === 1 ? products[0] : undefined)
   );
 }
 
@@ -166,7 +175,7 @@ export async function saveConfirmedOrder(params: {
   const payload: any = {
     id: orderId,
     businessId: business.id,
-    merchantId: business.ownerId,
+    merchantId: business.ownerId || '',
     sessionId: passengerId,
     passengerId,
     clientIp,
@@ -183,6 +192,9 @@ export async function saveConfirmedOrder(params: {
     paymentStatus: 'unpaid',
     paymentMethod: 'cod',
     notes: source || 'AI chat',
+    source: source || 'AI chat',
+    tags: ['AI confirmed'],
+    statusHistory: [{ status: 'confirmed', at: Date.now(), note: source || 'AI chat' }],
     createdAt: serverTimestamp(),
     createdAtMs: Date.now(),
   };

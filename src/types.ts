@@ -74,6 +74,21 @@ export interface CourierConfigType {
   autoBooking?: boolean;
 }
 
+export interface MessengerPage {
+  pageId: string;
+  pageName?: string;
+  pageAccessToken: string;
+  enabled?: boolean;
+  subscribed?: boolean;
+  addedAtMs?: number;
+}
+
+export interface AdProductMapping {
+  /** ad ref / ad_id / post_id — matched case-insensitively */
+  key: string;
+  productName: string;
+}
+
 export interface BusinessConfig {
   id: string;
   ownerId: string;
@@ -103,8 +118,16 @@ export interface BusinessConfig {
   messengerVerifyToken?: string;
   verifyToken?: string;
   pageAccessToken?: string;
+  /** Legacy root-level page token mirror written by the messenger setup UI */
+  accessToken?: string;
   pageId?: string;
   facebookPageId?: string;
+  /** Multi-page support: all Facebook pages this store runs from one panel */
+  messengerPages?: MessengerPage[];
+  /** Kept in sync with messengerPages[].pageId for fast webhook lookups */
+  connectedPageIds?: string[];
+  /** Ad attribution: map ad ref / ad_id / post_id to a catalog product */
+  adProductMappings?: AdProductMapping[];
   commentToInboxKeywords?: string[] | string;
   commentInboxMessage?: string;
   commentPublicReply?: string;

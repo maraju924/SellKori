@@ -23,7 +23,8 @@ import {
   Globe, 
   TrendingUp, 
   Sliders, 
-  Share2 
+  Share2,
+  Users
 } from 'lucide-react';
 import { db } from '../../lib/firebase';
 import { BusinessConfig, Order, UserProfile } from '../../types';
@@ -45,6 +46,7 @@ import { MerchantFAQs } from './MerchantFAQs';
 import { MerchantFeatures } from './MerchantFeatures';
 import { MerchantInfo } from './MerchantInfo';
 import { toast } from 'sonner';
+import { parseJsonResponse } from '../../lib/safeJson';
 
 interface MerchantPanelProps {
   user: FirebaseUser | null;
@@ -61,6 +63,50 @@ export function MerchantPanel({ user, profile }: MerchantPanelProps) {
   const [orders, setOrders] = useState<Order[]>([]);
   const [isDark, setIsDark] = useState(false);
   const navigate = useNavigate();
+
+  // Returning from ZiniPay: billing tab is not mounted by default, so verify
+  // here (always mounted) then switch the merchant to the billing screen.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const paymentState = params.get('payment');
+    if (paymentState !== 'verify' && paymentState !== 'cancelled') return;
+
+    setActiveTab('billing');
+    const valId = params.get('valId');
+    window.history.replaceState({}, '', '/dashboard');
+
+    if (paymentState === 'cancelled') {
+      toast.info('পেমেন্ট বাতিল হয়েছে');
+      return;
+    }
+    if (!valId) return;
+
+    let cancelled = false;
+    (async () => {
+      try {
+        toast.info('পেমেন্ট যাচাই হচ্ছে...');
+        const res = await fetch('/api/billing/verify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ valId }),
+        });
+        const data = await parseJsonResponse(res);
+        if (cancelled) return;
+        if (res.ok && data.success && data.paid) {
+          toast.success(`৳${data.amount} পেমেন্ট সফল!`, {
+            description: `${Number(data.tokens).toLocaleString()} টোকেন যুক্ত ${data.credited ? 'হয়েছে' : 'হচ্ছে'}।`,
+          });
+        } else {
+          toast.error(data.error || `পেমেন্ট এখনো সম্পন্ন হয়নি (${data.status || 'PENDING'})`);
+        }
+      } catch (e: any) {
+        if (!cancelled) toast.error(e.message || 'পেমেন্ট যাচাই ব্যর্থ');
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Sync dark theme
   useEffect(() => {
@@ -147,7 +193,12 @@ export function MerchantPanel({ user, profile }: MerchantPanelProps) {
           verificationStatus: 'pending',
           createdAt: serverTimestamp()
         };
-        setDoc(doc(db, 'businesses', newId), initialConfig);
+        // Show the new store immediately; surface create failures instead of
+        // leaving a permanent blank screen.
+        setBusiness(initialConfig);
+        setDoc(doc(db, 'businesses', newId), initialConfig).catch((err) => {
+          console.error('[MerchantPanel] Failed to create initial business:', err);
+        });
       }
       setLoading(false);
     });
@@ -188,17 +239,24 @@ export function MerchantPanel({ user, profile }: MerchantPanelProps) {
     };
   }, [business?.id]);
 
-  const isAdmin = profile?.role === 'admin' || user?.email === 'maraju924@gmail.com';
+  const isAdmin = profile?.role === 'admin' || profile?.email === 'maraju924@gmail.com' || user?.email === 'maraju924@gmail.com';
 
   const searchableItems = [
     ...(isAdmin ? [{ id: 'admin-portal', title: 'সুপার অ্যাডমিন পোর্টাল', desc: 'মার্চেন্ট ভেরিফিকেশন ও সিস্টেম কন্ট্রোল', icon: Sliders, href: '/admin' }] : []),
-    { id: 'analytics', title: 'ওভারভিউ ও অ্যানালিটিক্স', desc: 'দৈনিক সেলস গ্রাফ ও মোট বিক্রয়', icon: TrendingUp },
-    { id: 'orders', title: 'অর্ডার তালিকা ও মেমো', desc: 'গ্রাহকের অর্ডার ও কুরিয়ার ট্র্যাকিং', icon: Package },
+    { id: 'analytics', title: 'ওভারভিউ ও অ্যানালিটিক্স', desc: 'দৈনিক সেলস গ্রাফ ও মোট বিক্রয়', icon: TrendingUp },
+    { id: 'orders', title: 'অর্ডার তালিকা ও মেমো', desc: 'গ্রাহকের অর্ডার ও কুরিয়ার ট্র্যাকিং', icon: Package },
     { id: 'products', title: 'পণ্য ক্যাটালগ ও মূল্য সীমা', desc: 'প্রোডাক্ট যোগ ও মিনিমাম প্রাইজ লক', icon: Tag },
+    { id: 'customers', title: 'গ্রাহক সিআরএম ও লিডস', desc: 'কাস্টমার তালিকা, অ্যাড সোর্স ও লিড স্টেজ', icon: Users },
     { id: 'ai-control', title: 'এআই সেলস ব্রেন', desc: 'পারসোনা, ভাষা ও বার্গেইনিং সেন্সিটিভিটি', icon: Bot },
     { id: 'test-chat', title: 'লাইভ চ্যাট সিমুলেটর', desc: 'এআই-এর সাথে কথা বলে টেস্ট করুন', icon: Zap },
+    { id: 'messenger', title: 'ফেসবুক মেসেঞ্জার ওয়েবহুক', desc: 'পেজ কানেকশন, মাল্টি-পেজ ও অ্যাড ম্যাপিং', icon: Globe },
+    { id: 'broadcasting', title: 'টার্গেটেড ব্রডকাস্টিং', desc: 'কাস্টমারদের ইনবক্সে ক্যাম্পেইন পাঠান', icon: Zap },
+    { id: 'faqs', title: 'পলিসি ও নলেজবেস', desc: 'FAQ ও ডেলিভারি পলিসি', icon: Tag },
+    { id: 'features', title: 'সিস্টেম ফিচার সুইচ', desc: 'সব ফিচার চালু/বন্ধ কন্ট্রোল', icon: Sliders },
+    { id: 'info', title: 'স্টোর প্রোফাইল ও ব্র্যান্ডিং', desc: 'দোকানের নাম, লোগো ও ঠিকানা', icon: Tag },
     { id: 'facebook', title: 'মেটা পিক্সেল ও CAPI', desc: 'কনভার্সন এপিআই ও ইভেন্ট সেটআপ', icon: Globe },
-    { id: 'billing', title: 'টোকেন ওয়ালেট ও রিচার্জ', desc: 'এআই ব্যালেন্স ও পেমেন্ট হিস্ট্রি', icon: Sliders },
+    { id: 'integrations', title: 'কুরিয়ার ও এপিআই গেটওয়ে', desc: 'স্টেডফাস্ট কুরিয়ার সংযোগ', icon: Package },
+    { id: 'billing', title: 'টোকেন ওয়ালেট ও রিচার্জ', desc: 'এআই ব্যালেন্স ও পেমেন্ট হিস্ট্রি', icon: Sliders },
   ];
 
   const filteredCommands = searchableItems.filter(item => 
@@ -281,6 +339,31 @@ export function MerchantPanel({ user, profile }: MerchantPanelProps) {
 
         {/* Center Content Workspace */}
         <main className="flex-1 p-3.5 sm:p-6 md:p-8 min-w-0">
+          {/* Prepaid token wallet alerts */}
+          {!business.useOwnApiKey && (business.tokenBalance || 0) <= 0 && activeTab !== 'billing' && (
+            <button
+              onClick={() => setActiveTab('billing')}
+              className="w-full mb-4 p-4 rounded-2xl bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900/60 text-left flex items-center justify-between gap-3"
+            >
+              <div>
+                <p className="font-black text-sm text-red-700 dark:text-red-300">টোকেন ব্যালেন্স শেষ — বট এখন কাস্টমারদের উত্তর দিচ্ছে না!</p>
+                <p className="text-[11px] text-red-600/80 dark:text-red-400/80 mt-0.5">রিচার্জ করলেই বট সাথে সাথে আবার চালু হবে। এখানে চেপে বিলিং-এ যান।</p>
+              </div>
+              <span className="shrink-0 px-3 py-1.5 rounded-xl bg-red-600 text-white text-xs font-black">রিচার্জ করুন</span>
+            </button>
+          )}
+          {!business.useOwnApiKey && (business.tokenBalance || 0) > 0 && (business.tokenBalance || 0) < 50000 && activeTab !== 'billing' && (
+            <button
+              onClick={() => setActiveTab('billing')}
+              className="w-full mb-4 p-3 rounded-2xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-900/60 text-left flex items-center justify-between gap-3"
+            >
+              <p className="font-bold text-xs text-amber-700 dark:text-amber-300">
+                টোকেন প্রায় শেষ ({(business.tokenBalance || 0).toLocaleString()} বাকি) — শেষ হয়ে গেলে বট থেমে যাবে।
+              </p>
+              <span className="shrink-0 px-2.5 py-1 rounded-lg bg-amber-500 text-white text-[10px] font-black">রিচার্জ</span>
+            </button>
+          )}
+
           {activeTab === 'analytics' && (
             <MerchantOverview
               business={business}

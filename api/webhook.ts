@@ -3,6 +3,8 @@
  * No Firebase/Express imports — Verify and Save must succeed even when
  * the main /api function cannot boot.
  */
+export const maxDuration = 60;
+
 function firstQueryValue(value: unknown): string {
   if (Array.isArray(value)) return String(value[0] ?? '').trim();
   if (value == null) return '';
@@ -48,9 +50,9 @@ export default async function handler(req: any, res: any) {
       const app = mod.default;
       if (typeof app === 'function') return app(req, res);
     } catch (err: any) {
-      console.error('[webhook] main app unavailable, acking Meta:', err?.message || err);
+      console.error('[webhook] main app unavailable, asking Meta to retry:', err?.message || err);
     }
-    if (!res.headersSent) return sendPlain(res, 200, 'EVENT_RECEIVED');
+    if (!res.headersSent) return sendPlain(res, 503, 'WEBHOOK_UNAVAILABLE');
     return;
   }
 
