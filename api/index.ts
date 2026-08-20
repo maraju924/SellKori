@@ -18,6 +18,7 @@ import {
   mergeFeatures,
   shouldRunAi
 } from '../src/lib/featureFlags.js';
+import { buildSalesFallbackReply } from '../src/lib/messengerFallback.js';
 import {
   BROADCAST_CONCURRENCY,
   DEFAULT_COMMENT_INBOX_MESSAGE,
@@ -1633,6 +1634,42 @@ async function saveMessengerLog(businessId: string, logData: {
   }
 }
 
+async function sendResilientSalesFallback(input: {
+  businessId: string;
+  businessData: any;
+  ownerId?: string;
+  pageId: string;
+  pageAccessToken: string;
+  senderId: string;
+  message: string;
+  mediaKinds?: string[];
+  reason: string;
+}): Promise<string> {
+  const reply = buildSalesFallbackReply(
+    input.message,
+    input.businessData,
+    input.mediaKinds || []
+  );
+  await sendPlainText(input.pageAccessToken, input.senderId, reply);
+  await saveChatMessage(input.businessId, input.senderId, 'bot', reply).catch(() => {});
+  await saveMessengerLog(input.businessId, {
+    senderId: input.senderId,
+    pageId: input.pageId,
+    message: input.message,
+    reply,
+    status: 'replied',
+    source: `resilient-fallback:${input.reason}`
+  });
+  await logActivity(
+    input.businessId,
+    'FALLBACK_REPLY_SENT',
+    `AI অনুপলভ্য থাকায় ক্যাটালগ/FAQ থেকে নিরাপদ উত্তর পাঠানো হয়েছে (${input.reason})।`,
+    'info',
+    input.ownerId
+  ).catch(() => {});
+  return reply;
+}
+
 // Helper to get system settings
 async function getSystemSettings() {
   const defaultSettings = { tokenPricePerLakh: 20, monthlyServerCost: 1000, freeTrialTokens: 100000 };
@@ -2689,16 +2726,31 @@ async function handleMessengerWebhookPost(req: any, res: any) {
             }
 
             const aiConfig = await getEffectiveGeminiConfig();
-            if (!aiConfig.apiKey) {
+            const merchantAiKeys = merchantOwnGeminiKey(businessData);
+            if (!aiConfig.apiKey && merchantAiKeys.length === 0) {
               console.error('[Webhook] Gemini AI API key not configured in system');
               const noAiMsg = 'সেন্ট্রাল জেমিনি এপিআই কি কনফিগার করা নেই। অ্যাডমিন প্যানেলে API Key প্রদান করুন।';
               await logActivity(bizId!, 'ERROR', noAiMsg, 'error', ownerId);
               await saveMessengerLog(bizId!, { senderId, pageId: cleanPageId, message: finalMessageText, status: 'error', error: noAiMsg });
+              if (isFeatureEnabled(storeFeatures, 'messengerRepliesEnabled')) {
+                await sendResilientSalesFallback({
+                  businessId: bizId!,
+                  businessData,
+                  ownerId,
+                  pageId: cleanPageId,
+                  pageAccessToken,
+                  senderId,
+                  message: finalMessageText,
+                  mediaKinds: incomingMedia.map((item) => item.kind),
+                  reason: 'ai-not-configured'
+                });
+              }
               continue;
             }
 
             // Token wallet gate: central-pool AI is prepaid. Empty wallet =
-            // bot goes silent for customers, merchant gets an activity alert.
+            // use the no-cost catalog/FAQ fallback so the storefront stays
+            // responsive without bypassing paid AI usage.
             if (!hasTokenBalance(businessData)) {
               await notifyTokensEmpty(bizId!, ownerId);
               await saveMessengerLog(bizId!, {
@@ -2706,8 +2758,21 @@ async function handleMessengerWebhookPost(req: any, res: any) {
                 pageId: cleanPageId,
                 message: finalMessageText,
                 status: 'error',
-                error: 'টোকেন ব্যালেন্স শেষ — উত্তর পাঠানো হয়নি। বিলিং থেকে রিচার্জ করুন।'
+                error: 'টোকেন ব্যালেন্স শেষ — AI ব্যবহার হয়নি; নিরাপদ fallback উত্তর পাঠানো হয়েছে।'
               });
+              if (isFeatureEnabled(storeFeatures, 'messengerRepliesEnabled')) {
+                await sendResilientSalesFallback({
+                  businessId: bizId!,
+                  businessData,
+                  ownerId,
+                  pageId: cleanPageId,
+                  pageAccessToken,
+                  senderId,
+                  message: finalMessageText,
+                  mediaKinds: incomingMedia.map((item) => item.kind),
+                  reason: 'token-balance-empty'
+                });
+              }
               continue;
             }
 
@@ -2823,6 +2888,7 @@ ${chatHistoryText || 'নতুন আলাপ'}
               for (const media of downloadedMedia) {
                 geminiParts.push({ inlineData: { mimeType: media.mimeType, data: media.data } });
               }
+              let primaryReplySent = false;
 
               try {
                 console.log(`[Webhook] Calling AI pool for biz: ${bizId}${downloadedMedia.length ? ` with ${downloadedMedia.length} media part(s)` : ''}`);
@@ -2838,7 +2904,7 @@ ${chatHistoryText || 'নতুন আলাপ'}
                   schema: webhookResponseSchema,
                   temperature: aiConfig.temperature,
                   maxTokens: aiConfig.maxTokens,
-                  preferredKeys: merchantOwnGeminiKey(businessData),
+                  preferredKeys: merchantAiKeys,
                 });
                 responseText = aiResult.text;
                 if (aiResult.provider !== 'gemini') {
@@ -3064,6 +3130,7 @@ ${chatHistoryText || 'নতুন আলাপ'}
                     message: { text: reply.trim() }
                   }, { timeout: 15000 });
                 }
+                primaryReplySent = true;
 
                 const wantsProductImg = isFeatureEnabled(storeFeatures, 'imageDisplayEnabled') && Boolean(aiRes?.show_product_image);
                 const wantsReviewImg = isFeatureEnabled(storeFeatures, 'reviewImagesEnabled') && (Boolean(aiRes?.show_review_images) || /রিভিউ|review|প্রুফ|proof|ফিডব্যাক|feedback|আনবক্সিং/i.test(finalMessageText));
@@ -3145,17 +3212,26 @@ ${chatHistoryText || 'নতুন আলাপ'}
                   latencyMs
                 });
                 
-                // Fallback messaging to Facebook
-                try {
-                  await axios.post(`https://graph.facebook.com/v21.0/me/messages?access_token=${pageAccessToken}`, {
-                    recipient: { id: senderId },
-                    message: { text: incomingMedia.some((m) => m.kind === 'audio')
-                      ? "আপনার ভয়েস মেসেজটি পেয়েছি। আমাদের সেলস অ্যাসিস্ট্যান্ট শীঘ্রই আপনার সাথে যুক্ত হচ্ছে।"
-                      : incomingMedia.some((m) => m.kind === 'image')
-                        ? "আপনার ছবিটি পেয়েছি। আমাদের সেলস অ্যাসিস্ট্যান্ট শীঘ্রই আপনার সাথে যুক্ত হচ্ছে।"
-                        : "ধন্যবাদ আপনার বার্তার জন্য! আমাদের সেলস অ্যাসিস্ট্যান্ট শীঘ্রই আপনার সাথে যুক্ত হচ্ছে।" }
-                  });
-                } catch (e) {}
+                // If AI/provider processing failed before a real reply reached
+                // Facebook, answer from catalog/FAQ data instead of sending a
+                // dead-end "an assistant will join" acknowledgement.
+                if (!primaryReplySent && isFeatureEnabled(storeFeatures, 'messengerRepliesEnabled')) {
+                  try {
+                    await sendResilientSalesFallback({
+                      businessId: bizId!,
+                      businessData,
+                      ownerId,
+                      pageId: cleanPageId,
+                      pageAccessToken,
+                      senderId,
+                      message: finalMessageText,
+                      mediaKinds: incomingMedia.map((item) => item.kind),
+                      reason: 'ai-or-send-error'
+                    });
+                  } catch (fallbackErr: any) {
+                    console.error('[Webhook] Resilient fallback send failed:', fallbackErr.response?.data || fallbackErr.message);
+                  }
+                }
               }
 
           } catch (e: any) {
