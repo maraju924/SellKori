@@ -21,6 +21,7 @@ import { db } from '../../lib/firebase';
 import { doc, getDoc, setDoc } from 'firebase/firestore';
 import { toast } from 'sonner';
 import { parseJsonResponse } from '../../lib/safeJson';
+import { buildAiPoolPersistPayload } from '../../lib/aiPool';
 
 interface PooledKey {
   key: string;
@@ -41,6 +42,24 @@ export function AdminAiEngine() {
   const [isSaving, setIsSaving] = useState(false);
   const [testingIdx, setTestingIdx] = useState<number | null>(null);
   const [testResults, setTestResults] = useState<Record<number, { success: boolean; message: string }>>({});
+  const [serverStatus, setServerStatus] = useState<{ enabledCount: number; firestoreOk: boolean; adminDbReady: boolean; labels: string[] } | null>(null);
+
+  const refreshServerStatus = async () => {
+    try {
+      const res = await fetch('/api/ai/pool/status');
+      const data = await parseJsonResponse(res);
+      if (res.ok) {
+        setServerStatus({
+          enabledCount: Number(data.enabledCount || 0),
+          firestoreOk: Boolean(data.firestoreOk),
+          adminDbReady: Boolean(data.adminDbReady),
+          labels: Array.isArray(data.labels) ? data.labels.map((item: unknown) => String(item)) : [],
+        });
+      }
+    } catch {
+      setServerStatus(null);
+    }
+  };
 
   useEffect(() => {
     (async () => {
@@ -60,6 +79,7 @@ export function AdminAiEngine() {
           if (d.openAiKey) setOpenAiKey(d.openAiKey);
           if (d.openAiModel) setOpenAiModel(d.openAiModel);
         }
+        await refreshServerStatus();
       } catch (e) {
         console.error('[AdminAiEngine] load error:', e);
       } finally {
@@ -70,13 +90,17 @@ export function AdminAiEngine() {
 
   const persist = async (keys: PooledKey[], extra: Record<string, any> = {}) => {
     await setDoc(doc(db, 'system', 'settings'), {
-      geminiKeys: keys.map(k => ({ key: k.key.trim(), label: k.label.trim(), enabled: k.enabled })),
-      openRouterKey: openRouterKey.trim(),
-      openRouterModel: openRouterModel.trim() || 'openrouter/auto',
-      openAiKey: openAiKey.trim(),
-      openAiModel: openAiModel.trim() || 'gpt-4o-mini',
+      ...buildAiPoolPersistPayload({
+        geminiKeys: keys,
+        openRouterKey,
+        openRouterModel,
+        openAiKey,
+        openAiModel,
+      }),
       ...extra,
     }, { merge: true });
+    await fetch('/api/ai/pool/reload', { method: 'POST' }).catch(() => {});
+    await refreshServerStatus();
   };
 
   const handleSaveAll = async () => {
@@ -84,7 +108,7 @@ export function AdminAiEngine() {
     try {
       await persist(geminiKeys);
       toast.success('AI ইঞ্জিন পুল সংরক্ষিত হয়েছে!', {
-        description: 'পরবর্তী মেসেজ থেকেই নতুন কী-অর্ডার কার্যকর হবে (সর্বোচ্চ ১ মিনিট ক্যাশ)।'
+        description: 'সার্ভার এখনই নতুন কী অর্ডার ব্যবহার করবে।'
       });
     } catch (e: any) {
       toast.error(e.message || 'সংরক্ষণ ব্যর্থ');
@@ -93,7 +117,7 @@ export function AdminAiEngine() {
     }
   };
 
-  const handleAddKey = () => {
+  const handleAddKey = async () => {
     const key = newKey.trim();
     if (!key) {
       toast.error('API Key দিন');
@@ -103,14 +127,20 @@ export function AdminAiEngine() {
       toast.error('এই কী আগেই যুক্ত আছে');
       return;
     }
-    setGeminiKeys([...geminiKeys, {
+    const next = [...geminiKeys, {
       key,
       label: newLabel.trim() || `Gemini Key ${geminiKeys.length + 1}`,
       enabled: true
-    }]);
+    }];
+    setGeminiKeys(next);
     setNewKey('');
     setNewLabel('');
-    toast.info('তালিকায় যুক্ত হয়েছে — এবার "সব সেভ করুন" চাপুন');
+    try {
+      await persist(next);
+      toast.success('কী পুলে সেভ হয়েছে');
+    } catch (e: any) {
+      toast.error(e.message || 'সেভ ব্যর্থ — আবার চেষ্টা করুন');
+    }
   };
 
   const handleTestKey = async (idx: number) => {
@@ -134,13 +164,22 @@ export function AdminAiEngine() {
     }
   };
 
-  const moveKey = (idx: number, dir: -1 | 1) => {
+  const persistKeys = async (next: PooledKey[]) => {
+    setGeminiKeys(next);
+    try {
+      await persist(next);
+    } catch (e: any) {
+      toast.error(e.message || 'সেভ ব্যর্থ');
+    }
+  };
+
+  const moveKey = async (idx: number, dir: -1 | 1) => {
     const next = [...geminiKeys];
     const target = idx + dir;
     if (target < 0 || target >= next.length) return;
     [next[idx], next[target]] = [next[target], next[idx]];
-    setGeminiKeys(next);
     setTestResults({});
+    await persistKeys(next);
   };
 
   const maskKey = (k: string) => k.length > 12 ? `${k.slice(0, 6)}••••${k.slice(-4)}` : '••••••';
@@ -165,6 +204,13 @@ export function AdminAiEngine() {
           <p className="text-xs text-zinc-500 mt-1">
             একাধিক Gemini কী চেইন করুন — একটার ফ্রি লিমিট শেষ হলে পরেরটা স্বয়ংক্রিয়ভাবে চলবে। সব Gemini ব্যর্থ হলে OpenRouter, তারপর OpenAI।
           </p>
+          {serverStatus && (
+            <p className={`text-[11px] mt-2 font-bold ${serverStatus.firestoreOk ? 'text-emerald-400' : 'text-amber-400'}`}>
+              সার্ভার পুল: {serverStatus.enabledCount}টি সক্রিয় কী
+              {serverStatus.labels.length ? ` (${serverStatus.labels.join(', ')})` : ''}
+              {serverStatus.firestoreOk ? '' : ' — Firestore পড়া যাচ্ছে না, Vercel-এ FIREBASE_SERVICE_ACCOUNT দিন'}
+            </p>
+          )}
         </div>
         <Button
           onClick={handleSaveAll}
@@ -220,13 +266,13 @@ export function AdminAiEngine() {
                 <Button variant="ghost" size="sm" className="h-8 w-8 p-0 rounded-xl text-zinc-400" onClick={() => moveKey(idx, 1)} title="নিচে">
                   <ArrowDown className="w-3.5 h-3.5" />
                 </Button>
-                <Button variant="ghost" size="sm" className="h-8 w-8 p-0 rounded-xl text-zinc-400" onClick={() => setGeminiKeys(geminiKeys.map((x, i) => i === idx ? { ...x, enabled: !x.enabled } : x))} title="চালু/বন্ধ">
+                <Button variant="ghost" size="sm" className="h-8 w-8 p-0 rounded-xl text-zinc-400" onClick={() => persistKeys(geminiKeys.map((x, i) => i === idx ? { ...x, enabled: !x.enabled } : x))} title="চালু/বন্ধ">
                   <Power className="w-3.5 h-3.5" />
                 </Button>
                 <Button variant="ghost" size="sm" className="h-8 px-2 rounded-xl text-[10px] font-bold text-blue-400" disabled={testingIdx === idx} onClick={() => handleTestKey(idx)}>
                   {testingIdx === idx ? <RefreshCw className="w-3 h-3 animate-spin" /> : 'টেস্ট'}
                 </Button>
-                <Button variant="ghost" size="sm" className="h-8 w-8 p-0 rounded-xl text-red-400" onClick={() => setGeminiKeys(geminiKeys.filter((_, i) => i !== idx))} title="মুছুন">
+                <Button variant="ghost" size="sm" className="h-8 w-8 p-0 rounded-xl text-red-400" onClick={() => persistKeys(geminiKeys.filter((_, i) => i !== idx))} title="মুছুন">
                   <Trash2 className="w-3.5 h-3.5" />
                 </Button>
               </div>

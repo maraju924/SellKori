@@ -179,6 +179,10 @@ export async function fetchSystemGeminiSettings(): Promise<{ apiKey: string; def
         if (settingsDoc.exists()) {
           const sData = settingsDoc.data();
           if (sData.geminiApiKey) cachedSystemApiKey = sData.geminiApiKey;
+          if (!cachedSystemApiKey && Array.isArray(sData.geminiKeys)) {
+            const firstEnabled = sData.geminiKeys.find((item: any) => item?.enabled !== false && String(item?.key || '').trim());
+            if (firstEnabled?.key) cachedSystemApiKey = String(firstEnabled.key).trim();
+          }
           if (sData.defaultAiModel) cachedSystemModel = sData.defaultAiModel;
         }
       }

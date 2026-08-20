@@ -100,6 +100,10 @@ service cloud.firestore {
       allow read: if isAdmin() || isMerchantByBizId(resource.data.businessId);
     }
 
+    match /system/{documentId} {
+      allow read, write: if isAdmin();
+    }
+
     match /system_config/public {
       // Public clients receive a sanitized subset from /api/public/config.
       // This document can contain operational settings and legacy credentials.
