@@ -114,7 +114,11 @@ export function uniqueHttpUrls(urls: Array<string | null | undefined>, limit: nu
   return out;
 }
 
-export function pickProductForImages<T extends { name?: string }>(
+export function pickProductForImages<T extends {
+  name?: string;
+  images?: string[];
+  reviewImages?: string[];
+}>(
   products: T[] | undefined,
   wantedName?: string,
   message = '',
