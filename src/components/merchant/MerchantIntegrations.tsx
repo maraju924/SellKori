@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { 
   Truck, 
   Globe, 
@@ -8,7 +8,8 @@ import {
   ShieldCheck, 
   Key, 
   Sparkles,
-  Zap
+  Zap,
+  Radio
 } from 'lucide-react';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
@@ -18,6 +19,7 @@ import { db } from '../../lib/firebase';
 import { doc, updateDoc } from 'firebase/firestore';
 import { toast } from 'sonner';
 import { cleanFirestoreData } from '../../lib/utils';
+import { parseJsonResponse } from '../../lib/safeJson';
 
 interface MerchantIntegrationsProps {
   business: BusinessConfig;
@@ -35,6 +37,54 @@ export function MerchantIntegrations({ business }: MerchantIntegrationsProps) {
   const [testEventCode, setTestEventCode] = useState(business.facebookConfig?.testEventCode || '');
   
   const [isSaving, setIsSaving] = useState(false);
+  const [isTestingCapi, setIsTestingCapi] = useState(false);
+  const [capiTestResult, setCapiTestResult] = useState<{ success: boolean; message: string } | null>(null);
+
+  // Resync local form when the business snapshot updates while this tab is open
+  useEffect(() => {
+    setSteadfastApiKey(business.courierConfig?.steadfastApiKey || '');
+    setSteadfastSecretKey(business.courierConfig?.steadfastSecretKey || '');
+    setAutoBooking(business.courierConfig?.autoBooking !== false);
+    setInsideDhaka(business.courierConfig?.deliveryChargeInsideDhaka || 70);
+    setOutsideDhaka(business.courierConfig?.deliveryChargeOutsideDhaka || 130);
+    setPixelId(business.facebookConfig?.pixelId || '');
+    setCapiAccessToken(business.facebookConfig?.accessToken || '');
+    setTestEventCode(business.facebookConfig?.testEventCode || '');
+  }, [business.id]);
+
+  const handleTestCapi = async () => {
+    if (!pixelId.trim() || !capiAccessToken.trim()) {
+      toast.error('আগে Pixel ID ও CAPI Access Token দিয়ে সেভ করুন');
+      return;
+    }
+    setIsTestingCapi(true);
+    setCapiTestResult(null);
+    try {
+      const res = await fetch('/api/capi/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          businessId: business.id,
+          pixelId: pixelId.trim(),
+          accessToken: capiAccessToken.trim(),
+          testEventCode: testEventCode.trim() || undefined
+        })
+      });
+      const data = await parseJsonResponse(res);
+      if (res.ok && data.success) {
+        setCapiTestResult({ success: true, message: `টেস্ট ইভেন্ট সফলভাবে পিক্সেলে পৌঁছেছে! (events_received: ${data.eventsReceived ?? 1})${testEventCode ? ' — Events Manager → Test Events ট্যাবে দেখুন।' : ''}` });
+        toast.success('CAPI সংযোগ সফল!');
+      } else {
+        setCapiTestResult({ success: false, message: data.error || 'CAPI টেস্ট ব্যর্থ' });
+        toast.error(data.error || 'CAPI টেস্ট ব্যর্থ');
+      }
+    } catch (e: any) {
+      setCapiTestResult({ success: false, message: e.message });
+      toast.error('CAPI টেস্ট ব্যর্থ');
+    } finally {
+      setIsTestingCapi(false);
+    }
+  };
 
   const handleSave = async () => {
     setIsSaving(true);
@@ -221,6 +271,30 @@ export function MerchantIntegrations({ business }: MerchantIntegrationsProps) {
                 placeholder="TEST..."
                 className="font-mono text-xs h-10 rounded-xl"
               />
+            </div>
+
+            <Button
+              onClick={handleTestCapi}
+              disabled={isTestingCapi}
+              variant="outline"
+              className="w-full h-10 rounded-xl font-black text-xs border-indigo-200 dark:border-indigo-900 text-indigo-600 hover:bg-indigo-50 dark:hover:bg-indigo-950/40"
+            >
+              <Radio className="w-3.5 h-3.5 mr-1.5" />
+              {isTestingCapi ? 'টেস্ট ইভেন্ট পাঠানো হচ্ছে...' : 'CAPI সংযোগ টেস্ট করুন'}
+            </Button>
+
+            {capiTestResult && (
+              <div className={`p-3 rounded-xl text-[11px] font-bold ${
+                capiTestResult.success
+                  ? 'bg-emerald-50 dark:bg-emerald-950/30 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-900/50'
+                  : 'bg-red-50 dark:bg-red-950/30 text-red-700 dark:text-red-300 border border-red-200 dark:border-red-900/50'
+              }`}>
+                {capiTestResult.message}
+              </div>
+            )}
+
+            <div className="p-3 rounded-xl bg-indigo-50/60 dark:bg-indigo-950/20 border border-indigo-100 dark:border-indigo-900/40 text-[10px] text-zinc-500 leading-relaxed">
+              <strong className="text-indigo-700 dark:text-indigo-300">অটো ফানেল ট্র্যাকিং:</strong> সেটআপ সম্পন্ন হলে মেসেঞ্জার চ্যাটের প্রতিটি ধাপ স্বয়ংক্রিয়ভাবে পিক্সেলে যাবে — Lead (অ্যাড থেকে মেসেজ), ViewContent (পণ্য জানতে চাওয়া), AddToCart, InitiateCheckout (ঠিকানা/ফোন দেওয়া) এবং Purchase (আসল টাকার অংকসহ অর্ডার)। এতে ফেসবুক শিখে যায় কোন ধরনের মানুষ আসলে কেনে, ফলে অ্যাডের রেজাল্ট ও ROAS অনেক ভালো হয়।
             </div>
           </div>
         </div>

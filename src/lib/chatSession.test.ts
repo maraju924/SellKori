@@ -52,6 +52,22 @@ storage.setItem(chatSessionKey(businessId), JSON.stringify({
 }));
 assert.equal(loadChatSession(storage, businessId).messages.length, 1);
 
+saveChatSession(storage, businessId, {
+  messages: Array.from({ length: 125 }, (_, index) => ({
+    id: `m${index + 1}`,
+    role: index % 2 ? 'assistant' as const : 'user' as const,
+    content: `message ${index + 1}`,
+    timestamp: index + 1,
+  })),
+  summary: '',
+  collected: {},
+  orderPlacedId: '',
+});
+const remembered = loadChatSession(storage, businessId).messages;
+assert.equal(remembered.length, 100);
+assert.equal(remembered[0].id, 'm26');
+assert.equal(remembered.at(-1)?.id, 'm125');
+
 storage.setItem(`sellkori_mem_${businessId}`, '{}');
 clearChatSession(storage, businessId);
 assert.equal(storage.getItem(chatSessionKey(businessId)), null);

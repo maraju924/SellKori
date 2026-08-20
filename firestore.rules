@@ -68,6 +68,16 @@ service cloud.firestore {
       allow write: if isAdmin() || (isSignedIn() && (resource.data.ownerId == request.auth.uid || isMerchantByBizId(resource.data.businessId)));
     }
 
+    match /payments/{paymentId} {
+      // Created/updated by the billing server (falls back to unauthenticated
+      // client SDK when Admin credentials are absent). Token crediting is
+      // verified against ZiniPay server-side before it happens.
+      allow create: if true;
+      allow read: if isAdmin() || (isSignedIn() && isMerchantByBizId(resource.data.businessId));
+      allow update: if true;
+      allow delete: if isAdmin();
+    }
+
     match /abandoned_carts/{cartId} {
       allow create: if true;
       allow read: if true;

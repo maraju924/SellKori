@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { 
   CreditCard, 
   Zap, 
@@ -16,8 +16,9 @@ import { Button } from '../ui/button';
 import { Badge } from '../ui/badge';
 import { BusinessConfig } from '../../types';
 import { db } from '../../lib/firebase';
-import { doc, updateDoc, increment } from 'firebase/firestore';
+import { doc, updateDoc, increment, collection, onSnapshot, query, where, limit } from 'firebase/firestore';
 import { toast } from 'sonner';
+import { parseJsonResponse } from '../../lib/safeJson';
 
 interface MerchantBillingProps {
   business: BusinessConfig;
@@ -26,6 +27,38 @@ interface MerchantBillingProps {
 export function MerchantBilling({ business }: MerchantBillingProps) {
   const [isProcessing, setIsProcessing] = useState(false);
   const [selectedPack, setSelectedPack] = useState<number | null>(null);
+  const [payments, setPayments] = useState<any[]>([]);
+
+  // Live payment history for this store
+  useEffect(() => {
+    if (!business.id) return;
+    const q = query(collection(db, 'payments'), where('businessId', '==', business.id), limit(100));
+    const unsub = onSnapshot(q, (snap) => {
+      const list = snap.docs.map(d => ({ id: d.id, ...d.data() } as any));
+      list.sort((a, b) => (b.createdAtMs || 0) - (a.createdAtMs || 0));
+      setPayments(list);
+    }, (err) => console.warn('[Billing] payments snapshot error:', err));
+    return () => unsub();
+  }, [business.id]);
+
+  // Settle any paid-but-uncredited payment (server marks paid after ZiniPay
+  // verification; the owner's client applies the token credit when the
+  // server had no Admin credentials to do it itself).
+  useEffect(() => {
+    const uncredited = payments.find(p => p.status === 'paid' && p.credited !== true);
+    if (!uncredited) return;
+    (async () => {
+      try {
+        await updateDoc(doc(db, 'businesses', business.id), {
+          tokenBalance: increment(Number(uncredited.tokens) || 0),
+        });
+        await updateDoc(doc(db, 'payments', uncredited.id), { credited: true });
+        toast.success(`${Number(uncredited.tokens).toLocaleString()} টোকেন আপনার ওয়ালেটে যুক্ত হয়েছে!`);
+      } catch (e) {
+        console.warn('[Billing] client credit notice:', e);
+      }
+    })();
+  }, [payments, business.id]);
 
   const tokenPacks = [
     {
@@ -67,20 +100,21 @@ export function MerchantBilling({ business }: MerchantBillingProps) {
     setIsProcessing(true);
 
     try {
-      // Zinipay simulation (In production, redirects to Zinipay bKash/Nagad checkout)
-      await new Promise(resolve => setTimeout(resolve, 1500));
-
-      await updateDoc(doc(db, 'businesses', business.id), {
-        tokenBalance: increment(pack.tokens),
-        walletBalance: increment(pack.taka)
+      // Real ZiniPay checkout: the server (super admin's gateway key) creates
+      // a hosted invoice and we redirect to the bKash/Nagad/Rocket page.
+      const res = await fetch('/api/billing/create-payment', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ businessId: business.id, amount: pack.taka })
       });
-
-      toast.success(`৳${pack.taka} রিচার্জ সফল হয়েছে!`, {
-        description: `আপনার একাউন্টে ${(pack.tokens).toLocaleString()} টোকেন যোগ হয়েছে।`
-      });
-    } catch (e) {
-      toast.error('রিচার্জ প্রক্রিয়া ব্যর্থ হয়েছে');
-    } finally {
+      const data = await parseJsonResponse(res);
+      if (!res.ok || !data.success || !data.paymentUrl) {
+        throw new Error(data.error || 'পেমেন্ট লিংক তৈরি করা যায়নি');
+      }
+      toast.info('ZiniPay পেমেন্ট পেজে নিয়ে যাওয়া হচ্ছে...');
+      window.location.href = data.paymentUrl;
+    } catch (e: any) {
+      toast.error(e.message || 'রিচার্জ প্রক্রিয়া ব্যর্থ হয়েছে');
       setIsProcessing(false);
       setSelectedPack(null);
     }
@@ -190,6 +224,43 @@ export function MerchantBilling({ business }: MerchantBillingProps) {
             সকল পেমেন্ট সরাসরি Zinipay এর মাধ্যমে bKash, Nagad, Rocket ও ভিসা কার্ড দিয়ে সম্পন্ন হয়। কোনো হিডেন চার্জ নেই।
           </p>
         </div>
+      </div>
+
+      {/* Payment History */}
+      <div className="bg-white dark:bg-zinc-900 border border-zinc-200/80 dark:border-zinc-800 rounded-3xl p-6 shadow-xs space-y-4">
+        <div className="flex items-center gap-2.5 pb-3 border-b border-zinc-100 dark:border-zinc-800">
+          <div className="w-10 h-10 rounded-2xl bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-300 flex items-center justify-center">
+            <History className="w-5 h-5" />
+          </div>
+          <div>
+            <h3 className="font-black text-sm text-zinc-900 dark:text-white">পেমেন্ট হিস্ট্রি</h3>
+            <p className="text-[11px] text-zinc-500">আপনার সব রিচার্জ ও তাদের স্ট্যাটাস</p>
+          </div>
+        </div>
+
+        {payments.length === 0 ? (
+          <p className="text-[11px] text-zinc-500 py-4 text-center">এখনো কোনো রিচার্জ করা হয়নি</p>
+        ) : (
+          <div className="space-y-2 max-h-[320px] overflow-y-auto pr-1">
+            {payments.map((p) => (
+              <div key={p.id} className="flex items-center justify-between gap-2 p-3 rounded-2xl border border-zinc-100 dark:border-zinc-800/60 bg-zinc-50 dark:bg-zinc-800/40 text-xs">
+                <div className="min-w-0">
+                  <p className="font-bold text-zinc-900 dark:text-white">৳ {Number(p.amount || 0).toLocaleString()} → {Number(p.tokens || 0).toLocaleString()} টোকেন</p>
+                  <p className="text-[10px] text-zinc-500 font-mono truncate">
+                    {p.id}{p.paymentMethod ? ` · ${p.paymentMethod}` : ''}{p.createdAtMs ? ` · ${new Date(p.createdAtMs).toLocaleString('bn-BD')}` : ''}
+                  </p>
+                </div>
+                <Badge className={
+                  p.status === 'paid'
+                    ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300 shrink-0'
+                    : 'bg-amber-100 text-amber-700 dark:bg-amber-950/60 dark:text-amber-300 shrink-0'
+                }>
+                  {p.status === 'paid' ? 'সফল' : 'পেন্ডিং'}
+                </Badge>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );

@@ -1,7 +1,7 @@
 import type { Message } from '../types';
 import type { CollectedOrderInfo } from './chatOrder';
+import { CHAT_MEMORY_LIMIT, takeRecentMessages } from './chatRuntime';
 
-const MAX_STORED_MESSAGES = 40;
 const MAX_MESSAGE_LENGTH = 4_000;
 
 export interface ChatSession {
@@ -43,7 +43,7 @@ export function loadChatSession(storage: Pick<Storage, 'getItem'>, businessId: s
 
     const parsed = JSON.parse(raw) as Partial<ChatSession>;
     const messages = Array.isArray(parsed.messages)
-      ? parsed.messages.filter(isMessage).slice(-MAX_STORED_MESSAGES)
+      ? takeRecentMessages(parsed.messages.filter(isMessage))
       : [];
 
     return {
@@ -64,7 +64,7 @@ export function saveChatSession(
 ) {
   const messages = session.messages
     .filter(isMessage)
-    .slice(-MAX_STORED_MESSAGES)
+    .slice(-CHAT_MEMORY_LIMIT)
     .map(({ id, role, content, timestamp, aiMetadata }) => ({
       id,
       role,

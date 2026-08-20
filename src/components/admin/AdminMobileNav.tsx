@@ -1,5 +1,5 @@
 import React from 'react';
-import { BarChart3, Store, Settings, Terminal, ShieldCheck } from 'lucide-react';
+import { BarChart3, Store, Settings, Terminal, Database, CreditCard } from 'lucide-react';
 
 interface AdminMobileNavProps {
   activeTab: string;
@@ -15,6 +15,8 @@ export function AdminMobileNav({
   const navItems = [
     { id: 'overview', label: 'ওভারভিউ', icon: BarChart3 },
     { id: 'merchants', label: 'মার্চেন্ট', icon: Store, badge: pendingMerchantsCount > 0 ? pendingMerchantsCount : undefined },
+    { id: 'ai-engine', label: 'AI পুল', icon: Database },
+    { id: 'billing', label: 'বিলিং', icon: CreditCard },
     { id: 'settings', label: 'সেটিংস', icon: Settings },
     { id: 'logs', label: 'টেলিমিতি', icon: Terminal },
   ];

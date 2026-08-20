@@ -23,6 +23,7 @@ const sources = [
   'api/index.ts',
   'api/webhook.ts',
   'src/lib/featureFlags.ts',
+  'src/lib/messengerFallback.ts',
   'src/lib/outreach.ts',
   'src/lib/orderIdentity.ts',
   'src/lib/gemini.ts',

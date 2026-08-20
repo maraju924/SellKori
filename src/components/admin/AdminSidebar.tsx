@@ -19,6 +19,8 @@ export function AdminSidebar({ activeTab, setActiveTab }: AdminSidebarProps) {
   const menuItems = [
     { id: 'overview', label: 'প্ল্যাটফর্ম ওভারভিউ', icon: BarChart3, badge: 'Live' },
     { id: 'merchants', label: 'মার্চেন্ট ডিরেক্টরি', icon: Store },
+    { id: 'ai-engine', label: 'AI ইঞ্জিন ও API পুল', icon: Database, badge: 'Failover' },
+    { id: 'billing', label: 'পেমেন্ট গেটওয়ে ও রেভিনিউ', icon: ShieldCheck, badge: 'ZiniPay' },
     { id: 'settings', label: 'সিস্টেম ও এপিআই সেটিংস', icon: Settings },
     { id: 'logs', label: 'লাইভ লগস ও টেলিমিতি', icon: Terminal, badge: 'Stream' },
   ];
