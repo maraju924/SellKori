@@ -166,6 +166,14 @@ import {
   CHAT_MEMORY_LIMIT,
   shouldCreateConfirmedOrder,
 } from '../src/lib/chatRuntime.js';
+import {
+  MAX_PRODUCT_PHOTOS,
+  MAX_REVIEW_PHOTOS,
+  normalizeImageLink,
+  pickProductForImages,
+  resolveImageSendFlags,
+  uniqueHttpUrls,
+} from '../src/lib/imageSend.js';
 
 // Initialize AI
 const genAI = process.env.GEMINI_API_KEY ? new GoogleGenerativeAI(process.env.GEMINI_API_KEY) : null;
@@ -274,7 +282,7 @@ function releaseMessageForRetry(mid: string) {
 }
 
 // Send a product image to Messenger as an image attachment
-async function sendImageMessage(pageAccessToken: string, senderId: string, imageUrl: string) {
+async function sendImageMessage(pageAccessToken: string, senderId: string, imageUrl: string): Promise<boolean> {
   const cleanToken = String(pageAccessToken).trim();
   const payload = {
     recipient: { id: senderId },
@@ -288,10 +296,22 @@ async function sendImageMessage(pageAccessToken: string, senderId: string, image
   };
   try {
     await axios.post(`https://graph.facebook.com/v21.0/me/messages?access_token=${encodeURIComponent(cleanToken)}`, payload, { timeout: 15000 });
+    return true;
   } catch (err: any) {
     console.warn('[Webhook] v21.0 image send failed, trying v18.0 fallback...', err.response?.data || err.message);
-    await axios.post(`https://graph.facebook.com/v18.0/me/messages?access_token=${encodeURIComponent(cleanToken)}`, payload, { timeout: 15000 });
+    try {
+      await axios.post(`https://graph.facebook.com/v18.0/me/messages?access_token=${encodeURIComponent(cleanToken)}`, payload, { timeout: 15000 });
+      return true;
+    } catch (fallbackErr: any) {
+      console.warn('[Webhook] image send failed:', fallbackErr.response?.data || fallbackErr.message);
+      return false;
+    }
   }
+}
+
+async function briefTypingPause(pageAccessToken: string, senderId: string, ms = 320) {
+  await sendTypingOn(pageAccessToken, senderId);
+  await new Promise((resolve) => setTimeout(resolve, Math.max(120, ms)));
 }
 
 type IncomingMediaKind = 'image' | 'audio' | 'video' | 'file' | 'sticker';
@@ -1437,10 +1457,11 @@ async function readMediaDoc(id: string) {
 
 async function ensurePublicImageUrl(image: string, businessId: string, req?: any): Promise<string | null> {
   if (!image) return null;
-  if (image.startsWith('https://') || image.startsWith('http://')) return image;
-  if (!image.startsWith('data:')) return null;
+  const converted = image.startsWith('data:') ? image : (normalizeImageLink(image) || image);
+  if (converted.startsWith('https://') || converted.startsWith('http://')) return converted;
+  if (!converted.startsWith('data:')) return null;
   try {
-    const id = await storeMediaDoc(image, businessId, 'relay');
+    const id = await storeMediaDoc(converted, businessId, 'relay');
     const origin = publicOriginFromReq(req);
     return origin ? `${origin}/api/media/${id}` : `/api/media/${id}`;
   } catch (e) {
@@ -2972,7 +2993,7 @@ async function handleMessengerWebhookPost(req: any, res: any) {
             const acqLabel = String(acqForPrompt?.adTitle || acqForPrompt?.ref || acqForPrompt?.adId || '').trim();
             const acqProduct = String(acqForPrompt?.matchedProduct || matchProductForReferral(businessData, acqForPrompt || null) || '').trim();
             const adSourceBlock = (acqLabel || acqProduct)
-              ? `\nঅ্যাড সোর্স (গুরুত্বপূর্ণ): কাস্টমার ফেসবুক বিজ্ঞাপন${acqLabel ? ` "${acqLabel}"` : ''} থেকে এসেছে।${acqProduct ? ` টার্গেট পণ্য: "${acqProduct}" — কাস্টমার ভিন্ন কিছু না চাইলে প্রথমে এই পণ্যটি নিয়েই কথা বলবে এবং এর দাম, ছবি ও অফার জানাবে।` : ' কাস্টমার কোন পণ্যের অ্যাড দেখে এসেছে বুঝে সেই পণ্য নিয়ে কথা বলবে।'}\n`
+              ? `\nঅ্যাড সোর্স (গুরুত্বপূর্ণ): কাস্টমার ফেসবুক বিজ্ঞাপন${acqLabel ? ` "${acqLabel}"` : ''} থেকে এসেছে।${acqProduct ? ` টার্গেট পণ্য: "${acqProduct}" — কাস্টমার ভিন্ন কিছু না চাইলে প্রথমে এই পণ্যটি নিয়েই কথা বলবে এবং এর দাম ও অফার জানাবে। ছবি তখনই পাঠাবে যখন কাস্টমার নিজে ছবি চাইবে।` : ' কাস্টমার কোন পণ্যের অ্যাড দেখে এসেছে বুঝে সেই পণ্য নিয়ে কথা বলবে।'}\n`
               : '';
             const recentOrders = isFeatureEnabled(storeFeatures, 'orderTrackingEnabled')
               ? await loadRecentOrdersForCustomer(bizId!, senderId, knownLead.phone)
@@ -2987,11 +3008,11 @@ async function handleMessengerWebhookPost(req: any, res: any) {
 ১. সংক্ষিপ্ত ও নির্দিষ্ট উত্তর (১-৩ বাক্য)। অপ্রয়োজনীয় ভূমিকা বা জোর করে পণ্য তালিকা দেবে না।
 ২. জানা তথ্য (নাম/ফোন/ঠিকানা) আর কখনো জিজ্ঞেস করবে না — order_data-তে প্রতিবার কপি করবে।
 ৩. সাম্প্রতিক অর্ডার থাকলে আবার অর্ডার করতে বলবে না; স্ট্যাটাস জানাবে।
-৪. রিভিউ/প্রুফ/কাস্টমার ফটো চাইলে show_review_images=true। ছবি চাইলে show_product_image=true।
+৪. রিভিউ/প্রুফ/কাস্টমার ফটো চাইলেই শুধু show_review_images=true। সাধারণ ছবি চাইলে show_product_image=true, রিভিউ মিশাবে না। দাম জানতে চাইলে ছবি পাঠাবে না। ছবি পাঠালে reply-তে "ইমেজ অ্যাটাচ" বা "কাস্টমার রিভিউ" লিখবে না — সাধারণ মানুষের মতো ছোট করে বলবে যেমন "এই দেখেন"।
 ৫. নাম+১১ ডিজিট ফোন+পূর্ণ ঠিকানা+পণ্য জানা এবং কাস্টমার কনফার্ম করলে should_create_order=true, conversation_stage=order_completed, event_name=Purchase, need_more_info=false।
 ৬. minPrice-এর নিচে দাম দিবে না।
 ৭. ফটো/ছবি রিপ্লাই: কাস্টমার ছবি পাঠালে অবশ্যই ছবিটি দেখে উত্তর দাও — নীরব থাকবে না।
-   - পণ্য/ক্যাটালগ স্ক্রিনশট: ক্যাটালগের সাথে মিলিয়ে নাম, দাম ও স্টক বলো; অর্ডার করতে চান কিনা জিজ্ঞেস করো। মিললে show_product_image true করতে পারো।
+   - পণ্য/ক্যাটালগ স্ক্রিনশট: ক্যাটালগের সাথে মিলিয়ে নাম, দাম ও স্টক বলো; অর্ডার করতে চান কিনা জিজ্ঞেস করো। কাস্টমার নিজে ছবি না চাইলে show_product_image true করবে না।
    - পেমেন্ট/বিকাশ/নগদ/রকেট স্ক্রিনশট: "স্ক্রিনশট পেয়েছি, আমাদের টিম ভেরিফাই করে আপনাকে জানাবে" — নিজে থেকে পেমেন্ট কনফার্মড বলবে না।
    - নাম/ঠিকানা/ফোন লেখা ছবি: পড়ে নিশ্চিত করে নাও।
    - ক্ষতি/কমপ্লেইন/ডেলিভারি সমস্যা: সহানুভূতি দেখিয়ে সমাধানের কথা বলো।
@@ -3095,6 +3116,9 @@ ${chatHistoryText || 'নতুন আলাপ'}
                 }
 
                 if (aiRes) {
+                  const imageFlags = resolveImageSendFlags(finalMessageText, aiRes);
+                  aiRes.show_product_image = imageFlags.show_product_image;
+                  aiRes.show_review_images = imageFlags.show_review_images;
                   if (!isFeatureEnabled(storeFeatures, 'imageDisplayEnabled')) aiRes.show_product_image = false;
                   if (!isFeatureEnabled(storeFeatures, 'reviewImagesEnabled')) aiRes.show_review_images = false;
                   if (!isFeatureEnabled(storeFeatures, 'autoOrderEnabled')) aiRes.should_create_order = false;
@@ -3320,24 +3344,34 @@ ${chatHistoryText || 'নতুন আলাপ'}
                 }
                 primaryReplySent = true;
 
-                const wantsProductImg = isFeatureEnabled(storeFeatures, 'imageDisplayEnabled') && Boolean(aiRes?.show_product_image);
-                const wantsReviewImg = isFeatureEnabled(storeFeatures, 'reviewImagesEnabled') && (Boolean(aiRes?.show_review_images) || /রিভিউ|review|প্রুফ|proof|ফিডব্যাক|feedback|আনবক্সিং/i.test(finalMessageText));
+                const imageFlags = resolveImageSendFlags(finalMessageText, aiRes);
+                const wantsProductImg = isFeatureEnabled(storeFeatures, 'imageDisplayEnabled') && imageFlags.show_product_image;
+                const wantsReviewImg = isFeatureEnabled(storeFeatures, 'reviewImagesEnabled') && imageFlags.show_review_images;
                 if (wantsProductImg || wantsReviewImg) {
                   try {
-                    const wantedName = String(aiRes?.product_name || nextLead.product_name || '').toLowerCase().trim();
-                    let imageProduct = wantedName
-                      ? rawProducts.find((p: any) => p.name?.toLowerCase().includes(wantedName) || wantedName.includes(p.name?.toLowerCase() || '\u0000'))
-                      : null;
-                    if (!imageProduct) {
-                      imageProduct = rawProducts.find((p: any) => p.name && finalMessageText.toLowerCase().includes(p.name.toLowerCase()));
-                    }
-                    if (!imageProduct) imageProduct = rawProducts[0];
-                    const urls: string[] = [];
-                    if (wantsProductImg) urls.push(...(imageProduct?.images || []).slice(0, 3));
-                    if (wantsReviewImg) urls.push(...(imageProduct?.reviewImages || []).slice(0, 3));
-                    for (const rawUrl of urls) {
+                    const imageProduct = pickProductForImages(
+                      rawProducts,
+                      aiRes?.product_name || nextLead.product_name || acqProduct,
+                      `${finalMessageText}\n${chatHistoryText}`,
+                    );
+                    const productUrls = wantsProductImg
+                      ? uniqueHttpUrls(imageProduct?.images || [], MAX_PRODUCT_PHOTOS)
+                      : [];
+                    const reviewUrls = wantsReviewImg
+                      ? uniqueHttpUrls(imageProduct?.reviewImages || [], MAX_REVIEW_PHOTOS)
+                      : [];
+
+                    for (const rawUrl of productUrls) {
                       const publicUrl = await ensurePublicImageUrl(rawUrl, bizId!, req);
                       if (publicUrl && publicUrl.startsWith('http')) {
+                        await briefTypingPause(pageAccessToken, senderId, 280);
+                        await sendImageMessage(pageAccessToken, senderId, publicUrl);
+                      }
+                    }
+                    for (const rawUrl of reviewUrls) {
+                      const publicUrl = await ensurePublicImageUrl(rawUrl, bizId!, req);
+                      if (publicUrl && publicUrl.startsWith('http')) {
+                        await briefTypingPause(pageAccessToken, senderId, 340);
                         await sendImageMessage(pageAccessToken, senderId, publicUrl);
                       }
                     }

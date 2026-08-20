@@ -4,13 +4,7 @@ import {
   Send, 
   RefreshCw, 
   Zap, 
-  Terminal, 
-  CheckCircle2, 
-  ShoppingBag, 
-  User,
-  Sparkles,
-  ArrowRight,
-  ShieldCheck
+  User
 } from 'lucide-react';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
@@ -29,6 +23,7 @@ import {
 } from '../../lib/chatOrder';
 import { isFeatureEnabled } from '../../lib/featureFlags';
 import { takeRecentMessages } from '../../lib/chatRuntime';
+import { pickProductForImages, uniqueHttpUrls } from '../../lib/imageSend';
 
 interface MerchantTestChatProps {
   business: BusinessConfig;
@@ -232,40 +227,39 @@ export function MerchantTestChat({ business }: MerchantTestChatProps) {
                 }`}
               >
                 {msg.content}
-
-                {msg.role === 'assistant' && (msg.aiMetadata?.show_product_image || msg.aiMetadata?.show_review_images) && (() => {
-                  const matched = business.products?.find(p =>
-                    p.name.toLowerCase().includes((msg.aiMetadata?.product_name || '').toLowerCase())
-                  ) || business.products?.[0];
-                  if (!matched) return null;
-                  const productImgs = isFeatureEnabled(business.features, 'imageDisplayEnabled') && msg.aiMetadata?.show_product_image ? (matched.images || []).slice(0, 4) : [];
-                  const reviewImgs = isFeatureEnabled(business.features, 'reviewImagesEnabled') && msg.aiMetadata?.show_review_images ? (matched.reviewImages || []).slice(0, 4) : [];
-                  if (!productImgs.length && !reviewImgs.length) return null;
-                  return (
-                    <div className="mt-3 pt-3 border-t border-zinc-100 dark:border-zinc-700 space-y-2">
-                      {productImgs.length > 0 && (
-                        <div className="grid grid-cols-2 gap-2">
-                          {productImgs.map((img, idx) => (
-                            <img key={idx} src={img} alt={matched.name} className="rounded-xl w-full h-20 object-cover" referrerPolicy="no-referrer" />
-                          ))}
-                        </div>
-                      )}
-                      {reviewImgs.length > 0 && (
-                        <div className="space-y-1">
-                          <p className="text-[10px] font-bold text-amber-600 flex items-center gap-1">
-                            <ShieldCheck className="w-3 h-3" /> কাস্টমার রিভিউ
-                          </p>
-                          <div className="grid grid-cols-2 gap-2">
-                            {reviewImgs.map((img, idx) => (
-                              <img key={`r-${idx}`} src={img} alt="review" className="rounded-xl w-full h-20 object-cover border border-amber-200" referrerPolicy="no-referrer" />
-                            ))}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  );
-                })()}
               </div>
+
+              {msg.role === 'assistant' && (msg.aiMetadata?.show_product_image || msg.aiMetadata?.show_review_images) && (() => {
+                const previousUserText = [...messages.slice(0, messages.indexOf(msg) + 1)]
+                  .reverse()
+                  .find((item) => item.role === 'user')?.content || '';
+                const matched = pickProductForImages(
+                  business.products,
+                  msg.aiMetadata?.product_name,
+                  previousUserText,
+                );
+                if (!matched) return null;
+                const productImgs = isFeatureEnabled(business.features, 'imageDisplayEnabled') && msg.aiMetadata?.show_product_image
+                  ? uniqueHttpUrls(matched.images || [], 3)
+                  : [];
+                const reviewImgs = isFeatureEnabled(business.features, 'reviewImagesEnabled') && msg.aiMetadata?.show_review_images
+                  ? uniqueHttpUrls(matched.reviewImages || [], 3)
+                  : [];
+                const photoUrls = [...productImgs, ...reviewImgs];
+                if (!photoUrls.length) return null;
+                return photoUrls.map((img, idx) => (
+                  <img
+                    key={`${msg.id}-photo-${idx}`}
+                    src={img}
+                    alt=""
+                    className="max-h-44 w-auto max-w-[200px] rounded-2xl border border-zinc-200 object-cover shadow-sm"
+                    referrerPolicy="no-referrer"
+                    onError={(event) => {
+                      event.currentTarget.style.display = 'none';
+                    }}
+                  />
+                ));
+              })()}
 
               {/* Event Badge preview */}
               {msg.aiMetadata?.event_name && (
@@ -297,9 +291,10 @@ export function MerchantTestChat({ business }: MerchantTestChatProps) {
           <span className="text-[10px] font-bold text-zinc-400 shrink-0">দ্রুত টেস্ট করুন:</span>
           {[
             'দাম কত? কিছু ডিসকাউন্ট দিবেন?',
+            'প্রোডাক্টের ছবি পাঠান',
+            'রিভিউ ছবি দিবেন?',
             'ঢাকার ভেতরে ডেলিভারি চার্জ কত?',
-            'আমি ১ পিস অর্ডার করতে চাই',
-            'ক্যাশ অন ডেলিভারি আছে?'
+            'আমি ১ পিস অর্ডার করতে চাই'
           ].map((prompt, idx) => (
             <button
               key={idx}
