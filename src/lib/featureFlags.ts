@@ -254,8 +254,8 @@ export interface FeaturePreset {
 export const FEATURE_PRESETS: FeaturePreset[] = [
   {
     id: 'sales',
-    title: '২৪/৭ ফুল সেলস মোড',
-    desc: 'নীরব সময় বন্ধ রেখে এআই, দরদাম, অটো অর্ডার ও ছবি সবসময় চালু',
+    title: 'ফুল সেলস মোড',
+    desc: 'এআই, দরদাম, অটো অর্ডার, ছবি — সব চালু',
     patch: { ...DEFAULT_FEATURES, quietHoursEnabled: false }
   },
   {

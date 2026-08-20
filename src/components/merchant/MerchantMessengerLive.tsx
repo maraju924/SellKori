@@ -25,17 +25,12 @@ import {
   Cpu,
   Clock,
   Flame,
-  Info,
-  Plus,
-  Trash2,
-  Layers,
-  Target,
-  Power
+  Info
 } from 'lucide-react';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 import { Badge } from '../ui/badge';
-import { BusinessConfig, MessengerPage, AdProductMapping } from '../../types';
+import { BusinessConfig } from '../../types';
 import { db } from '../../lib/firebase';
 import { doc, updateDoc, collection, query, where, orderBy, limit, onSnapshot, getDocs } from 'firebase/firestore';
 import { toast } from 'sonner';
@@ -68,108 +63,6 @@ export function MerchantMessengerLive({ business }: MerchantMessengerLiveProps) 
   const [isTestingToken, setIsTestingToken] = useState(false);
   const [tokenStatus, setTokenStatus] = useState<{ success: boolean; message: string; page?: any; subscribed?: boolean } | null>(null);
 
-  // Multi-page manager (one panel -> many Facebook pages)
-  const connectedPages: MessengerPage[] = business.messengerPages || [];
-  const [newPageToken, setNewPageToken] = useState('');
-  const [isAddingPage, setIsAddingPage] = useState(false);
-
-  const persistPages = async (pages: MessengerPage[]) => {
-    await updateDoc(doc(db, 'businesses', business.id), cleanFirestoreData({
-      messengerPages: pages,
-      connectedPageIds: pages.filter(p => p.enabled !== false).map(p => p.pageId),
-    }));
-  };
-
-  const handleAddPage = async () => {
-    const token = newPageToken.trim();
-    if (!token) {
-      toast.error('নতুন পেজের Access Token দিন');
-      return;
-    }
-    setIsAddingPage(true);
-    try {
-      const res = await fetch('/api/messenger/test-token', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pageAccessToken: token })
-      });
-      const data = await parseJsonResponse(res);
-      if (!res.ok || !data.success || !data.page?.id) {
-        throw new Error(data.error || 'টোকেন যাচাই ব্যর্থ হয়েছে');
-      }
-      const newPid = String(data.page.id);
-      const others = connectedPages.filter(p => p.pageId !== newPid);
-      await persistPages([
-        ...others,
-        {
-          pageId: newPid,
-          pageName: data.page.name || '',
-          pageAccessToken: token,
-          enabled: true,
-          subscribed: data.subscribed !== false,
-          addedAtMs: Date.now()
-        }
-      ]);
-      setNewPageToken('');
-      toast.success(`পেজ "${data.page.name || newPid}" যুক্ত হয়েছে!`);
-      if (data.needsManualSubscribe && data.manualSubscribeHint) {
-        toast.info(data.manualSubscribeHint, { duration: 12000 });
-      }
-    } catch (e: any) {
-      toast.error(e.message || 'পেজ যোগ করা যায়নি');
-    } finally {
-      setIsAddingPage(false);
-    }
-  };
-
-  const handleRemovePage = async (pid: string) => {
-    try {
-      await persistPages(connectedPages.filter(p => p.pageId !== pid));
-      toast.success('পেজ সরানো হয়েছে');
-    } catch (e: any) {
-      toast.error(e.message || 'পেজ সরানো যায়নি');
-    }
-  };
-
-  const handleTogglePage = async (pid: string) => {
-    try {
-      await persistPages(connectedPages.map(p => p.pageId === pid ? { ...p, enabled: p.enabled === false } : p));
-    } catch (e: any) {
-      toast.error(e.message || 'পরিবর্তন সেভ হয়নি');
-    }
-  };
-
-  // Ad -> Product mapping (which ad should pitch which product)
-  const [adMappings, setAdMappings] = useState<AdProductMapping[]>(business.adProductMappings || []);
-  const [newAdKey, setNewAdKey] = useState('');
-  const [newAdProduct, setNewAdProduct] = useState('');
-
-  useEffect(() => {
-    setAdMappings(business.adProductMappings || []);
-  }, [business.id, business.adProductMappings]);
-
-  const saveAdMappings = async (list: AdProductMapping[]) => {
-    setAdMappings(list);
-    try {
-      await updateDoc(doc(db, 'businesses', business.id), cleanFirestoreData({ adProductMappings: list }));
-    } catch (e: any) {
-      toast.error(e.message || 'ম্যাপিং সেভ হয়নি');
-    }
-  };
-
-  const handleAddMapping = async () => {
-    const key = newAdKey.trim();
-    const productName = newAdProduct.trim();
-    if (!key || !productName) {
-      toast.error('অ্যাড রেফারেন্স ও পণ্যের নাম দুটোই দিন');
-      return;
-    }
-    await saveAdMappings([...adMappings.filter(m => m.key.toLowerCase() !== key.toLowerCase()), { key, productName }]);
-    setNewAdKey('');
-    setNewAdProduct('');
-    toast.success('অ্যাড ম্যাপিং যুক্ত হয়েছে');
-  };
-
   useEffect(() => {
     setPageAccessToken(business.pageAccessToken || '');
     setPageId(business.pageId || business.facebookPageId || '');
@@ -192,39 +85,23 @@ export function MerchantMessengerLive({ business }: MerchantMessengerLiveProps) 
   const standardWebhookUrl = `${origin}/api/webhook`;
   const specificWebhookUrl = `${origin}/api/webhook/${business.id}`;
 
-  // Live stream for Messenger logs (falls back to an index-free query and
-  // client-side sorting if the composite index is missing).
+  // Live stream for Messenger logs
   useEffect(() => {
     if (!business.id) return;
-
-    const applyLogs = (snap: { docs: { id: string; data: () => any }[] }) => {
-      const list = snap.docs.map(d => ({ id: d.id, ...d.data() } as any));
-      list.sort((a: any, b: any) => (b.timestamp?.seconds || 0) - (a.timestamp?.seconds || 0));
-      setLiveLogs(list.slice(0, 35));
-    };
-
-    const withOrder = query(
+    const logsQ = query(
       collection(db, 'messenger_logs'),
       where('businessId', '==', business.id),
       orderBy('timestamp', 'desc'),
       limit(35)
     );
-    let unsubFallback: (() => void) | null = null;
-    const unsubscribe = onSnapshot(withOrder, applyLogs, () => {
-      const withoutOrder = query(
-        collection(db, 'messenger_logs'),
-        where('businessId', '==', business.id),
-        limit(100)
-      );
-      unsubFallback = onSnapshot(withoutOrder, applyLogs, (err) => {
-        console.warn('Messenger logs snapshot error:', err);
-      });
+
+    const unsubscribe = onSnapshot(logsQ, (snap) => {
+      setLiveLogs(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+    }, (err) => {
+      console.warn('Messenger logs snapshot error:', err);
     });
 
-    return () => {
-      unsubscribe();
-      unsubFallback?.();
-    };
+    return () => unsubscribe();
   }, [business.id]);
 
   const copyToClipboard = (text: string, type: 'token' | 'webhook' | 'specific_webhook') => {
@@ -967,116 +844,6 @@ export function MerchantMessengerLive({ business }: MerchantMessengerLiveProps) 
                 </Button>
               </div>
             </div>
-          </div>
-        </div>
-      )}
-
-      {/* Multi-page manager: one panel runs many Facebook pages */}
-      {activeTab === 'setup' && (
-        <div className="bg-white dark:bg-zinc-900 border border-zinc-200/80 dark:border-zinc-800 rounded-3xl p-6 shadow-xs space-y-4">
-          <div className="flex items-center gap-2.5 pb-3 border-b border-zinc-100 dark:border-zinc-800">
-            <div className="w-10 h-10 rounded-2xl bg-blue-50 dark:bg-blue-950/60 text-blue-600 flex items-center justify-center">
-              <Layers className="w-5 h-5" />
-            </div>
-            <div>
-              <h3 className="font-black text-sm text-zinc-900 dark:text-white">কানেক্টেড পেজসমূহ (মাল্টি-পেজ)</h3>
-              <p className="text-[11px] text-zinc-500">একই প্যানেল থেকে একাধিক ফেসবুক পেজের বট চালান — প্রতিটি পেজের আলাদা টোকেন এখানে যোগ করুন</p>
-            </div>
-          </div>
-
-          {connectedPages.length === 0 ? (
-            <p className="text-[11px] text-zinc-500 bg-zinc-50 dark:bg-zinc-800/40 rounded-2xl p-3 border border-zinc-100 dark:border-zinc-800/60">
-              এখনো কোনো অতিরিক্ত পেজ যুক্ত হয়নি। উপরের মূল টোকেনটি ডিফল্ট পেজ হিসেবে কাজ করবে। নিচে নতুন পেজের টোকেন দিলে সেই পেজের মেসেজও এই প্যানেলেই আসবে।
-            </p>
-          ) : (
-            <div className="space-y-2">
-              {connectedPages.map((p) => (
-                <div key={p.pageId} className="flex items-center justify-between gap-2 p-3 rounded-2xl border border-zinc-100 dark:border-zinc-800/60 bg-zinc-50 dark:bg-zinc-800/40">
-                  <div className="min-w-0">
-                    <p className="font-bold text-xs text-zinc-900 dark:text-white truncate">{p.pageName || 'ফেসবুক পেজ'}</p>
-                    <p className="text-[10px] font-mono text-zinc-500">ID: {p.pageId}</p>
-                  </div>
-                  <div className="flex items-center gap-1.5 shrink-0">
-                    <Badge className={p.enabled !== false ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300' : 'bg-zinc-200 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400'}>
-                      {p.enabled !== false ? 'সক্রিয়' : 'বন্ধ'}
-                    </Badge>
-                    <Button variant="ghost" size="sm" className="h-8 w-8 p-0 rounded-xl" onClick={() => handleTogglePage(p.pageId)} title={p.enabled !== false ? 'বন্ধ করুন' : 'চালু করুন'}>
-                      <Power className="w-3.5 h-3.5" />
-                    </Button>
-                    <Button variant="ghost" size="sm" className="h-8 w-8 p-0 rounded-xl text-red-500 hover:text-red-600" onClick={() => handleRemovePage(p.pageId)} title="পেজ সরান">
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </Button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-
-          <div className="flex gap-2">
-            <Input
-              value={newPageToken}
-              onChange={(e) => setNewPageToken(e.target.value)}
-              placeholder="নতুন পেজের Page Access Token পেস্ট করুন..."
-              className="rounded-2xl text-xs font-mono h-10"
-              type="password"
-            />
-            <Button onClick={handleAddPage} disabled={isAddingPage} className="rounded-2xl h-10 px-4 bg-blue-600 hover:bg-blue-700 text-white font-black text-xs shrink-0">
-              {isAddingPage ? <RefreshCw className="w-4 h-4 animate-spin" /> : <><Plus className="w-4 h-4 mr-1" /> পেজ যোগ করুন</>}
-            </Button>
-          </div>
-          <p className="text-[10px] text-zinc-400">টোকেন দিলে সিস্টেম নিজেই পেজের নাম ও আইডি বের করে যাচাই করবে। প্রতিটি পেজের কাস্টমার নিজ নিজ পেজের নামেই উত্তর পাবে।</p>
-        </div>
-      )}
-
-      {/* Ad -> Product mapping: which ad pitches which product */}
-      {activeTab === 'setup' && (
-        <div className="bg-white dark:bg-zinc-900 border border-zinc-200/80 dark:border-zinc-800 rounded-3xl p-6 shadow-xs space-y-4">
-          <div className="flex items-center gap-2.5 pb-3 border-b border-zinc-100 dark:border-zinc-800">
-            <div className="w-10 h-10 rounded-2xl bg-purple-50 dark:bg-purple-950/60 text-purple-600 flex items-center justify-center">
-              <Target className="w-5 h-5" />
-            </div>
-            <div>
-              <h3 className="font-black text-sm text-zinc-900 dark:text-white">অ্যাড → প্রোডাক্ট ম্যাপিং</h3>
-              <p className="text-[11px] text-zinc-500">কোন বিজ্ঞাপন থেকে আসা কাস্টমারকে কোন পণ্য নিয়ে কথা বলতে হবে — বট প্রথম মেসেজ থেকেই সঠিক পণ্য ধরবে</p>
-            </div>
-          </div>
-
-          {adMappings.length > 0 && (
-            <div className="space-y-2">
-              {adMappings.map((m) => (
-                <div key={m.key} className="flex items-center justify-between gap-2 p-3 rounded-2xl border border-zinc-100 dark:border-zinc-800/60 bg-zinc-50 dark:bg-zinc-800/40">
-                  <div className="min-w-0 flex items-center gap-2">
-                    <code className="text-[10px] font-mono bg-zinc-200 dark:bg-zinc-700 px-1.5 py-0.5 rounded truncate max-w-[140px]">{m.key}</code>
-                    <ChevronRight className="w-3 h-3 text-zinc-400 shrink-0" />
-                    <span className="font-bold text-xs text-zinc-900 dark:text-white truncate">{m.productName}</span>
-                  </div>
-                  <Button variant="ghost" size="sm" className="h-8 w-8 p-0 rounded-xl text-red-500 hover:text-red-600 shrink-0" onClick={() => saveAdMappings(adMappings.filter(x => x.key !== m.key))} title="ম্যাপিং মুছুন">
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </Button>
-                </div>
-              ))}
-            </div>
-          )}
-
-          <div className="grid grid-cols-1 sm:grid-cols-[1fr_1fr_auto] gap-2">
-            <Input
-              value={newAdKey}
-              onChange={(e) => setNewAdKey(e.target.value)}
-              placeholder="Ad ID / ref / Post ID (যেমন: summer_offer)"
-              className="rounded-2xl text-xs h-10"
-            />
-            <Input
-              value={newAdProduct}
-              onChange={(e) => setNewAdProduct(e.target.value)}
-              placeholder="পণ্যের নাম (ক্যাটালগের সাথে মিলবে)"
-              className="rounded-2xl text-xs h-10"
-            />
-            <Button onClick={handleAddMapping} className="rounded-2xl h-10 px-4 bg-purple-600 hover:bg-purple-700 text-white font-black text-xs">
-              <Plus className="w-4 h-4 mr-1" /> যোগ করুন
-            </Button>
-          </div>
-          <div className="p-3 rounded-2xl bg-purple-50/60 dark:bg-purple-950/20 border border-purple-100 dark:border-purple-900/40 text-[10px] text-zinc-500 leading-relaxed">
-            <strong className="text-purple-700 dark:text-purple-300">কীভাবে কাজ করে:</strong> Click-to-Messenger অ্যাডে m.me লিংকে <code className="font-mono">ref</code> প্যারামিটার দিন (যেমন <code className="font-mono">m.me/yourpage?ref=summer_offer</code>) অথবা Ad ID / Post ID ব্যবহার করুন। কাস্টমার সেই অ্যাড থেকে মেসেজ দিলে বট স্বয়ংক্রিয়ভাবে ম্যাপ করা পণ্যের দাম, ছবি ও অফার দিয়ে কথা শুরু করবে। ম্যাপিং না থাকলেও অ্যাডের টাইটেল থেকে পণ্য অনুমান করার চেষ্টা করবে।
           </div>
         </div>
       )}

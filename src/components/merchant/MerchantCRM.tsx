@@ -1,130 +1,75 @@
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import { 
   Users, 
   Search, 
   Phone, 
   MapPin, 
+  ShoppingBag, 
+  Sparkles, 
+  Clock, 
+  Flame, 
+  Tag,
   MessageCircle,
-  Megaphone
+  TrendingUp
 } from 'lucide-react';
+import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 import { Badge } from '../ui/badge';
 import { BusinessConfig, Order } from '../../types';
-import { db } from '../../lib/firebase';
-import { collection, onSnapshot, query, where, limit } from 'firebase/firestore';
 
 interface MerchantCRMProps {
   business: BusinessConfig;
   orders: Order[];
 }
 
-interface CrmCustomer {
-  name: string;
-  phone: string;
-  address: string;
-  totalOrders: number;
-  totalSpent: number;
-  lastActivityMs: number;
-  leadStage: 'hot' | 'buyer' | 'repeat' | 'lead';
-  source: 'messenger' | 'order' | 'both';
-  adSource?: string;
-  chatSummary?: string;
-}
-
 export function MerchantCRM({ business, orders }: MerchantCRMProps) {
   const [searchTerm, setSearchTerm] = useState('');
   const [stageFilter, setStageFilter] = useState<string>('all');
-  const [messengerLeads, setMessengerLeads] = useState<any[]>([]);
 
-  // Live Messenger leads (every person who chatted with the bot),
-  // including which ad brought them (acquisition).
-  useEffect(() => {
-    if (!business.id) return;
-    const q = query(
-      collection(db, 'customers'),
-      where('businessId', '==', business.id),
-      limit(500)
-    );
-    const unsub = onSnapshot(q, (snap) => {
-      setMessengerLeads(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-    }, (err) => {
-      console.warn('[CRM] customers snapshot error:', err);
-    });
-    return () => unsub();
-  }, [business.id]);
+  // Derive Customers from Orders
+  const customerMap = new Map<string, {
+    name: string;
+    phone: string;
+    address: string;
+    totalOrders: number;
+    totalSpent: number;
+    lastOrder: any;
+    leadStage: 'hot' | 'buyer' | 'repeat' | 'lead';
+  }>();
 
-  const customerMap = new Map<string, CrmCustomer>();
-
-  // 1) Orders -> buyers
   orders.forEach(ord => {
     const key = ord.phone || ord.customerName;
     if (!key) return;
+
     const existing = customerMap.get(key);
-    const tMs = (ord as any).createdAtMs || 0;
     if (existing) {
       existing.totalOrders += 1;
       existing.totalSpent += (ord.totalPrice || 0);
       if (existing.totalOrders > 1) existing.leadStage = 'repeat';
-      existing.lastActivityMs = Math.max(existing.lastActivityMs, tMs);
-      if ((ord as any).adSource && !existing.adSource) existing.adSource = (ord as any).adSource;
     } else {
       customerMap.set(key, {
         name: ord.customerName || 'গ্রাহক',
         phone: ord.phone,
-        address: ord.address || 'ঠিকানা দেওয়া হয়নি',
+        address: ord.address || 'ঠিকানা দেওয়া হয়নি',
         totalOrders: 1,
         totalSpent: ord.totalPrice || 0,
-        lastActivityMs: tMs,
-        leadStage: ord.status === 'delivered' ? 'buyer' : 'hot',
-        source: 'order',
-        adSource: (ord as any).adSource || ''
+        lastOrder: ord.createdAt,
+        leadStage: ord.status === 'delivered' ? 'buyer' : 'hot'
       });
     }
   });
 
-  // 2) Messenger leads -> merge (chat-only people become 'lead')
-  messengerLeads.forEach((lead) => {
-    const leadPhone = String(lead.phone || lead.leadInfo?.phone || '').trim();
-    const leadName = String(lead.name || lead.leadInfo?.name || '').trim();
-    const key = leadPhone || `psid:${lead.messengerId || lead.id}`;
-    const adSource = String(lead.acquisition?.adTitle || lead.acquisition?.ref || lead.acquisition?.adId || '').trim();
-    const existing = leadPhone ? customerMap.get(leadPhone) : customerMap.get(key);
-    if (existing) {
-      existing.source = 'both';
-      if (adSource && !existing.adSource) existing.adSource = adSource;
-      if (lead.chatSummary) existing.chatSummary = lead.chatSummary;
-      existing.lastActivityMs = Math.max(existing.lastActivityMs, Number(lead.lastIncomingAtMs) || 0);
-    } else {
-      customerMap.set(key, {
-        name: leadName || 'মেসেঞ্জার লিড',
-        phone: leadPhone || '',
-        address: String(lead.address || lead.leadInfo?.address || '').trim() || 'ঠিকানা এখনো দেয়নি',
-        totalOrders: 0,
-        totalSpent: 0,
-        lastActivityMs: Number(lead.lastIncomingAtMs) || 0,
-        leadStage: 'lead',
-        source: 'messenger',
-        adSource,
-        chatSummary: lead.chatSummary || ''
-      });
-    }
-  });
-
-  const customerList = Array.from(customerMap.values())
-    .sort((a, b) => b.lastActivityMs - a.lastActivityMs);
+  const customerList = Array.from(customerMap.values());
 
   const filteredCustomers = customerList.filter(c => {
     const matchesSearch =
       c.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
       c.phone?.includes(searchTerm) ||
-      c.address?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      (c.adSource || '').toLowerCase().includes(searchTerm.toLowerCase());
+      c.address?.toLowerCase().includes(searchTerm.toLowerCase());
 
     const matchesStage = stageFilter === 'all' || c.leadStage === stageFilter;
     return matchesSearch && matchesStage;
   });
-
-  const adLeadCount = customerList.filter(c => c.adSource).length;
 
   return (
     <div className="space-y-6">
@@ -140,17 +85,12 @@ export function MerchantCRM({ business, orders }: MerchantCRMProps) {
             </Badge>
           </div>
           <p className="text-xs text-zinc-500 mt-1">
-            মেসেঞ্জারে কথা বলা প্রতিটি লিড এবং অর্ডার করা প্রতিটি গ্রাহক — কে কোন বিজ্ঞাপন থেকে এসেছে সহ।
+            এআই চ্যাটে কথা বলা এবং অর্ডার করা প্রতিটি গ্রাহকের ফোন, ঠিকানা ও কেনাকাটার হিস্ট্রি।
           </p>
         </div>
 
-        <div className="flex items-center gap-3 text-xs font-bold text-zinc-500">
-          <span>মোট লিড: {customerList.length} জন</span>
-          {adLeadCount > 0 && (
-            <span className="flex items-center gap-1 text-purple-600 dark:text-purple-400">
-              <Megaphone className="w-3.5 h-3.5" /> অ্যাড থেকে: {adLeadCount} জন
-            </span>
-          )}
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-bold text-zinc-500">মোট লিড: {customerList.length} জন</span>
         </div>
       </div>
 
@@ -161,7 +101,7 @@ export function MerchantCRM({ business, orders }: MerchantCRMProps) {
           <Input
             value={searchTerm}
             onChange={e => setSearchTerm(e.target.value)}
-            placeholder="নাম, ফোন, ঠিকানা বা অ্যাড সোর্স দিয়ে খুঁজুন..."
+            placeholder="গ্রাহকের নাম বা ফোন নম্বর দিয়ে খুঁজুন..."
             className="pl-9 h-11 rounded-2xl bg-white dark:bg-zinc-900 border-zinc-200/80 dark:border-zinc-800 text-xs"
           />
         </div>
@@ -169,10 +109,9 @@ export function MerchantCRM({ business, orders }: MerchantCRMProps) {
         <div className="flex items-center gap-1.5 overflow-x-auto w-full sm:w-auto scrollbar-none">
           {[
             { id: 'all', label: 'সব গ্রাহক' },
-            { id: 'lead', label: 'চ্যাট লিড' },
-            { id: 'hot', label: 'হট লিড' },
-            { id: 'buyer', label: 'সফল ক্রেতা' },
             { id: 'repeat', label: 'রিপিট কাস্টমার' },
+            { id: 'buyer', label: 'সফল ক্রেতা' },
+            { id: 'hot', label: 'হট লিড' },
           ].map(tab => (
             <button
               key={tab.id}
@@ -193,9 +132,9 @@ export function MerchantCRM({ business, orders }: MerchantCRMProps) {
       {filteredCustomers.length === 0 ? (
         <div className="bg-white dark:bg-zinc-900 border border-zinc-200/80 dark:border-zinc-800 rounded-3xl p-12 text-center space-y-3">
           <Users className="w-12 h-12 text-zinc-300 dark:text-zinc-700 mx-auto" />
-          <h3 className="font-black text-sm text-zinc-800 dark:text-zinc-200">কোনো গ্রাহক রেকর্ড পাওয়া যায়নি</h3>
+          <h3 className="font-black text-sm text-zinc-800 dark:text-zinc-200">কোনো গ্রাহক রেকর্ড পাওয়া যায়নি</h3>
           <p className="text-xs text-zinc-500 max-w-sm mx-auto">
-            মেসেঞ্জারে গ্রাহক মেসেজ দেওয়ার সাথে সাথে তাদের প্রোফাইল স্বয়ংক্রিয়ভাবে এখানে তৈরি হবে।
+            এআই চ্যাটে গ্রাহক অর্ডার বা তথ্য দেওয়ার সাথে সাথে তাদের প্রোফাইল স্বয়ংক্রিয়ভাবে তৈরি হবে।
           </p>
         </div>
       ) : (
@@ -213,11 +152,8 @@ export function MerchantCRM({ business, orders }: MerchantCRMProps) {
                   <div>
                     <h4 className="font-black text-sm text-zinc-900 dark:text-white line-clamp-1">{cust.name}</h4>
                     <p className="text-[11px] text-zinc-500 flex items-center gap-1 font-mono">
-                      {cust.phone ? (
-                        <><Phone className="w-3 h-3 text-orange-500" />{cust.phone}</>
-                      ) : (
-                        <><MessageCircle className="w-3 h-3 text-blue-500" />মেসেঞ্জার চ্যাট</>
-                      )}
+                      <Phone className="w-3 h-3 text-orange-500" />
+                      {cust.phone}
                     </p>
                   </div>
                 </div>
@@ -227,20 +163,11 @@ export function MerchantCRM({ business, orders }: MerchantCRMProps) {
                     ? 'bg-purple-100 text-purple-800 dark:bg-purple-950/60 dark:text-purple-300'
                     : cust.leadStage === 'buyer'
                     ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300'
-                    : cust.leadStage === 'lead'
-                    ? 'bg-blue-100 text-blue-800 dark:bg-blue-950/60 dark:text-blue-300'
                     : 'bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300'
                 }`}>
-                  {cust.leadStage === 'lead' ? 'চ্যাট লিড' : cust.leadStage}
+                  {cust.leadStage}
                 </span>
               </div>
-
-              {cust.adSource && (
-                <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-purple-50 dark:bg-purple-950/30 border border-purple-100 dark:border-purple-900/40">
-                  <Megaphone className="w-3 h-3 text-purple-600 shrink-0" />
-                  <span className="text-[10px] font-bold text-purple-700 dark:text-purple-300 truncate">অ্যাড: {cust.adSource}</span>
-                </div>
-              )}
 
               <div className="p-3 bg-zinc-50 dark:bg-zinc-800/40 rounded-2xl text-xs space-y-1.5 border border-zinc-100 dark:border-zinc-800">
                 <div className="flex justify-between items-center">
@@ -255,11 +182,6 @@ export function MerchantCRM({ business, orders }: MerchantCRMProps) {
                   <MapPin className="w-3 h-3 text-zinc-400 shrink-0 mt-0.5" />
                   <span className="line-clamp-1">{cust.address}</span>
                 </div>
-                {cust.chatSummary && (
-                  <p className="text-[10px] text-zinc-400 line-clamp-2 pt-1 border-t border-zinc-200 dark:border-zinc-700/60">
-                    {cust.chatSummary}
-                  </p>
-                )}
               </div>
             </div>
           ))}

@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { BrowserRouter as Router, Routes, Route, Link, useNavigate, Navigate, useSearchParams, useLocation } from 'react-router-dom';
+import { BrowserRouter as Router, Routes, Route, Link, useNavigate, Navigate } from 'react-router-dom';
 import { User as FirebaseUser, onAuthStateChanged, signOut, GoogleAuthProvider, signInWithPopup } from 'firebase/auth';
 import { doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore';
 import { Zap, ShieldCheck, LayoutDashboard, LogOut, Megaphone } from 'lucide-react';
@@ -96,33 +96,13 @@ function Navbar({ user, profile }: { user: FirebaseUser | null; profile: UserPro
   );
 }
 
-function HomeOrPaymentReturn({ user, profile }: { user: FirebaseUser | null; profile: UserProfile | null }) {
-  const [params] = useSearchParams();
-  if (params.get('payment')) {
-    return <Navigate to={`/dashboard?${params.toString()}`} replace />;
-  }
-  return <LandingPage user={user} profile={profile} />;
-}
-
-function RequireMerchant({ user, profile }: { user: FirebaseUser | null; profile: UserProfile | null }) {
-  const location = useLocation();
-  if (!user) {
-    const next = `${location.pathname}${location.search}`;
-    return <Navigate to={`/login?next=${encodeURIComponent(next)}`} replace />;
-  }
-  return <MerchantPanel user={user} profile={profile} />;
-}
-
 function LoginPage() {
   const navigate = useNavigate();
-  const [params] = useSearchParams();
-  const nextRaw = params.get('next') || '/dashboard';
-  const next = nextRaw.startsWith('/') ? nextRaw : '/dashboard';
   const handleLogin = async () => {
     try {
       const provider = new GoogleAuthProvider();
       await signInWithPopup(auth, provider);
-      navigate(next);
+      navigate('/dashboard');
       toast.success('স্বাগতম! সফলভাবে লগইন হয়েছে।');
     } catch (err: any) {
       console.error('Login error:', err);
@@ -227,7 +207,7 @@ export default function App() {
         <GlobalBanner />
         <Routes>
           {/* Public Landing Page */}
-          <Route path="/" element={<HomeOrPaymentReturn user={user} profile={profile} />} />
+          <Route path="/" element={<LandingPage user={user} profile={profile} />} />
 
           {/* Public Login Page */}
           <Route
@@ -252,7 +232,13 @@ export default function App() {
           {/* Merchant Control Center */}
           <Route
             path="/dashboard/*"
-            element={<RequireMerchant user={user} profile={profile} />}
+            element={
+              user ? (
+                <MerchantPanel user={user} profile={profile} />
+              ) : (
+                <Navigate to="/login" replace />
+              )
+            }
           />
 
           {/* Platform Super Admin Portal */}

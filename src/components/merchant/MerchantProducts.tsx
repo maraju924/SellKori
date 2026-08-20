@@ -22,7 +22,7 @@ import {
   ShieldAlert,
   Flame,
   ArrowRight,
-  Link2,
+  Sparkle
 } from 'lucide-react';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
@@ -42,7 +42,6 @@ import { doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore';
 import { toast } from 'sonner';
 import { compressImageFile } from '../../lib/imageUtils';
 import { persistImageDataUrl, persistImageListBestEffort } from '../../lib/mediaUpload';
-import { parseImageLinks } from '../../lib/imageSend';
 import { finiteNumber } from '../../lib/utils';
 import {
   asProductList,
@@ -88,9 +87,8 @@ export function MerchantProducts({ business, onProductsChange }: MerchantProduct
   
   // Multiple Product Images
   const [images, setImages] = useState<string[]>([]);
+  // Multiple Customer Review / Proof Images
   const [reviewImages, setReviewImages] = useState<string[]>([]);
-  const [productLinkInput, setProductLinkInput] = useState('');
-  const [reviewLinkInput, setReviewLinkInput] = useState('');
   
   const [isUploadingImages, setIsUploadingImages] = useState(false);
   const [isUploadingReviews, setIsUploadingReviews] = useState(false);
@@ -136,8 +134,6 @@ export function MerchantProducts({ business, onProductsChange }: MerchantProduct
     setCategory('জেনারেল');
     setImages([]);
     setReviewImages([]);
-    setProductLinkInput('');
-    setReviewLinkInput('');
     setIsModalOpen(true);
   };
 
@@ -171,8 +167,6 @@ export function MerchantProducts({ business, onProductsChange }: MerchantProduct
     setCategory(prod.category || '');
     setImages(prod.images || []);
     setReviewImages(prod.reviewImages || []);
-    setProductLinkInput('');
-    setReviewLinkInput('');
     setIsModalOpen(true);
   };
 
@@ -310,29 +304,6 @@ export function MerchantProducts({ business, onProductsChange }: MerchantProduct
 
   const handleRemoveReviewImage = (index: number) => {
     setReviewImages(reviewImages.filter((_, i) => i !== index));
-  };
-
-  const addImageLinks = (
-    raw: string,
-    kind: 'product' | 'review',
-  ) => {
-    const { urls, invalid } = parseImageLinks(raw);
-    if (urls.length === 0) {
-      toast.error(invalid.length ? 'সঠিক ছবির লিংক দিন (http/https)' : 'একটি ছবির লিংক পেস্ট করুন');
-      return;
-    }
-    if (kind === 'product') {
-      setImages((prev) => [...prev, ...urls.filter((url) => !prev.includes(url))]);
-      setProductLinkInput('');
-      toast.success(`${urls.length}টি প্রোডাক্ট ছবির লিংক যুক্ত হয়েছে`);
-    } else {
-      setReviewImages((prev) => [...prev, ...urls.filter((url) => !prev.includes(url))]);
-      setReviewLinkInput('');
-      toast.success(`${urls.length}টি রিভিউ ছবির লিংক যুক্ত হয়েছে`);
-    }
-    if (invalid.length) {
-      toast.message(`${invalid.length}টি লিংক বাদ দেওয়া হয়েছে`);
-    }
   };
 
   const writeCatalog = async (products: Product[]) => {
@@ -1016,15 +987,16 @@ export function MerchantProducts({ business, onProductsChange }: MerchantProduct
               )}
             </div>
 
+            {/* 3. Multiple Product Images Upload Section (No simple text URL input) */}
             <div className="space-y-3 p-4 rounded-3xl bg-zinc-50 dark:bg-zinc-800/40 border border-zinc-200 dark:border-zinc-700/60">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                 <div>
                   <h4 className="font-black text-xs text-zinc-900 dark:text-white flex items-center gap-1.5">
                     <ImageIcon className="w-4 h-4 text-orange-500" />
-                    ৩. প্রোডাক্ট ছবি (লিংক বা আপলোড)
+                    ৩. মাল্টিপল প্রোডাক্ট ছবি আপলোড (Product Images)
                   </h4>
                   <p className="text-[11px] text-zinc-500">
-                    ছবির ডাইরেক্ট লিংক পেস্ট করুন, অথবা ফাইল আপলোড করুন। কাস্টমার ছবি চাইলে মেসেঞ্জারে এইগুলোই যাবে।
+                    কম্পিউটার বা মোবাইল থেকে সরাসরি একাধিক পণ্যের ছবি আপলোড করুন
                   </p>
                 </div>
 
@@ -1033,30 +1005,7 @@ export function MerchantProducts({ business, onProductsChange }: MerchantProduct
                 </Badge>
               </div>
 
-              <div className="flex flex-col sm:flex-row gap-2">
-                <Input
-                  value={productLinkInput}
-                  onChange={(e) => setProductLinkInput(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      e.preventDefault();
-                      addImageLinks(productLinkInput, 'product');
-                    }
-                  }}
-                  placeholder="https://... ছবির লিংক পেস্ট করুন"
-                  className="h-11 rounded-xl text-xs"
-                />
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={() => addImageLinks(productLinkInput, 'product')}
-                  className="h-11 rounded-xl text-xs font-bold shrink-0"
-                >
-                  <Link2 className="w-3.5 h-3.5 mr-1.5" />
-                  লিংক যুক্ত করুন
-                </Button>
-              </div>
-
+              {/* Upload Dropzone / Button */}
               <div>
                 <input
                   ref={productFileInputRef}
@@ -1071,14 +1020,19 @@ export function MerchantProducts({ business, onProductsChange }: MerchantProduct
                   type="button"
                   disabled={isUploadingImages}
                   onClick={() => productFileInputRef.current?.click()}
-                  className="w-full py-4 px-4 border-2 border-dashed border-zinc-300 dark:border-zinc-700 hover:border-orange-500 dark:hover:border-orange-500 rounded-2xl bg-white dark:bg-zinc-900 flex items-center justify-center gap-2 cursor-pointer transition-all active:scale-[0.99]"
+                  className="w-full py-5 px-4 border-2 border-dashed border-zinc-300 dark:border-zinc-700 hover:border-orange-500 dark:hover:border-orange-500 rounded-2xl bg-white dark:bg-zinc-900 flex flex-col items-center justify-center gap-2 cursor-pointer transition-all active:scale-[0.99]"
                 >
-                  <div className="w-8 h-8 rounded-xl bg-orange-50 dark:bg-orange-950/60 text-orange-600 flex items-center justify-center">
-                    <Upload className="w-4 h-4" />
+                  <div className="w-10 h-10 rounded-2xl bg-orange-50 dark:bg-orange-950/60 text-orange-600 flex items-center justify-center">
+                    <Upload className="w-5 h-5" />
                   </div>
-                  <span className="font-bold text-xs text-zinc-800 dark:text-zinc-200">
-                    {isUploadingImages ? 'ছবি প্রসেস ও আপলোড হচ্ছে...' : 'ফাইল থেকেও আপলোড করতে পারেন'}
-                  </span>
+                  <div className="text-center">
+                    <span className="font-bold text-xs text-zinc-800 dark:text-zinc-200">
+                      {isUploadingImages ? 'ছবি প্রসেস ও আপলোড হচ্ছে...' : 'ক্লিক করে প্রোডাক্টের ছবিগুলো আপলোড করুন'}
+                    </span>
+                    <p className="text-[10px] text-zinc-400 mt-0.5">
+                      JPG, PNG, WEBP ফরম্যাট সাপোর্টেড (একসাথে একাধিক ছবি সিলেক্ট করতে পারেন)
+                    </p>
+                  </div>
                 </button>
               </div>
 
@@ -1095,10 +1049,6 @@ export function MerchantProducts({ business, onProductsChange }: MerchantProduct
                         alt={`Product preview ${idx + 1}`}
                         className="w-full h-full object-cover"
                         referrerPolicy="no-referrer"
-                        onError={(event) => {
-                          event.currentTarget.style.opacity = '0.35';
-                          event.currentTarget.alt = 'লিংক লোড হয়নি';
-                        }}
                       />
 
                       {/* Primary Cover Badge */}
@@ -1135,15 +1085,16 @@ export function MerchantProducts({ business, onProductsChange }: MerchantProduct
               )}
             </div>
 
+            {/* 4. Multiple Customer Review & Proof Photos Section (Under Product Images) */}
             <div className="space-y-3 p-4 rounded-3xl bg-amber-50/40 dark:bg-amber-950/20 border border-amber-200/80 dark:border-amber-900/60">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                 <div>
                   <h4 className="font-black text-xs text-zinc-900 dark:text-white flex items-center gap-1.5">
                     <MessageSquareHeart className="w-4 h-4 text-amber-500" />
-                    ৪. রিভিউ ও প্রুফ ছবি (লিংক বা আপলোড)
+                    ৪. কাস্টমার রিভিউ ও প্রুফ ছবি (Customer Reviews & Feedback Photos)
                   </h4>
                   <p className="text-[11px] text-zinc-500">
-                    রিভিউ/প্রুফ ছবির লিংক দিন। কাস্টমার রিভিউ চাইলেই শুধু এগুলো পাঠানো হবে — সাধারণ ছবি চাইলে যাবে না।
+                    গ্রাহকদের চ্যাট রিভিউ স্ক্রিনশট, আনবক্সিং ফটো বা ডেলিভারি প্রুফ আপলোড করুন। কাস্টমার রিভিউ চাইলে এআই এগুলো পাঠাবে।
                   </p>
                 </div>
 
@@ -1152,30 +1103,7 @@ export function MerchantProducts({ business, onProductsChange }: MerchantProduct
                 </Badge>
               </div>
 
-              <div className="flex flex-col sm:flex-row gap-2">
-                <Input
-                  value={reviewLinkInput}
-                  onChange={(e) => setReviewLinkInput(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      e.preventDefault();
-                      addImageLinks(reviewLinkInput, 'review');
-                    }
-                  }}
-                  placeholder="https://... রিভিউ ছবির লিংক পেস্ট করুন"
-                  className="h-11 rounded-xl text-xs"
-                />
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={() => addImageLinks(reviewLinkInput, 'review')}
-                  className="h-11 rounded-xl text-xs font-bold shrink-0"
-                >
-                  <Link2 className="w-3.5 h-3.5 mr-1.5" />
-                  লিংক যুক্ত করুন
-                </Button>
-              </div>
-
+              {/* Review Upload Button */}
               <div>
                 <input
                   ref={reviewFileInputRef}
@@ -1196,7 +1124,7 @@ export function MerchantProducts({ business, onProductsChange }: MerchantProduct
                     <Star className="w-4 h-4 fill-amber-500 text-amber-500" />
                   </div>
                   <span className="font-bold text-xs text-zinc-800 dark:text-zinc-200">
-                    {isUploadingReviews ? 'রিভিউ ছবি আপলোড হচ্ছে...' : 'ফাইল থেকেও রিভিউ ছবি যোগ করতে পারেন'}
+                    {isUploadingReviews ? 'রিভিউ ছবি আপলোড হচ্ছে...' : 'কাস্টমার রিভিউ স্ক্রিনশট ও প্রুফ ছবি আপলোড করুন'}
                   </span>
                 </button>
               </div>
@@ -1214,10 +1142,6 @@ export function MerchantProducts({ business, onProductsChange }: MerchantProduct
                         alt={`Review proof ${idx + 1}`}
                         className="w-full h-full object-cover"
                         referrerPolicy="no-referrer"
-                        onError={(event) => {
-                          event.currentTarget.style.opacity = '0.35';
-                          event.currentTarget.alt = 'লিংক লোড হয়নি';
-                        }}
                       />
 
                       <div className="absolute top-2 left-2 bg-amber-500 text-white text-[9px] font-bold px-1.5 py-0.5 rounded shadow-xs flex items-center gap-1">

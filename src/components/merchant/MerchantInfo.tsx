@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import { 
   Store, 
   Phone, 
@@ -27,15 +27,6 @@ export function MerchantInfo({ business }: MerchantInfoProps) {
   const [address, setAddress] = useState(business.address || '');
   const [logoUrl, setLogoUrl] = useState(business.logoUrl || '');
   const [isSaving, setIsSaving] = useState(false);
-
-  // Resync form when the store profile changes from another tab/device
-  useEffect(() => {
-    setName(business.name || '');
-    setDescription(business.description || '');
-    setPhone(business.phone || '');
-    setAddress(business.address || '');
-    setLogoUrl(business.logoUrl || '');
-  }, [business.id]);
 
   const handleSave = async () => {
     if (!name.trim()) {

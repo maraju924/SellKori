@@ -11,8 +11,6 @@ import { AdminOverview } from './AdminOverview';
 import { AdminMerchants } from './AdminMerchants';
 import { AdminSystemSettings } from './AdminSystemSettings';
 import { AdminLogsTelemetry } from './AdminLogsTelemetry';
-import { AdminAiEngine } from './AdminAiEngine';
-import { AdminBillingGateway } from './AdminBillingGateway';
 
 interface AdminPanelProps {
   profile: UserProfile | null;
@@ -91,14 +89,6 @@ export function AdminPanel({ profile }: AdminPanelProps) {
 
           {activeTab === 'merchants' && (
             <AdminMerchants merchants={merchants} />
-          )}
-
-          {activeTab === 'ai-engine' && (
-            <AdminAiEngine />
-          )}
-
-          {activeTab === 'billing' && (
-            <AdminBillingGateway />
           )}
 
           {activeTab === 'settings' && (
