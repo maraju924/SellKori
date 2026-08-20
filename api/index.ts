@@ -962,7 +962,7 @@ async function handlePageFeedComments(entry: any, pathBizId?: string) {
 async function getEffectiveGeminiConfig() {
   let apiKey = process.env.GEMINI_API_KEY || '';
   let model = 'gemini-3.7-flash';
-  let temperature = 0.7;
+  let temperature = 0.4;
   let maxTokens = 800;
 
   try {
@@ -1931,6 +1931,68 @@ async function logActivity(bizId: string | null, type: string, detail: string, s
   }
 }
 
+function chatHistoryTime(row: any): number {
+  const ts = row?.timestamp;
+  if (!ts) return 0;
+  if (typeof ts.toMillis === 'function') return ts.toMillis();
+  if (typeof ts.seconds === 'number') return ts.seconds * 1000;
+  const parsed = Date.parse(String(ts));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+async function loadChatHistoryFallback(bizId: string, senderId: string, limitCount: number) {
+  const normalize = (docs: any[]) => docs
+    .map((d: any) => (typeof d.data === 'function' ? d.data() : d))
+    .sort((a: any, b: any) => chatHistoryTime(a) - chatHistoryTime(b))
+    .slice(-limitCount);
+
+  try {
+    if (adminDb) {
+      try {
+        const ordered = await adminDb.collection('chat_history')
+          .where('businessId', '==', bizId)
+          .where('senderId', '==', senderId)
+          .orderBy('timestamp', 'desc')
+          .limit(limitCount)
+          .get();
+        if (!ordered.empty) return normalize(ordered.docs);
+      } catch (orderedErr) {
+        console.warn('[Webhook] Ordered chat_history query unavailable, using unordered fallback:', orderedErr);
+      }
+      const unordered = await adminDb.collection('chat_history')
+        .where('businessId', '==', bizId)
+        .where('senderId', '==', senderId)
+        .limit(limitCount)
+        .get();
+      return unordered.empty ? [] : normalize(unordered.docs);
+    }
+    if (db) {
+      try {
+        const ordered = await getDocs(query(
+          collection(db, 'chat_history'),
+          where('businessId', '==', bizId),
+          where('senderId', '==', senderId),
+          orderBy('timestamp', 'desc'),
+          limit(limitCount),
+        ));
+        if (!ordered.empty) return normalize(ordered.docs);
+      } catch (orderedErr) {
+        console.warn('[Webhook] Ordered chat_history query unavailable, using unordered fallback:', orderedErr);
+      }
+      const unordered = await getDocs(query(
+        collection(db, 'chat_history'),
+        where('businessId', '==', bizId),
+        where('senderId', '==', senderId),
+        limit(limitCount),
+      ));
+      return unordered.empty ? [] : normalize(unordered.docs);
+    }
+  } catch (err) {
+    console.warn('[Webhook] chat_history fallback failed:', err);
+  }
+  return [];
+}
+
 async function saveChatMessage(bizId: string, senderId: string, role: 'user' | 'bot' | 'merchant', text: string) {
   const logBase = {
     businessId: bizId,
@@ -2707,33 +2769,11 @@ async function handleMessengerWebhookPost(req: any, res: any) {
                 chatHistoryText = recentMsgs.map((m: any) => `${m.role === 'user' ? 'Customer' : 'Bot'}: ${m.text}`).join('\n');
               } else {
                 // 2. Fallback to chat_history collection query
-                if (adminDb) {
-                  const historySnap = await adminDb.collection('chat_history')
-                    .where('businessId', '==', bizId)
-                    .where('senderId', '==', senderId)
-                    .limit(HISTORY_WINDOW)
-                    .get();
-                  if (!historySnap.empty) {
-                    const msgs = historySnap.docs.map((d: any) => d.data());
-                    msgs.sort((a: any, b: any) => (a.timestamp?.seconds || 0) - (b.timestamp?.seconds || 0));
-                    chatHistoryText = msgs.slice(-HISTORY_WINDOW).map((m: any) => `${m.role === 'user' ? 'Customer' : 'Bot'}: ${m.text}`).join('\n');
-                  }
-                } else if (db) {
-                  const historySnap = await getDocs(query(
-                    collection(db, 'chat_history'),
-                    where('businessId', '==', bizId),
-                    where('senderId', '==', senderId),
-                    limit(HISTORY_WINDOW),
-                  ));
-                  if (!historySnap.empty) {
-                    const msgs = historySnap.docs.map((d: any) => d.data());
-                    msgs.sort((a: any, b: any) => {
-                      const aTime = a.timestamp?.seconds || a.timestamp?.toMillis?.() || 0;
-                      const bTime = b.timestamp?.seconds || b.timestamp?.toMillis?.() || 0;
-                      return aTime - bTime;
-                    });
-                    chatHistoryText = msgs.slice(-HISTORY_WINDOW).map((m: any) => `${m.role === 'user' ? 'Customer' : 'Bot'}: ${m.text}`).join('\n');
-                  }
+                const historyRows = await loadChatHistoryFallback(bizId!, senderId, HISTORY_WINDOW);
+                if (historyRows.length > 0) {
+                  chatHistoryText = historyRows
+                    .map((m: any) => `${m.role === 'user' ? 'Customer' : 'Bot'}: ${m.text}`)
+                    .join('\n');
                 }
               }
             } catch (histErr) {
@@ -3137,10 +3177,13 @@ ${chatHistoryText || 'নতুন আলাপ'}
                       const n = String(p.name || '').toLowerCase();
                       const w = productName.toLowerCase();
                       return n && w && (n === w || n.includes(w) || w.includes(n));
-                    }) || rawProducts.find((p: any) => chatHistoryText.toLowerCase().includes(String(p.name || '').toLowerCase())) || rawProducts[0];
+                    }) || (rawProducts.length === 1 ? rawProducts[0] : undefined);
+                    if (!matchedProduct && !productName) {
+                      throw new Error('Product not identified for confirmed order');
+                    }
 
                     const qty = Math.max(1, parseInt(String(nextLead.quantity || '1'), 10) || 1);
-                    const unitPrice = Number(String(nextLead.negotiated_price || '').replace(/[^0-9.]/g, '')) || matchedProduct?.price || 500;
+                    const unitPrice = Number(String(nextLead.negotiated_price || '').replace(/[^0-9.]/g, '')) || matchedProduct?.price || 0;
                     const orderId = `ORD-${Date.now().toString(36).toUpperCase()}-${String(senderId).slice(-4)}`;
                     const totalAmount = unitPrice * qty + deliveryCharge;
 

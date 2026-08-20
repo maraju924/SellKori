@@ -70,11 +70,11 @@ export function shouldPlaceOrder(
 export function findMatchingProduct(business: BusinessConfig, productName?: string): Product | undefined {
   const wanted = (productName || '').toLowerCase().trim();
   const products = business.products || [];
-  if (!wanted) return products[0];
+  if (!wanted) return products.length === 1 ? products[0] : undefined;
   return (
     products.find(p => p.name?.toLowerCase() === wanted) ||
     products.find(p => p.name?.toLowerCase().includes(wanted) || wanted.includes(p.name?.toLowerCase() || '\0')) ||
-    products[0]
+    (products.length === 1 ? products[0] : undefined)
   );
 }
 

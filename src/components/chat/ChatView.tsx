@@ -232,7 +232,7 @@ export function ChatView() {
       const liveCollected = mergeOrderData(collected, {
         phone: extractBdPhone(cleanText) || collected.phone,
       });
-      const history = takeRecentMessages(conversation)
+      const history = takeRecentMessages<Message>(conversation)
         .map((message) => `${message.role === 'user' ? 'Customer' : 'Assistant'}: ${message.content}`)
         .join('\n');
       const recentOrderNote = orderPlacedId

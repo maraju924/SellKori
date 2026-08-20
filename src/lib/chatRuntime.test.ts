@@ -19,6 +19,8 @@ assert.equal(isExplicitOrderConfirmation('অর্ডার কনফার্�
 assert.equal(isExplicitOrderConfirmation('এখন অর্ডার চাই না'), false);
 assert.equal(isExplicitOrderConfirmation('দাম কত?'), false);
 assert.equal(isExplicitOrderConfirmation('দাম কত জি'), false);
+assert.equal(isExplicitOrderConfirmation('নাম রাকিব, ঠিকানা মিরপুর'), false);
+assert.equal(isExplicitOrderConfirmation('না'), false);
 
 assert.equal(shouldCreateConfirmedOrder({
   modelRequested: false,
@@ -35,5 +37,10 @@ assert.equal(shouldCreateConfirmedOrder({
   customerMessage: 'অর্ডার করবেন না',
   hasCompleteOrder: true,
 }), false);
+assert.equal(shouldCreateConfirmedOrder({
+  modelRequested: true,
+  customerMessage: 'নাম রাকিব, ঠিকানা মিরপুর ১০',
+  hasCompleteOrder: true,
+}), true);
 
 console.log('chatRuntime tests passed');

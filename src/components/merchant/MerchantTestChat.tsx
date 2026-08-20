@@ -97,7 +97,7 @@ export function MerchantTestChat({ business }: MerchantTestChatProps) {
       const liveCollected = mergeOrderData(collected, {
         phone: extractBdPhone(textToSend) || collected.phone,
       });
-      const historyStr = takeRecentMessages([...messages, userMsg])
+      const historyStr = takeRecentMessages<Message>([...messages, userMsg])
         .map(m => `${m.role === 'user' ? 'Customer' : 'Bot'}: ${m.content}`)
         .join('\n');
 

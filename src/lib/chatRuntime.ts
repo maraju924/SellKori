@@ -1,7 +1,9 @@
 export const CHAT_MEMORY_LIMIT = 100;
 
 const NEGATED_CONFIRMATION =
-  /(?:না|নাহ|করবেন না|করেন না|দিবেন না|দেন না|চাই না|বাতিল|cancel|don't|do not|not now)/i;
+  /(?:করবেন না|করেন না|দিবেন না|দেন না|চাই না|করব না|করি না|না ভাই|না বস|বাতিল|cancel|don't|do not|not now)/i;
+
+const STANDALONE_REJECTION = /^(?:না|নাহ|no|nope)[.!।\s]*$/i;
 
 const EXPLICIT_ORDER_CONFIRMATION =
   /(?:অর্ডার\s*(?:টা|টি)?\s*(?:কনফার্ম|নিশ্চিত|করুন|করেন|দিন|দেন)|কনফার্ম\s*(?:করুন|করেন|দিন|দেন)?|নিশ্চিত\s*(?:করুন|করেন|দিন|দেন)?|confirm|place\s+(?:the\s+)?order)[.!।\s]*$/i;
@@ -20,8 +22,13 @@ export function takeRecentMessages<T>(messages: readonly T[], limit = CHAT_MEMOR
  */
 export function isExplicitOrderConfirmation(message: string): boolean {
   const normalized = String(message || '').replace(/\s+/g, ' ').trim();
-  if (!normalized || NEGATED_CONFIRMATION.test(normalized)) return false;
+  if (!normalized || isRejectedConfirmation(normalized)) return false;
   return EXPLICIT_ORDER_CONFIRMATION.test(normalized) || SHORT_CONFIRMATION.test(normalized);
+}
+
+function isRejectedConfirmation(message: string): boolean {
+  const normalized = String(message || '').replace(/\s+/g, ' ').trim();
+  return STANDALONE_REJECTION.test(normalized) || NEGATED_CONFIRMATION.test(normalized);
 }
 
 export function shouldCreateConfirmedOrder(input: {
@@ -30,6 +37,6 @@ export function shouldCreateConfirmedOrder(input: {
   hasCompleteOrder: boolean;
 }): boolean {
   if (!input.hasCompleteOrder) return false;
-  if (NEGATED_CONFIRMATION.test(String(input.customerMessage || ''))) return false;
+  if (isRejectedConfirmation(input.customerMessage)) return false;
   return input.modelRequested || isExplicitOrderConfirmation(input.customerMessage);
 }
