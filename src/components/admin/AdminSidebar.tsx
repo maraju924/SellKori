@@ -1,5 +1,6 @@
 import React from 'react';
 import { 
+  Layout,
   BarChart3, 
   Store, 
   Settings, 
@@ -21,6 +22,7 @@ export function AdminSidebar({ activeTab, setActiveTab }: AdminSidebarProps) {
     { id: 'merchants', label: 'মার্চেন্ট ডিরেক্টরি', icon: Store },
     { id: 'ai-engine', label: 'AI ইঞ্জিন ও API পুল', icon: Database, badge: 'Failover' },
     { id: 'billing', label: 'পেমেন্ট গেটওয়ে ও রেভিনিউ', icon: ShieldCheck, badge: 'ZiniPay' },
+    { id: 'landing', label: 'পাবলিক ল্যান্ডিং', icon: Layout },
     { id: 'settings', label: 'সিস্টেম ও এপিআই সেটিংস', icon: Settings },
     { id: 'logs', label: 'লাইভ লগস ও টেলিমিতি', icon: Terminal, badge: 'Stream' },
   ];

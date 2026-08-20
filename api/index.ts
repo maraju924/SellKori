@@ -2374,21 +2374,29 @@ app.get('/api/ping', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString(), adminDbReady: !!adminDb });
 });
 
+import { buildPublicSiteConfig } from '../src/lib/landingContent.js';
+
 app.get('/api/public/config', async (_req, res) => {
   try {
-    let data: any = {};
+    let publicData: any = {};
+    let billingData: any = {};
     if (adminDb) {
-      const snap = await adminDb.collection('system_config').doc('public').get();
-      if (snap.exists) data = snap.data() || {};
+      const [publicSnap, billingSnap] = await Promise.all([
+        adminDb.collection('system_config').doc('public').get(),
+        adminDb.collection('system_config').doc('billing').get(),
+      ]);
+      if (publicSnap.exists) publicData = publicSnap.data() || {};
+      if (billingSnap.exists) billingData = billingSnap.data() || {};
     } else if (db) {
-      const snap = await getDoc(doc(db, 'system_config', 'public'));
-      if (snap.exists()) data = snap.data() || {};
+      const [publicSnap, billingSnap] = await Promise.all([
+        getDoc(doc(db, 'system_config', 'public')),
+        getDoc(doc(db, 'system_config', 'billing')),
+      ]);
+      if (publicSnap.exists()) publicData = publicSnap.data() || {};
+      if (billingSnap.exists()) billingData = billingSnap.data() || {};
     }
-    res.setHeader('Cache-Control', 'public, max-age=60, stale-while-revalidate=300');
-    return res.json({
-      globalAnnouncement: String(data.globalAnnouncement || data.announcement || '').slice(0, 500),
-      maintenanceMode: Boolean(data.maintenanceMode),
-    });
+    res.setHeader('Cache-Control', 'public, max-age=30, stale-while-revalidate=120');
+    return res.json(buildPublicSiteConfig(publicData, billingData));
   } catch (error: any) {
     console.error('[Public Config]', error?.message || error);
     return res.status(500).json({ error: 'Public configuration unavailable' });
