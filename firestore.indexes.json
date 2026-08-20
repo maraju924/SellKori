@@ -55,6 +55,21 @@
         { "fieldPath": "businessId", "order": "ASCENDING" },
         { "fieldPath": "lastIncomingAtMs", "order": "DESCENDING" }
       ]
+    },
+    {
+      "collectionGroup": "payments",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "businessId", "order": "ASCENDING" },
+        { "fieldPath": "createdAtMs", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "payments",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "invoiceId", "order": "ASCENDING" }
+      ]
     }
   ],
   "fieldOverrides": []
