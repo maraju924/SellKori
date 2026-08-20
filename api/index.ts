@@ -33,6 +33,7 @@ import {
   shouldPrivateReplyToComment,
   type BroadcastAudience
 } from '../src/lib/outreach.js';
+import { parseFirebaseServiceAccount } from '../src/lib/aiPool.js';
 
 export const maxDuration = 60;
 
@@ -46,6 +47,24 @@ interface BusinessConfig {
   messengerVerifyToken?: string;
   verifyToken?: string;
   [key: string]: any;
+}
+
+function initializeAdminApp(projectId: string) {
+  if (admin.apps.length > 0) return admin.app();
+  const serviceAccount = parseFirebaseServiceAccount(
+    process.env.FIREBASE_SERVICE_ACCOUNT
+    || process.env.FIREBASE_ADMIN_CREDENTIALS
+    || process.env.GOOGLE_SERVICE_ACCOUNT
+  );
+  if (serviceAccount) {
+    console.log('[Firebase] Initializing Admin SDK with service account');
+    return admin.initializeApp({
+      credential: admin.credential.cert(serviceAccount as admin.ServiceAccount),
+      projectId: serviceAccount.project_id || projectId,
+    });
+  }
+  console.log(`[Firebase] Initializing Admin SDK for Project: ${projectId}`);
+  return admin.initializeApp({ projectId });
 }
 
 // Load firebase config for server-side use
@@ -64,13 +83,7 @@ try {
     
     // Initialize Admin SDK
     try {
-      if (admin.apps.length === 0) {
-        console.log(`[Firebase] Initializing Admin SDK for Project: ${firebaseConfig.projectId}`);
-        admin.initializeApp({
-          projectId: firebaseConfig.projectId
-        });
-      }
-      const adminApp = admin.app();
+      const adminApp = initializeAdminApp(firebaseConfig.projectId);
       const dbId = firebaseConfig.firestoreDatabaseId;
       
       // Try to get Admin Firestore for the specific database ID
@@ -124,14 +137,7 @@ try {
 
     // Initialize Admin SDK (fallback)
     try {
-      if (!admin.apps.length) {
-        console.log(`[Firebase] Initializing Admin (fallback) for: ${firebaseConfig.projectId}`);
-        admin.initializeApp({
-          projectId: firebaseConfig.projectId
-        });
-      }
-      
-      const adminApp = admin.app();
+      const adminApp = initializeAdminApp(firebaseConfig.projectId);
       const dbId = firebaseConfig.firestoreDatabaseId;
       
       if (dbId && dbId !== '(default)') {
@@ -174,6 +180,14 @@ import {
   resolveImageSendFlags,
   uniqueHttpUrls,
 } from '../src/lib/imageSend.js';
+import {
+  aiPoolHasProvider,
+  firstEnabledGeminiKey,
+  mergeGeminiKeyCandidates,
+  parseAiPoolFromSettings,
+  type AiPool,
+  type PooledGeminiKey,
+} from '../src/lib/aiPool.js';
 
 // Initialize AI
 const genAI = process.env.GEMINI_API_KEY ? new GoogleGenerativeAI(process.env.GEMINI_API_KEY) : null;
@@ -980,17 +994,16 @@ async function handlePageFeedComments(entry: any, pathBizId?: string) {
 
 // Helper to get effective Gemini Config (Admin DB or Environment)
 async function getEffectiveGeminiConfig() {
-  let apiKey = process.env.GEMINI_API_KEY || '';
   let model = 'gemini-3.7-flash';
   let temperature = 0.4;
   let maxTokens = 800;
+  const pool = await getAiPool();
 
   try {
     if (adminDb) {
       const sysSnap = await adminDb.collection('system').doc('settings').get();
       if (sysSnap.exists) {
         const d = sysSnap.data();
-        if (d.geminiApiKey) apiKey = d.geminiApiKey;
         if (d.defaultAiModel) model = d.defaultAiModel;
         if (d.aiTemperature) temperature = Number(d.aiTemperature);
         if (d.aiMaxTokens) maxTokens = Number(d.aiMaxTokens);
@@ -1006,7 +1019,6 @@ async function getEffectiveGeminiConfig() {
       const sysSnap = await getDoc(doc(db, 'system', 'settings'));
       if (sysSnap.exists()) {
         const d = sysSnap.data();
-        if (d.geminiApiKey) apiKey = d.geminiApiKey;
         if (d.defaultAiModel) model = d.defaultAiModel;
         if (d.aiTemperature) temperature = Number(d.aiTemperature);
         if (d.aiMaxTokens) maxTokens = Number(d.aiMaxTokens);
@@ -1027,14 +1039,14 @@ async function getEffectiveGeminiConfig() {
     model = 'gemini-3.7-flash';
   }
 
-  if (!apiKey) {
-    // Fall back to the multi-key pool so the platform keeps running as long
-    // as ANY provider key exists.
-    const pool = await getAiPool();
-    apiKey = pool.geminiKeys.find(k => k.enabled)?.key || pool.openRouterKey || pool.openAiKey || '';
-  }
-
-  return { apiKey: (apiKey || '').trim(), model, temperature, maxTokens };
+  return {
+    apiKey: firstEnabledGeminiKey(pool),
+    model,
+    temperature,
+    maxTokens,
+    hasProvider: aiPoolHasProvider(pool),
+    hasFallbackProvider: Boolean(pool.openRouterKey || pool.openAiKey),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -1044,64 +1056,54 @@ async function getEffectiveGeminiConfig() {
 // on cooldown and the next key takes over automatically — so free-tier keys
 // can be chained and a single dead key never stops the bots.
 // ---------------------------------------------------------------------------
-interface PooledGeminiKey { key: string; label: string; enabled: boolean }
-interface AiPool {
-  geminiKeys: PooledGeminiKey[];
-  openRouterKey: string;
-  openRouterModel: string;
-  openAiKey: string;
-  openAiModel: string;
+let aiPoolCache: { pool: AiPool; at: number; firestoreOk: boolean } | null = null;
+const AI_POOL_CACHE_MS = 15 * 1000;
+const AI_POOL_MISS_CACHE_MS = 3 * 1000;
+
+function clearAiPoolCache() {
+  aiPoolCache = null;
 }
 
-let aiPoolCache: { pool: AiPool; at: number } | null = null;
-const AI_POOL_CACHE_MS = 60 * 1000;
+async function readSystemSettingsDoc(): Promise<{ data: Record<string, unknown> | null; source: 'admin' | 'admin-default' | 'client' | 'none' }> {
+  if (adminDb) {
+    try {
+      const snap = await adminDb.collection('system').doc('settings').get();
+      if (snap.exists) return { data: (snap.data() || {}) as Record<string, unknown>, source: 'admin' };
+    } catch (err: any) {
+      console.warn('[AI Pool] adminDb settings read failed:', err?.message || err);
+    }
+    try {
+      const fallbackDb = getAdminFirestore(admin.app());
+      const snap = await fallbackDb.collection('system').doc('settings').get();
+      if (snap.exists) {
+        adminDb = fallbackDb;
+        return { data: (snap.data() || {}) as Record<string, unknown>, source: 'admin-default' };
+      }
+    } catch (err: any) {
+      console.warn('[AI Pool] default-admin settings read failed:', err?.message || err);
+    }
+  }
+  if (db) {
+    try {
+      const snap = await getDoc(doc(db, 'system', 'settings'));
+      if (snap.exists()) return { data: (snap.data() || {}) as Record<string, unknown>, source: 'client' };
+    } catch (err: any) {
+      console.warn('[AI Pool] client settings read failed:', err?.message || err);
+    }
+  }
+  return { data: null, source: 'none' };
+}
 
 async function getAiPool(): Promise<AiPool> {
-  if (aiPoolCache && Date.now() - aiPoolCache.at < AI_POOL_CACHE_MS) return aiPoolCache.pool;
-  const pool: AiPool = {
-    geminiKeys: [],
-    openRouterKey: '',
-    openRouterModel: 'openrouter/auto',
-    openAiKey: '',
-    openAiModel: 'gpt-4o-mini',
-  };
-  try {
-    let d: any = null;
-    if (adminDb) {
-      const s = await adminDb.collection('system').doc('settings').get();
-      if (s.exists) d = s.data();
-    } else if (db) {
-      const s = await getDoc(doc(db, 'system', 'settings'));
-      if (s.exists()) d = s.data();
-    }
-    if (d) {
-      if (Array.isArray(d.geminiKeys)) {
-        pool.geminiKeys = d.geminiKeys
-          .map((k: any) => ({
-            key: String(k?.key || '').trim(),
-            label: String(k?.label || '').trim() || 'Gemini Key',
-            enabled: k?.enabled !== false,
-          }))
-          .filter((k: PooledGeminiKey) => k.key);
-      }
-      if (d.openRouterKey) pool.openRouterKey = String(d.openRouterKey).trim();
-      if (d.openRouterModel) pool.openRouterModel = String(d.openRouterModel).trim();
-      if (d.openAiKey) pool.openAiKey = String(d.openAiKey).trim();
-      if (d.openAiModel) pool.openAiModel = String(d.openAiModel).trim();
-      // Legacy single-key field keeps working as an extra pool member
-      const legacy = String(d.geminiApiKey || '').trim();
-      if (legacy && !pool.geminiKeys.some(k => k.key === legacy)) {
-        pool.geminiKeys.push({ key: legacy, label: 'Legacy Key', enabled: true });
-      }
-    }
-  } catch (e: any) {
-    console.warn('[AI Pool] config load notice:', e?.message);
+  const ttl = aiPoolCache?.firestoreOk ? AI_POOL_CACHE_MS : AI_POOL_MISS_CACHE_MS;
+  if (aiPoolCache && Date.now() - aiPoolCache.at < ttl) return aiPoolCache.pool;
+  const { data, source } = await readSystemSettingsDoc();
+  const pool = parseAiPoolFromSettings(data, process.env.GEMINI_API_KEY || '');
+  const firestoreOk = source !== 'none';
+  aiPoolCache = { pool, at: Date.now(), firestoreOk };
+  if (!firestoreOk) {
+    console.warn('[AI Pool] could not read system/settings; using ENV key only until Firestore is reachable');
   }
-  const envKey = String(process.env.GEMINI_API_KEY || '').trim();
-  if (envKey && !pool.geminiKeys.some(k => k.key === envKey)) {
-    pool.geminiKeys.push({ key: envKey, label: 'ENV Key', enabled: true });
-  }
-  aiPoolCache = { pool, at: Date.now() };
   return pool;
 }
 
@@ -1173,12 +1175,7 @@ function withDeadline<T>(promise: Promise<T>, timeoutMs: number, label: string):
 async function aiGenerate(opts: AiGenerateOptions): Promise<AiGenerateResult> {
   const pool = await getAiPool();
   const models = Array.from(new Set([opts.model, 'gemini-3.1-flash-lite'].filter(Boolean)));
-  const geminiCandidates: PooledGeminiKey[] = [
-    ...(opts.preferredKeys || []),
-    ...pool.geminiKeys,
-  ].filter((candidate, index, all) =>
-    Boolean(candidate.key) && all.findIndex((item) => item.key === candidate.key) === index
-  );
+  const geminiCandidates: PooledGeminiKey[] = mergeGeminiKeyCandidates(opts.preferredKeys, pool.geminiKeys);
   const deadlineAt = Date.now() + 15_000;
   const remainingMs = () => Math.max(0, deadlineAt - Date.now());
   let lastErr: any = null;
@@ -2290,7 +2287,7 @@ app.post('/api/chat/respond', async (req, res) => {
       business.data?.useOwnApiKey
       && String(business.data?.customGeminiApiKey || '').trim(),
     );
-    if (!hasMerchantKey && !aiConfig.apiKey) {
+    if (!hasMerchantKey && !aiConfig.hasProvider) {
       return res.status(503).json({
         code: 'AI_NOT_CONFIGURED',
         error: 'AI সহকারী এখন কনফিগার করা নেই।',
@@ -2408,8 +2405,30 @@ app.get('/api/status', (req, res) => {
     geminiConfigured: !!process.env.GEMINI_API_KEY,
     firebaseConfigured: !!process.env.FIREBASE_PROJECT_ID || !!process.env.FIREBASE_SERVICE_ACCOUNT,
     adminDbReady: !!adminDb,
-    serverVersion: '1.4.0',
+    serverVersion: '1.4.1',
     timestamp: new Date().toISOString()
+  });
+});
+
+app.post('/api/ai/pool/reload', (_req, res) => {
+  clearAiPoolCache();
+  res.json({ ok: true });
+});
+
+app.get('/api/ai/pool/status', async (_req, res) => {
+  clearAiPoolCache();
+  const pool = await getAiPool();
+  const enabled = pool.geminiKeys.filter((item) => item.enabled);
+  res.json({
+    ok: true,
+    geminiKeyCount: pool.geminiKeys.length,
+    enabledCount: enabled.length,
+    hasOpenRouter: Boolean(pool.openRouterKey),
+    hasOpenAi: Boolean(pool.openAiKey),
+    hasProvider: aiPoolHasProvider(pool),
+    adminDbReady: Boolean(adminDb),
+    firestoreOk: Boolean(aiPoolCache?.firestoreOk),
+    labels: enabled.map((item) => item.label),
   });
 });
 
@@ -2891,7 +2910,7 @@ async function handleMessengerWebhookPost(req: any, res: any) {
 
             const aiConfig = await getEffectiveGeminiConfig();
             const merchantAiKeys = merchantOwnGeminiKey(businessData);
-            if (!aiConfig.apiKey && merchantAiKeys.length === 0) {
+            if (!aiConfig.hasProvider && merchantAiKeys.length === 0) {
               console.error('[Webhook] Gemini AI API key not configured in system');
               const noAiMsg = 'সেন্ট্রাল জেমিনি এপিআই কি কনফিগার করা নেই। অ্যাডমিন প্যানেলে API Key প্রদান করুন।';
               await logActivity(bizId!, 'ERROR', noAiMsg, 'error', ownerId);
@@ -3921,7 +3940,7 @@ app.post('/api/messenger/simulate-message', async (req, res) => {
   }
 
   const aiConfig = await getEffectiveGeminiConfig();
-  if (!aiConfig.apiKey) {
+  if (!aiConfig.hasProvider) {
     return res.status(400).json({ success: false, error: 'সেন্ট্রাল জেমিনি এপিআই কি কনফিগার করা নেই। অ্যাডমিন প্যানেল থেকে দিন।' });
   }
 
