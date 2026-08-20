@@ -7,7 +7,7 @@ import React, { useState, useEffect } from 'react';
 import { BrowserRouter as Router, Routes, Route, Link, useNavigate, Navigate, useSearchParams, useLocation } from 'react-router-dom';
 import { User as FirebaseUser, onAuthStateChanged, signOut, GoogleAuthProvider, signInWithPopup } from 'firebase/auth';
 import { doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore';
-import { Zap, ShieldCheck, LayoutDashboard, LogOut, Megaphone } from 'lucide-react';
+import { Zap, ShieldCheck, LayoutDashboard, LogOut } from 'lucide-react';
 import { Toaster, toast } from 'sonner';
 
 import { auth, db } from './lib/firebase';
@@ -19,25 +19,26 @@ import { AdminPanel } from './components/admin/AdminPanel';
 import { ChatView } from './components/chat/ChatView';
 
 function GlobalBanner() {
+  const location = useLocation();
   const [announcement, setAnnouncement] = useState<string | null>(null);
 
   useEffect(() => {
+    if (location.pathname === '/') return;
     const controller = new AbortController();
     fetch('/api/public/config', { signal: controller.signal })
-      .then((response) => response.ok ? response.json() : null)
+      .then((response) => (response.ok ? response.json() : null))
       .then((config) => setAnnouncement(config?.globalAnnouncement || null))
       .catch((error) => {
         if (error?.name !== 'AbortError') console.error('GlobalBanner Error:', error);
       });
     return () => controller.abort();
-  }, []);
+  }, [location.pathname]);
 
-  if (!announcement) return null;
+  if (location.pathname === '/' || !announcement) return null;
 
   return (
-    <div className="bg-rose-600 text-white py-2 px-4 text-center text-xs font-medium flex items-center justify-center gap-2 animate-in slide-in-from-top duration-500 sticky top-0 z-[1000]">
-      <Megaphone className="w-3.5 h-3.5 shrink-0" />
-      <span>{announcement}</span>
+    <div className="bg-slate-900 text-white py-2 px-4 text-center text-xs tracking-wide sticky top-0 z-[1000]">
+      {announcement}
     </div>
   );
 }
@@ -139,12 +140,12 @@ function LoginPage() {
   return (
     <div className="max-w-md mx-auto mt-16 text-center space-y-8 py-10 px-4">
       <div className="space-y-4">
-        <div className="w-20 h-20 bg-orange-500/10 text-orange-600 rounded-[2.5rem] flex items-center justify-center mx-auto mb-6 shadow-xl shadow-orange-500/10">
-          <Zap className="w-10 h-10 fill-current" />
+        <div className="w-20 h-20 bg-slate-900 text-white rounded-md flex items-center justify-center mx-auto mb-6 font-heading text-2xl">
+          SK
         </div>
-        <h2 className="text-3xl sm:text-4xl font-black text-zinc-900 dark:text-white tracking-tight">SellKori-তে স্বাগতম</h2>
-        <p className="text-zinc-500 dark:text-zinc-400 text-sm leading-relaxed">
-          আপনার ফেসবুক মেসেঞ্জার ও অনলাইন স্টোরকে ২৪/৭ অটো সেলস মেশিনে পরিণত করতে লগইন করুন।
+        <h2 className="text-3xl sm:text-4xl font-heading font-semibold text-slate-900 dark:text-white tracking-tight">SellKori</h2>
+        <p className="text-slate-500 text-sm leading-relaxed">
+          Messenger সেলস প্ল্যাটফর্মে প্রবেশ করতে Google অ্যাকাউন্ট ব্যবহার করুন।
         </p>
       </div>
 
@@ -213,10 +214,10 @@ export default function App() {
   if (loading) {
     return (
       <div className="h-screen flex flex-col items-center justify-center bg-zinc-50 dark:bg-zinc-950">
-        <div className="w-12 h-12 rounded-2xl bg-orange-600 animate-spin flex items-center justify-center text-white font-black text-sm shadow-xl shadow-orange-600/30">
+        <div className="w-10 h-10 rounded-md bg-slate-900 text-white flex items-center justify-center font-heading text-sm">
           SK
         </div>
-        <p className="mt-4 text-xs font-bold text-zinc-400 tracking-wider uppercase">Loading SellKori...</p>
+        <p className="mt-4 text-xs tracking-[0.2em] uppercase text-slate-400">SellKori</p>
       </div>
     );
   }

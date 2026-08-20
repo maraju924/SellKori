@@ -13,6 +13,7 @@ import { AdminSystemSettings } from './AdminSystemSettings';
 import { AdminLogsTelemetry } from './AdminLogsTelemetry';
 import { AdminAiEngine } from './AdminAiEngine';
 import { AdminBillingGateway } from './AdminBillingGateway';
+import { AdminLanding } from './AdminLanding';
 
 interface AdminPanelProps {
   profile: UserProfile | null;
@@ -99,6 +100,10 @@ export function AdminPanel({ profile }: AdminPanelProps) {
 
           {activeTab === 'billing' && (
             <AdminBillingGateway />
+          )}
+
+          {activeTab === 'landing' && (
+            <AdminLanding />
           )}
 
           {activeTab === 'settings' && (
