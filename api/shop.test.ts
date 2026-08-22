@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { parseShopRequest, readJsonBody, requestPathname } from './shopRoute.js';
 import { maxDuration } from './health.js';
+import { buildStoreCheckoutOrder, isInsideDhakaDelivery } from './shopCheckout.js';
 
 function testHealthExport() {
   assert.equal(maxDuration, 10);
@@ -93,4 +94,41 @@ testParsesSlugCheck();
 testPrefersOriginalUrlAfterRewrite();
 testReadsJsonBody();
 testRequestPathname();
+
+function testCheckoutValidationAndZone() {
+  assert.equal(isInsideDhakaDelivery({ district: 'ঢাকা' }), true);
+  assert.equal(isInsideDhakaDelivery({ district: 'বগুড়া' }), false);
+  const invalid = buildStoreCheckoutOrder({
+    business: { id: 'biz-1', products: [{ id: 'p1', name: 'পণ্য', price: 100, isAvailable: true }] },
+    lines: [{ productId: 'p1', quantity: 1 }],
+    customer: { name: 'ক', phone: '017', address: 'short' },
+  });
+  assert.equal(invalid.ok, false);
+
+  const built = buildStoreCheckoutOrder({
+    business: {
+      id: 'biz-1',
+      ownerId: 'owner-1',
+      products: [{ id: 'p1', name: 'পণ্য', price: 100, stock: 5, isAvailable: true }],
+      courierConfig: { deliveryChargeInsideDhaka: 70, deliveryChargeOutsideDhaka: 130 },
+    },
+    lines: [{ productId: 'p1', quantity: 1 }],
+    customer: {
+      name: 'করিম আহমেদ',
+      phone: '01712345678',
+      address: 'বাড়ি ১২ রোড ৫ সদর',
+      district: 'বগুড়া',
+      insideDhaka: true,
+    },
+    now: 1,
+    orderId: 'ORD-TEST',
+  });
+  assert.equal(built.ok, true);
+  if (!built.ok) return;
+  assert.equal(built.value.order.insideDhaka, false);
+  assert.equal(built.value.order.deliveryFee, 130);
+  assert.equal(built.value.order.totalPrice, 230);
+}
+
+testCheckoutValidationAndZone();
 console.log('api/shop tests passed');
