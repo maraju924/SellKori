@@ -9,6 +9,7 @@ import type {
 import { normalizePhone } from './orderIdentity';
 import { asProductList, finiteNumber, omitUndefined, sameProductId } from './productList';
 import { shopPublicPath, type ShopRef } from './storeSlug';
+import { decodeProductParam, normalizeProductSlug, productPublicKey } from './productSeo';
 
 export type { ShopRef } from './storeSlug';
 export { publicShopSlug, shopPublicPath, shopPublicUrl } from './storeSlug';
@@ -50,6 +51,7 @@ export const BD_DISTRICTS = [
 export interface CartLine {
   productId: string;
   quantity: number;
+  variant?: string;
 }
 
 export interface ShopCustomerInput {
@@ -67,6 +69,7 @@ export interface ResolvedCartLine {
   unitPrice: number;
   lineTotal: number;
   tier?: ProductTier;
+  variant?: string;
 }
 
 export interface CartTotals {
@@ -100,8 +103,9 @@ export function shopPath(shop: ShopRef, suffix = ''): string {
   return shopPublicPath(shop, suffix);
 }
 
-export function productPath(shop: ShopRef, productId: string): string {
-  return shopPath(shop, `p/${encodeURIComponent(String(productId || '').trim())}`);
+export function productPath(shop: ShopRef, product: Product | string): string {
+  const key = typeof product === 'string' ? product : productPublicKey(product);
+  return shopPath(shop, `p/${encodeURIComponent(String(key || '').trim())}`);
 }
 
 export function publicProductImage(product?: Product | null): string {
@@ -119,8 +123,13 @@ export function shopCategories(products: Product[]): string[] {
 }
 
 export function findShopProduct(products: Product[], productId?: string | null): Product | undefined {
-  if (!productId) return undefined;
-  return products.find(product => sameProductId(product.id, productId));
+  const raw = decodeProductParam(productId);
+  if (!raw) return undefined;
+  const byId = products.find(product => sameProductId(product.id, raw));
+  if (byId) return byId;
+  const slug = normalizeProductSlug(raw);
+  if (!slug) return undefined;
+  return products.find(product => normalizeProductSlug(product.slug) === slug);
 }
 
 export function isShopProductBuyable(product?: Product | null): boolean {
@@ -137,31 +146,44 @@ export function maxBuyableQuantity(product?: Product | null): number {
   return MAX_LINE_QUANTITY;
 }
 
+function cartLineKey(productId: string, variant?: string): string {
+  const option = String(variant || '').trim();
+  return option ? `${productId}::${option}` : productId;
+}
+
 export function sanitizeCart(lines: CartLine[] | null | undefined): CartLine[] {
-  const merged = new Map<string, number>();
+  const merged = new Map<string, CartLine>();
   for (const line of lines || []) {
     const productId = String(line?.productId || '').trim();
+    const variant = String(line?.variant || '').trim();
     const quantity = Math.max(0, Math.round(finiteNumber(line?.quantity, 0)));
     if (!productId || quantity < 1) continue;
-    merged.set(productId, Math.min(MAX_LINE_QUANTITY, (merged.get(productId) || 0) + quantity));
+    const key = cartLineKey(productId, variant);
+    const previous = merged.get(key);
+    const nextQty = Math.min(MAX_LINE_QUANTITY, (previous?.quantity || 0) + quantity);
+    merged.set(key, omitUndefined({
+      productId,
+      quantity: nextQty,
+      variant: variant || undefined,
+    }));
   }
-  return [...merged.entries()]
-    .slice(0, MAX_CART_LINES)
-    .map(([productId, quantity]) => ({ productId, quantity }));
+  return [...merged.values()].slice(0, MAX_CART_LINES);
 }
 
-export function addCartLine(lines: CartLine[], productId: string, quantity = 1): CartLine[] {
-  return sanitizeCart([...lines, { productId: String(productId || '').trim(), quantity }]);
+export function addCartLine(lines: CartLine[], productId: string, quantity = 1, variant?: string): CartLine[] {
+  return sanitizeCart([...lines, { productId: String(productId || '').trim(), quantity, variant }]);
 }
 
-export function setCartLineQuantity(lines: CartLine[], productId: string, quantity: number): CartLine[] {
+export function setCartLineQuantity(lines: CartLine[], productId: string, quantity: number, variant?: string): CartLine[] {
+  const key = cartLineKey(String(productId || '').trim(), variant);
   return sanitizeCart(
-    lines.map(line => (sameProductId(line.productId, productId) ? { ...line, quantity } : line))
+    lines.map(line => (cartLineKey(line.productId, line.variant) === key ? { ...line, quantity } : line))
   );
 }
 
-export function removeCartLine(lines: CartLine[], productId: string): CartLine[] {
-  return sanitizeCart(lines.filter(line => !sameProductId(line.productId, productId)));
+export function removeCartLine(lines: CartLine[], productId: string, variant?: string): CartLine[] {
+  const key = cartLineKey(String(productId || '').trim(), variant);
+  return sanitizeCart(lines.filter(line => cartLineKey(line.productId, line.variant) !== key));
 }
 
 export function cartItemCount(lines: CartLine[]): number {
@@ -201,17 +223,19 @@ export function unitPriceForQuantity(product: Product, quantity: number): number
   return Math.max(0, finiteNumber(product.price, 0));
 }
 
-export function resolveCartLine(product: Product, quantity: number): ResolvedCartLine {
+export function resolveCartLine(product: Product, quantity: number, variant?: string): ResolvedCartLine {
   const maxQty = maxBuyableQuantity(product);
   const qty = Math.min(maxQty, Math.max(1, Math.round(finiteNumber(quantity, 1))));
   const unitPrice = unitPriceForQuantity(product, qty);
-  return {
+  const option = String(variant || '').trim();
+  return omitUndefined({
     product,
     quantity: qty,
     unitPrice,
     lineTotal: Math.round(unitPrice * qty),
     tier: bestPricingTier(product, qty),
-  };
+    variant: option || undefined,
+  });
 }
 
 export function resolveCart(
@@ -224,7 +248,7 @@ export function resolveCart(
   for (const line of sanitizeCart(lines)) {
     const product = findShopProduct(catalog, line.productId);
     if (!isShopProductBuyable(product) || !product) continue;
-    resolved.push(resolveCartLine(product, line.quantity));
+    resolved.push(resolveCartLine(product, line.quantity, line.variant));
   }
   const subtotal = resolved.reduce((sum, line) => sum + line.lineTotal, 0);
   const address = options?.address || '';
@@ -253,7 +277,17 @@ export function filterShopProducts(products: Product[], query: string, category?
   const q = query.trim().toLowerCase();
   if (!q) return byCategory;
   return byCategory.filter(product => {
-    const hay = [product.name, product.description, product.specs, product.category]
+    const hay = [
+      product.name,
+      product.description,
+      product.specs,
+      product.category,
+      product.brand,
+      product.sku,
+      product.slug,
+      ...(product.tags || []),
+      ...(product.highlights || []),
+    ]
       .filter(Boolean)
       .join(' ')
       .toLowerCase();
@@ -271,9 +305,14 @@ export function relatedShopProducts(products: Product[], current: Product, limit
     .slice(0, limit);
 }
 
-export function cartSignatureOf(lines: Array<{ productId: string; quantity: number }>): string {
+export function cartSignatureOf(lines: Array<{ productId: string; quantity: number; variant?: string }>): string {
   return [...lines]
-    .map(line => `${String(line.productId || '').trim()}:${Math.max(1, Math.round(finiteNumber(line.quantity, 1)))}`)
+    .map(line => {
+      const id = String(line.productId || '').trim();
+      const qty = Math.max(1, Math.round(finiteNumber(line.quantity, 1)));
+      const variant = String(line.variant || '').trim();
+      return variant ? `${id}:${qty}:${variant}` : `${id}:${qty}`;
+    })
     .filter(part => !part.startsWith(':'))
     .sort()
     .join('|');
@@ -319,7 +358,7 @@ export function validateShopCheckout(
 export function orderItemsFromCart(totals: CartTotals): OrderItem[] {
   return totals.lines.map(line => ({
     productId: String(line.product.id || ''),
-    productName: line.product.name,
+    productName: line.variant ? `${line.product.name} (${line.variant})` : line.product.name,
     quantity: line.quantity,
     unitPrice: Math.round(line.unitPrice),
     lineTotal: line.lineTotal,
