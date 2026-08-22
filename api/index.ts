@@ -34,6 +34,14 @@ import {
   type BroadcastAudience
 } from '../src/lib/outreach.js';
 import { parseFirebaseServiceAccount } from '../src/lib/aiPool.js';
+import { asProductList } from '../src/lib/productCatalog.js';
+import {
+  buildStoreCheckoutOrder,
+  decrementShopStock,
+  isRepeatWebsiteCheckout,
+  sanitizeCart,
+  sanitizePublicOrder,
+} from '../src/lib/storefront.js';
 
 export const maxDuration = 60;
 
@@ -2188,8 +2196,8 @@ function consumePublicChatQuota(key: string) {
 }
 
 function sanitizePublicBusiness(id: string, data: any) {
-  const products = Array.isArray(data.products) ? data.products : [];
-  const faqs = Array.isArray(data.faqs) ? data.faqs : [];
+  const products = asProductList(data.products);
+  const faqs = Array.isArray(data.faqs) ? data.faqs : Object.values(data.faqs || {});
   return {
     id,
     name: String(data.name || 'Store'),
@@ -2240,10 +2248,11 @@ function sanitizePublicBusiness(id: string, data: any) {
     status: data.status,
     plan: data.plan,
     verificationStatus: data.verificationStatus,
+    facebookPixelId: String(data.facebookConfig?.pixelId || '').replace(/[^\w]/g, '').slice(0, 32),
   };
 }
 
-app.get('/api/chat/business/:businessId', async (req, res) => {
+async function handlePublicShopGet(req: any, res: any) {
   const businessId = String(req.params.businessId || '').trim();
   if (!businessId || businessId.length > 128 || /[\/\u0000-\u001f]/.test(businessId)) {
     return res.status(400).json({ error: 'Invalid business ID' });
@@ -2254,6 +2263,180 @@ app.get('/api/chat/business/:businessId', async (req, res) => {
   }
   res.setHeader('Cache-Control', 'public, max-age=60, stale-while-revalidate=300');
   return res.json(sanitizePublicBusiness(business.id, business.data));
+}
+
+app.get('/api/chat/business/:businessId', handlePublicShopGet);
+app.get('/api/shop/:businessId', handlePublicShopGet);
+
+const shopCheckoutRateLimit = new Map<string, { count: number; resetAt: number }>();
+
+function consumeShopCheckoutQuota(key: string) {
+  const now = Date.now();
+  const windowMs = 10 * 60 * 1000;
+  const current = shopCheckoutRateLimit.get(key);
+  if (!current || current.resetAt <= now) {
+    shopCheckoutRateLimit.set(key, { count: 1, resetAt: now + windowMs });
+    return { allowed: true, retryAfterSeconds: 0 };
+  }
+  if (current.count >= 8) {
+    return {
+      allowed: false,
+      retryAfterSeconds: Math.max(1, Math.ceil((current.resetAt - now) / 1000)),
+    };
+  }
+  current.count += 1;
+  return { allowed: true, retryAfterSeconds: 0 };
+}
+
+app.post('/api/shop/:businessId/checkout', async (req, res) => {
+  const businessId = String(req.params.businessId || '').trim();
+  if (!businessId || businessId.length > 128 || /[\/\u0000-\u001f]/.test(businessId)) {
+    return res.status(400).json({ code: 'INVALID_BUSINESS', error: 'সঠিক স্টোর আইডি প্রয়োজন।' });
+  }
+
+  const clientIp = trustedClientIp(clientIpFromReq(req)) || '';
+  const quota = consumeShopCheckoutQuota(`${businessId}:${clientIp || 'anon'}`);
+  if (!quota.allowed) {
+    res.setHeader('Retry-After', String(quota.retryAfterSeconds));
+    return res.status(429).json({
+      code: 'RATE_LIMITED',
+      error: 'খুব দ্রুত অনেক অর্ডারের চেষ্টা হয়েছে। একটু পর আবার চেষ্টা করুন।',
+    });
+  }
+
+  try {
+    const business = await loadBusinessById(businessId);
+    if (!business || business.data?.status === 'suspended') {
+      return res.status(404).json({ code: 'STORE_NOT_FOUND', error: 'স্টোরটি পাওয়া যায়নি।' });
+    }
+
+    const catalog = asProductList(business.data?.products);
+    const built = buildStoreCheckoutOrder({
+      business: {
+        id: business.id,
+        ownerId: business.data?.ownerId || '',
+        courierConfig: business.data?.courierConfig,
+        products: catalog,
+      },
+      lines: sanitizeCart(req.body?.items),
+      customer: req.body?.customer || {},
+      sessionId: String(req.body?.sessionId || '').slice(0, 80),
+      clientIp,
+    });
+
+    if (built.ok === false) {
+      return res.status(400).json({
+        code: 'INVALID_CHECKOUT',
+        error: built.issues[0]?.message || 'অর্ডার তথ্য অসম্পূর্ণ',
+        issues: built.issues,
+      });
+    }
+
+    const phone = built.value.order.phone;
+    const recent = await queryOrdersByField(business.id, 'phone', phone);
+    const duplicate = recent.find((row: any) => isRepeatWebsiteCheckout(row, built.value.order));
+    if (duplicate) {
+      return res.json({
+        order: sanitizePublicOrder({ ...duplicate, id: duplicate.id }),
+        duplicate: true,
+      });
+    }
+
+    const order = built.value.order;
+    await saveOrderDoc(order);
+
+    if (isFeatureEnabled(business.data?.features, 'inventoryEnabled') && adminDb) {
+      const nextProducts = decrementShopStock(catalog, built.value.inventory);
+      await adminDb.collection('businesses').doc(business.id).update({ products: nextProducts }).catch(() => {});
+    }
+
+    if (adminDb || db) {
+      const customerId = `${business.id}_${phone}`;
+      const customerPayload = {
+        id: customerId,
+        businessId: business.id,
+        name: order.customerName,
+        phone,
+        address: order.address,
+        lastOrderDate: Date.now(),
+        lastOrderId: order.id,
+        source: 'website',
+        leadStage: 'buyer',
+      };
+      if (adminDb) {
+        await adminDb.collection('customers').doc(customerId).set(customerPayload, { merge: true }).catch(() => {});
+      } else if (db) {
+        await setDoc(doc(db, 'customers', customerId), customerPayload, { merge: true }).catch(() => {});
+      }
+    }
+
+    await logActivity(
+      business.id,
+      'ORDER_WEB_CREATED',
+      `ওয়েবসাইট COD অর্ডার: ${order.id} (৳${order.totalPrice})`,
+      'success',
+      business.data?.ownerId,
+      order
+    );
+
+    const autoBook = isFeatureEnabled(business.data?.features, 'autoCourierBookingEnabled')
+      && business.data?.courierConfig?.autoBooking !== false
+      && business.data?.courierConfig?.steadfastApiKey;
+    if (autoBook) {
+      const booked = await bookSteadfastParcel(order, { ...business.data, id: business.id });
+      if (booked.success) {
+        const courierUpdates = {
+          courierStatus: 'in_review',
+          courierTrackingId: booked.trackingCode,
+          courierConsignmentId: booked.consignmentId || '',
+          status: 'shipped',
+        };
+        if (adminDb) {
+          await adminDb.collection('orders').doc(order.id).update(courierUpdates).catch(() => {});
+        } else if (db) {
+          await updateDoc(doc(db, 'orders', order.id), courierUpdates).catch(() => {});
+        }
+        order.courierTrackingId = booked.trackingCode;
+        order.status = 'shipped';
+      }
+    }
+
+    res.setHeader('Cache-Control', 'no-store');
+    return res.status(201).json({ order: sanitizePublicOrder(order) });
+  } catch (error: any) {
+    console.error('[Shop Checkout]', error?.message || error);
+    return res.status(500).json({ code: 'CHECKOUT_FAILED', error: 'অর্ডার সেভ করা যায়নি। আবার চেষ্টা করুন।' });
+  }
+});
+
+app.get('/api/shop/:businessId/orders', async (req, res) => {
+  const businessId = String(req.params.businessId || '').trim();
+  const phone = normalizePhone(String(req.query.phone || ''));
+  const orderId = String(req.query.orderId || '').trim();
+  if (!businessId || businessId.length > 128 || /[\/\u0000-\u001f]/.test(businessId)) {
+    return res.status(400).json({ error: 'Invalid business ID' });
+  }
+  if (phone.length !== 11) {
+    return res.status(400).json({ error: 'সঠিক মোবাইল নম্বর দিন' });
+  }
+
+  try {
+    const business = await loadBusinessById(businessId);
+    if (!business || business.data?.status === 'suspended') {
+      return res.status(404).json({ error: 'Store not found' });
+    }
+    const rows = await queryOrdersByField(business.id, 'phone', phone);
+    const filtered = rows
+      .filter((row: any) => !orderId || String(row.id) === orderId || String(row.id).toLowerCase() === orderId.toLowerCase())
+      .sort((a: any, b: any) => Number(b.createdAtMs || 0) - Number(a.createdAtMs || 0))
+      .slice(0, 10)
+      .map((row: any) => sanitizePublicOrder({ ...row, id: row.id }));
+    res.setHeader('Cache-Control', 'no-store');
+    return res.json({ orders: filtered });
+  } catch (error: any) {
+    console.error('[Shop Track]', error?.message || error);
+    return res.status(500).json({ error: 'অর্ডার খোঁজা যায়নি' });
+  }
 });
 
 app.post('/api/chat/respond', async (req, res) => {

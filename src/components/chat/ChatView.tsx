@@ -405,15 +405,23 @@ export function ChatView() {
                 </p>
               </div>
             </div>
-            <button
-              type="button"
-              onClick={handleReset}
-              title="কথোপকথন মুছুন"
-              aria-label="কথোপকথন মুছুন"
-              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-white/10 bg-white/5 text-zinc-300 transition hover:bg-white/10 hover:text-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-orange-400"
-            >
-              <Trash2 className="h-4 w-4" />
-            </button>
+            <div className="flex items-center gap-2">
+              <Link
+                to={`/shop/${business.id}`}
+                className="hidden xs:inline-flex h-10 items-center rounded-xl border border-white/10 bg-white/5 px-3 text-[11px] font-bold text-zinc-100 hover:bg-white/10"
+              >
+                দোকান
+              </Link>
+              <button
+                type="button"
+                onClick={handleReset}
+                title="কথোপকথন মুছুন"
+                aria-label="কথোপকথন মুছুন"
+                className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-white/10 bg-white/5 text-zinc-300 transition hover:bg-white/10 hover:text-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-orange-400"
+              >
+                <Trash2 className="h-4 w-4" />
+              </button>
+            </div>
           </div>
         </header>
 

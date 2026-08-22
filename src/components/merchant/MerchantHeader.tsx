@@ -46,11 +46,11 @@ export function MerchantHeader({
   const isAdmin = profile?.role === 'admin' || profile?.email === 'maraju924@gmail.com';
 
   const handleCopyChatLink = () => {
-    const url = `${window.location.origin}/chat/${business.id}`;
+    const url = `${window.location.origin}/shop/${business.id}`;
     navigator.clipboard.writeText(url);
     setCopied(true);
-    toast.success('পাবলিক চ্যাট লিংক কপি হয়েছে!', {
-      description: 'গ্রাহকদের এই লিংকটি দিয়ে সরাসরি এআই দিয়ে অর্ডার নিতে পারেন।'
+    toast.success('ওয়েবসাইট লিংক কপি হয়েছে!', {
+      description: 'গ্রাহকরা এই লিংক থেকে পণ্য দেখে ক্যাশ অন ডেলিভারিতে অর্ডার করতে পারবে।'
     });
     setTimeout(() => setCopied(false), 2500);
   };
@@ -154,10 +154,9 @@ export function MerchantHeader({
             <Plus className="w-3 h-3 text-orange-600 ml-0.5 shrink-0" />
           </button>
 
-          {/* Copy Public Chat Link Button */}
           <button
             onClick={handleCopyChatLink}
-            title="গ্রাহকদের জন্য পাবলিক চ্যাট লিংক"
+            title="গ্রাহকদের জন্য ওয়েবসাইট লিংক"
             className="hidden sm:inline-flex items-center gap-1.5 h-9 px-3 rounded-2xl border border-zinc-200 dark:border-zinc-800 text-xs font-bold text-zinc-700 dark:text-zinc-200 hover:bg-zinc-100 dark:hover:bg-zinc-900 transition-colors native-ripple"
           >
             {copied ? (
@@ -168,17 +167,16 @@ export function MerchantHeader({
             ) : (
               <>
                 <Globe className="w-3.5 h-3.5 text-orange-600" />
-                <span>পাবলিক চ্যাট</span>
+                <span>ওয়েবসাইট</span>
                 <Copy className="w-3 h-3 text-zinc-400" />
               </>
             )}
           </button>
 
-          {/* Direct Chat Test Icon on Mobile */}
           <button
-            onClick={() => window.open(`/chat/${business.id}`, '_blank')}
+            onClick={() => window.open(`/shop/${business.id}`, '_blank')}
             className="sm:hidden w-9 h-9 rounded-2xl flex items-center justify-center bg-zinc-100 dark:bg-zinc-900 text-zinc-700 dark:text-zinc-300 native-ripple"
-            title="পাবলিক চ্যাট প্রিভিউ"
+            title="ওয়েবসাইট প্রিভিউ"
           >
             <ExternalLink className="w-4 h-4 text-orange-600" />
           </button>

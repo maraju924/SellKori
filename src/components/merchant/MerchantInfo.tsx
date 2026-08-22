@@ -5,7 +5,9 @@ import {
   MapPin, 
   Save, 
   Image as ImageIcon, 
-  Globe 
+  Globe,
+  Copy,
+  ExternalLink
 } from 'lucide-react';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
@@ -74,7 +76,7 @@ export function MerchantInfo({ business }: MerchantInfoProps) {
             </Badge>
           </div>
           <p className="text-xs text-zinc-500 mt-1">
-            আপনার অনলাইন শপের নাম, লোগো এবং পরিচিতি যা এআই কাস্টমারদের সাথে শেয়ার করবে।
+            নাম, লোগো ও পরিচিতি ওয়েবসাইট এবং এআই চ্যাট—দুই জায়গাতেই দেখাবে।
           </p>
         </div>
 
@@ -86,6 +88,34 @@ export function MerchantInfo({ business }: MerchantInfoProps) {
           <Save className="w-4 h-4 mr-1.5" />
           {isSaving ? 'সংরক্ষণ হচ্ছে...' : 'প্রোফাইল সেভ করুন'}
         </Button>
+      </div>
+
+      <div className="bg-orange-50 dark:bg-orange-950/30 border border-orange-200/70 dark:border-orange-900/50 rounded-3xl p-5 max-w-3xl flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-xs font-black text-orange-800 dark:text-orange-300">কাস্টমার ওয়েবসাইট</p>
+          <p className="text-[12px] font-mono text-zinc-600 dark:text-zinc-400 truncate">
+            {typeof window !== 'undefined' ? `${window.location.origin}/shop/${business.id}` : `/shop/${business.id}`}
+          </p>
+        </div>
+        <div className="flex gap-2 shrink-0">
+          <Button
+            type="button"
+            variant="outline"
+            className="h-10 rounded-xl text-xs font-bold"
+            onClick={() => {
+              const url = `${window.location.origin}/shop/${business.id}`;
+              navigator.clipboard.writeText(url);
+              toast.success('ওয়েবসাইট লিংক কপি হয়েছে');
+            }}
+          >
+            <Copy className="w-3.5 h-3.5 mr-1.5" /> কপি
+          </Button>
+          <a href={`/shop/${business.id}`} target="_blank" rel="noreferrer">
+            <Button type="button" className="h-10 rounded-xl text-xs font-bold bg-orange-600 hover:bg-orange-700 text-white">
+              <ExternalLink className="w-3.5 h-3.5 mr-1.5" /> খুলুন
+            </Button>
+          </a>
+        </div>
       </div>
 
       <div className="bg-white dark:bg-zinc-900 border border-zinc-200/80 dark:border-zinc-800 rounded-3xl p-6 md:p-8 shadow-xs space-y-6 max-w-3xl">
