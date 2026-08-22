@@ -34,24 +34,6 @@ import {
   type BroadcastAudience
 } from '../src/lib/outreach.js';
 import { parseFirebaseServiceAccount } from '../src/lib/aiPool.js';
-import {
-  isReservedShopSlug,
-  isValidShopSlug,
-  matchRequestedShopSlug,
-  nextShopSlugCandidate,
-  normalizeShopSlug,
-  publicShopSlug,
-  suggestedShopSlug,
-} from './shopSlug.js';
-import {
-  buildStoreCheckoutOrder,
-  decrementShopStock,
-  isRepeatWebsiteCheckout,
-  omitUndefined,
-  sanitizeCart,
-  sanitizePublicOrder,
-} from './shopCheckout.js';
-import { sanitizePublicProduct } from './shopPublicProduct.js';
 
 export const maxDuration = 60;
 
@@ -87,38 +69,8 @@ function initializeAdminApp(projectId: string) {
 
 // Load firebase config for server-side use
 let db: any;
-let defaultClientDb: any;
 let firebaseApp: any;
 let adminDb: any;
-let defaultAdminDb: any;
-
-function clientFirestoreDbs(): any[] {
-  const out: any[] = [];
-  if (db) out.push(db);
-  if (defaultClientDb && defaultClientDb !== db) out.push(defaultClientDb);
-  return out;
-}
-
-function adminFirestoreDbs(): any[] {
-  const out: any[] = [];
-  if (adminDb) out.push(adminDb);
-  if (defaultAdminDb && defaultAdminDb !== adminDb) out.push(defaultAdminDb);
-  return out;
-}
-
-function attachDefaultStores(firebaseAppInstance: any, adminApp: any, dbId: string | undefined) {
-  defaultClientDb = getFirestore(firebaseAppInstance);
-  if (dbId && dbId !== '(default)' && adminApp) {
-    try {
-      defaultAdminDb = getAdminFirestore(adminApp);
-    } catch (err) {
-      console.warn('[Firebase] Could not open (default) Admin Firestore:', err);
-      defaultAdminDb = null;
-    }
-  } else {
-    defaultAdminDb = adminDb;
-  }
-}
 
 try {
   const firebaseConfigPath = path.join(process.cwd(), 'firebase-applet-config.json');
@@ -128,7 +80,6 @@ try {
     db = firebaseConfig.firestoreDatabaseId 
       ? getFirestore(firebaseApp, firebaseConfig.firestoreDatabaseId) 
       : getFirestore(firebaseApp);
-    defaultClientDb = getFirestore(firebaseApp);
     
     // Initialize Admin SDK
     try {
@@ -137,7 +88,6 @@ try {
       
       // Try to get Admin Firestore for the specific database ID
       adminDb = getAdminFirestore(adminApp, dbId && dbId !== '(default)' ? dbId : undefined);
-      attachDefaultStores(firebaseApp, adminApp, dbId);
       
       // Verification test — IMPORTANT: this must NOT block module load with a
       // top-level `await`. On a Vercel serverless cold start, the exported
@@ -152,12 +102,22 @@ try {
           console.log(`[Firebase] Admin SDK Verified on Database: ${dbId || '(default)'}`);
         })
         .catch((testErr: any) => {
-          // Do NOT switch to a different Firestore database. The web panels
-          // read the configured named DB; writing here to "(default)" made
-          // admin/merchant screens look empty even though data existed.
-          console.warn(
-            `[Firebase] Admin SDK check failed on "${dbId || '(default)'}": ${testErr?.message || testErr}. Keeping this database; client SDK will be used if Admin writes fail.`,
-          );
+          if (dbId && dbId !== '(default)') {
+            console.log(`[Firebase] Admin DB "${dbId}" access denied. Falling back to (default) database...`);
+            const fallbackDb = getAdminFirestore(adminApp);
+            fallbackDb.collection('businesses').limit(1).get()
+              .then(() => {
+                adminDb = fallbackDb;
+                console.log('[Firebase] Admin SDK switched to (default) database.');
+              })
+              .catch(() => {
+                console.warn('[Firebase] Admin SDK unusable on any database. Falling back to Client SDK only.');
+                adminDb = null;
+              });
+          } else {
+            console.warn('[Firebase] Admin SDK permission denied on (default) DB. Falling back to Client SDK.');
+            adminDb = null;
+          }
         });
     } catch (adminErr: any) {
       console.error('[Firebase] Admin Setup Error:', adminErr?.message);
@@ -174,7 +134,6 @@ try {
        db = firebaseConfig.firestoreDatabaseId 
          ? getFirestore(firebaseApp, firebaseConfig.firestoreDatabaseId) 
          : getFirestore(firebaseApp);
-       defaultClientDb = getFirestore(firebaseApp);
 
     // Initialize Admin SDK (fallback)
     try {
@@ -186,7 +145,6 @@ try {
       } else {
         adminDb = getAdminFirestore(adminApp);
       }
-      attachDefaultStores(firebaseApp, adminApp, dbId);
       console.log(`[Firebase] Admin Firestore ready (fallback)`);
     } catch (e) {
       console.error('[Firebase] Fallback Admin Error:', e);
@@ -637,151 +595,18 @@ async function loadBusinessCustomers(businessId: string): Promise<any[]> {
 
 async function loadBusinessById(businessId: string): Promise<{ id: string; data: any } | null> {
   if (!businessId) return null;
-  for (const store of adminFirestoreDbs()) {
-    try {
-      const snap = await store.collection('businesses').doc(businessId).get();
-      if (snap.exists) return { id: snap.id, data: snap.data() };
-    } catch (err) {
-      console.warn('[loadBusinessById] admin', err);
-    }
-  }
-  for (const client of clientFirestoreDbs()) {
-    try {
-      const snap = await getDoc(doc(client, 'businesses', businessId));
-      if (snap.exists()) return { id: snap.id, data: snap.data() };
-    } catch (err) {
-      console.warn('[loadBusinessById] client', err);
-    }
-  }
-  return null;
-}
-
-async function queryBusinessBySlug(slug: string): Promise<{ id: string; data: any } | null> {
-  const clean = normalizeShopSlug(slug);
-  if (!clean) return null;
-  for (const store of adminFirestoreDbs()) {
-    try {
-      const snap = await store.collection('businesses').where('slug', '==', clean).limit(1).get();
-      if (!snap.empty) return { id: snap.docs[0].id, data: snap.docs[0].data() };
-    } catch (err) {
-      console.warn('[queryBusinessBySlug] admin', err);
-    }
-  }
-  for (const client of clientFirestoreDbs()) {
-    try {
-      const snap = await getDocs(query(collection(client, 'businesses'), where('slug', '==', clean), limit(1)));
-      if (!snap.empty) return { id: snap.docs[0].id, data: snap.docs[0].data() };
-    } catch (err) {
-      console.warn('[queryBusinessBySlug] client', err);
-    }
-  }
-  return null;
-}
-
-async function isShopSlugTaken(slug: string, exceptBusinessId = ''): Promise<boolean> {
-  const found = await queryBusinessBySlug(slug);
-  if (!found) return false;
-  return found.id !== exceptBusinessId;
-}
-
-async function persistBusinessSlug(business: { id: string; data: any }, slug: string) {
-  const current = normalizeShopSlug(business.data?.slug);
-  if (current === slug) return;
   try {
-    const stores = adminFirestoreDbs();
-    if (stores.length > 0) {
-      await Promise.all(stores.map((store) => store.collection('businesses').doc(business.id).set({ slug }, { merge: true }).catch(() => {})));
-    } else {
-      await Promise.all(clientFirestoreDbs().map((client) => setDoc(doc(client, 'businesses', business.id), { slug }, { merge: true }).catch(() => {})));
+    if (adminDb) {
+      const snap = await adminDb.collection('businesses').doc(businessId).get();
+      if (snap.exists) return { id: snap.id, data: snap.data() };
+    } else if (db) {
+      const snap = await getDoc(doc(db, 'businesses', businessId));
+      if (snap.exists()) return { id: snap.id, data: snap.data() };
     }
-    business.data = { ...business.data, slug };
   } catch (err) {
-    console.warn('[persistBusinessSlug]', err);
+    console.warn('[loadBusinessById]', err);
   }
-}
-
-async function ensureBusinessSlug(business: { id: string; data: any }): Promise<string> {
-  const existing = normalizeShopSlug(business.data?.slug);
-  if (isValidShopSlug(existing) && !(await isShopSlugTaken(existing, business.id))) {
-    return existing;
-  }
-  const base = suggestedShopSlug({
-    slug: business.data?.slug,
-    name: business.data?.name,
-    id: business.id,
-  });
-  let attempt = 1;
-  let candidate = nextShopSlugCandidate(base, attempt);
-  while (isReservedShopSlug(candidate) || await isShopSlugTaken(candidate, business.id)) {
-    attempt += 1;
-    candidate = nextShopSlugCandidate(base, attempt);
-    if (attempt > 40) {
-      candidate = nextShopSlugCandidate(`shop${business.id.replace(/[^a-z0-9]/gi, '').slice(-8)}`, 1);
-      break;
-    }
-  }
-  await persistBusinessSlug(business, candidate);
-  return candidate;
-}
-
-async function listBusinessDocs(max = 400): Promise<Array<{ id: string; data: any }>> {
-  const merged = new Map<string, { id: string; data: any }>();
-  for (const store of adminFirestoreDbs()) {
-    try {
-      const snap = await store.collection('businesses').limit(max).get();
-      for (const d of snap.docs) {
-        if (!merged.has(d.id)) merged.set(d.id, { id: d.id, data: d.data() });
-      }
-    } catch (err) {
-      console.warn('[listBusinessDocs] admin', err);
-    }
-  }
-  if (merged.size === 0) {
-    for (const client of clientFirestoreDbs()) {
-      try {
-        const snap = await getDocs(query(collection(client, 'businesses'), limit(max)));
-        for (const d of snap.docs) {
-          if (!merged.has(d.id)) merged.set(d.id, { id: d.id, data: d.data() });
-        }
-      } catch (err) {
-        console.warn('[listBusinessDocs] client', err);
-      }
-    }
-  }
-  return Array.from(merged.values());
-}
-
-async function loadBusinessBySlugOrId(slugOrId: string): Promise<{ id: string; data: any } | null> {
-  const raw = String(slugOrId || '').trim();
-  if (!raw) return null;
-  const byId = await loadBusinessById(raw);
-  if (byId) {
-    await ensureBusinessSlug(byId);
-    return byId;
-  }
-  const bySlug = await queryBusinessBySlug(raw);
-  if (bySlug) {
-    await ensureBusinessSlug(bySlug);
-    return bySlug;
-  }
-
-  const all = await listBusinessDocs();
-  const match = matchRequestedShopSlug(
-    all.map(row => ({ id: row.id, slug: row.data?.slug, name: row.data?.name })),
-    raw
-  );
-  if (!match) return null;
-  const found = all.find(row => row.id === match.id);
-  if (!found) return null;
-
-  const requested = normalizeShopSlug(raw);
-  const existing = normalizeShopSlug(found.data?.slug);
-  if (!existing && isValidShopSlug(requested) && !(await isShopSlugTaken(requested, found.id))) {
-    await persistBusinessSlug(found, requested);
-  } else {
-    await ensureBusinessSlug(found);
-  }
-  return found;
+  return null;
 }
 
 async function findBusinessByVerifyToken(token: string): Promise<{ id: string; data: any } | null> {
@@ -1695,10 +1520,10 @@ async function bookSteadfastParcel(order: any, businessData: any) {
 }
 
 async function saveOrderDoc(order: any) {
-  const payload = omitUndefined({
+  const payload = {
     ...order,
     createdAtMs: order.createdAtMs || Date.now(),
-  });
+  };
   // Admin SDK first, but NEVER lose an order: if the admin write fails
   // (e.g. missing service-account credentials on the host), fall back to
   // the client SDK before giving up.
@@ -2362,15 +2187,9 @@ function consumePublicChatQuota(key: string) {
   return { allowed: true, retryAfterSeconds: 0 };
 }
 
-function asProductList(raw: unknown): any[] {
-  if (Array.isArray(raw)) return raw.filter(Boolean);
-  if (raw && typeof raw === 'object') return Object.values(raw as Record<string, any>).filter(Boolean);
-  return [];
-}
-
 function sanitizePublicBusiness(id: string, data: any) {
-  const products = asProductList(data.products);
-  const faqs = Array.isArray(data.faqs) ? data.faqs : Object.values(data.faqs || {});
+  const products = Array.isArray(data.products) ? data.products : [];
+  const faqs = Array.isArray(data.faqs) ? data.faqs : [];
   return {
     id,
     name: String(data.name || 'Store'),
@@ -2381,7 +2200,25 @@ function sanitizePublicBusiness(id: string, data: any) {
     products: products
       .filter((product: any) => product?.isAvailable !== false)
       .slice(0, 100)
-      .map((product: any) => sanitizePublicProduct(product)),
+      .map((product: any) => ({
+        id: String(product.id || ''),
+        name: String(product.name || '').slice(0, 200),
+        price: Number(product.price) || 0,
+        pricingTiers: Array.isArray(product.pricingTiers)
+          ? product.pricingTiers.slice(0, 10).map((tier: any) => ({
+              quantity: Math.max(1, Number(tier.quantity) || 1),
+              price: Number(tier.price) || 0,
+              label: String(tier.label || '').slice(0, 100),
+            }))
+          : [],
+        description: String(product.description || '').slice(0, 1_000),
+        specs: String(product.specs || '').slice(0, 500),
+        stock: Math.max(0, Number(product.stock) || 0),
+        category: String(product.category || '').slice(0, 100),
+        images: Array.isArray(product.images) ? product.images.slice(0, 8) : [],
+        reviewImages: Array.isArray(product.reviewImages) ? product.reviewImages.slice(0, 8) : [],
+        isAvailable: product.isAvailable !== false,
+      })),
     faqs: faqs
       .filter((faq: any) => faq?.isActive !== false)
       .slice(0, 100)
@@ -2403,219 +2240,20 @@ function sanitizePublicBusiness(id: string, data: any) {
     status: data.status,
     plan: data.plan,
     verificationStatus: data.verificationStatus,
-    facebookPixelId: String(data.facebookConfig?.pixelId || '').replace(/[^\w]/g, '').slice(0, 32),
-    slug: publicShopSlug({ id, slug: data.slug, name: data.name }),
   };
 }
 
-async function handlePublicShopGet(req: any, res: any) {
+app.get('/api/chat/business/:businessId', async (req, res) => {
   const businessId = String(req.params.businessId || '').trim();
   if (!businessId || businessId.length > 128 || /[\/\u0000-\u001f]/.test(businessId)) {
     return res.status(400).json({ error: 'Invalid business ID' });
   }
-  try {
-    const business = await loadBusinessBySlugOrId(businessId);
-    if (!business || business.data?.status === 'suspended') {
-      return res.status(404).json({ error: 'Store not found' });
-    }
-    res.setHeader('Cache-Control', 'public, max-age=60, stale-while-revalidate=300');
-    return res.json(sanitizePublicBusiness(business.id, business.data));
-  } catch (error: any) {
-    console.error('[Public Shop GET]', error?.message || error);
-    return res.status(500).json({ error: 'Store unavailable' });
+  const business = await loadBusinessById(businessId);
+  if (!business || business.data?.status === 'suspended') {
+    return res.status(404).json({ error: 'Store not found' });
   }
-}
-
-app.get('/api/public/shop-slug', async (req, res) => {
-  const slug = normalizeShopSlug(String(req.query.slug || ''));
-  const except = String(req.query.except || '').trim();
-  if (!isValidShopSlug(slug)) {
-    return res.json({
-      ok: false,
-      slug,
-      error: isReservedShopSlug(slug) ? 'এই নাম ব্যবহার করা যাবে না' : 'ইংরেজি অক্ষর ও সংখ্যা দিয়ে লিংক নাম লিখুন',
-    });
-  }
-  const taken = await isShopSlugTaken(slug, except);
-  return res.json({
-    ok: !taken,
-    slug,
-    error: taken ? 'এই লিংক অন্য স্টোর ব্যবহার করছে' : '',
-  });
-});
-
-app.get('/api/chat/business/:businessId', handlePublicShopGet);
-app.get('/api/shop/:businessId', handlePublicShopGet);
-
-const shopCheckoutRateLimit = new Map<string, { count: number; resetAt: number }>();
-
-function consumeShopCheckoutQuota(key: string) {
-  const now = Date.now();
-  const windowMs = 10 * 60 * 1000;
-  const current = shopCheckoutRateLimit.get(key);
-  if (!current || current.resetAt <= now) {
-    shopCheckoutRateLimit.set(key, { count: 1, resetAt: now + windowMs });
-    return { allowed: true, retryAfterSeconds: 0 };
-  }
-  if (current.count >= 8) {
-    return {
-      allowed: false,
-      retryAfterSeconds: Math.max(1, Math.ceil((current.resetAt - now) / 1000)),
-    };
-  }
-  current.count += 1;
-  return { allowed: true, retryAfterSeconds: 0 };
-}
-
-app.post('/api/shop/:businessId/checkout', async (req, res) => {
-  const businessId = String(req.params.businessId || '').trim();
-  if (!businessId || businessId.length > 128 || /[\/\u0000-\u001f]/.test(businessId)) {
-    return res.status(400).json({ code: 'INVALID_BUSINESS', error: 'সঠিক স্টোর আইডি প্রয়োজন।' });
-  }
-
-  const clientIp = trustedClientIp(clientIpFromReq(req)) || '';
-  const quota = consumeShopCheckoutQuota(`${businessId}:${clientIp || 'anon'}`);
-  if (!quota.allowed) {
-    res.setHeader('Retry-After', String(quota.retryAfterSeconds));
-    return res.status(429).json({
-      code: 'RATE_LIMITED',
-      error: 'খুব দ্রুত অনেক অর্ডারের চেষ্টা হয়েছে। একটু পর আবার চেষ্টা করুন।',
-    });
-  }
-
-  try {
-    const business = await loadBusinessBySlugOrId(businessId);
-    if (!business || business.data?.status === 'suspended') {
-      return res.status(404).json({ code: 'STORE_NOT_FOUND', error: 'স্টোরটি পাওয়া যায়নি।' });
-    }
-
-    const catalog = asProductList(business.data?.products);
-    const built = buildStoreCheckoutOrder({
-      business: {
-        id: business.id,
-        ownerId: business.data?.ownerId || '',
-        courierConfig: business.data?.courierConfig,
-        products: catalog,
-      },
-      lines: sanitizeCart(req.body?.items),
-      customer: req.body?.customer || {},
-      sessionId: String(req.body?.sessionId || '').slice(0, 80),
-      clientIp,
-    });
-
-    if (built.ok === false) {
-      return res.status(400).json({
-        code: 'INVALID_CHECKOUT',
-        error: built.issues[0]?.message || 'অর্ডার তথ্য অসম্পূর্ণ',
-        issues: built.issues,
-      });
-    }
-
-    const phone = built.value.order.phone;
-    const recent = await queryOrdersByField(business.id, 'phone', phone);
-    const duplicate = recent.find((row: any) => isRepeatWebsiteCheckout(row, built.value.order));
-    if (duplicate) {
-      return res.json({
-        order: sanitizePublicOrder({ ...duplicate, id: duplicate.id }),
-        duplicate: true,
-      });
-    }
-
-    const order = built.value.order;
-    await saveOrderDoc(order);
-
-    if (isFeatureEnabled(business.data?.features, 'inventoryEnabled') && adminDb) {
-      const nextProducts = decrementShopStock(catalog, built.value.inventory);
-      await adminDb.collection('businesses').doc(business.id).update({ products: nextProducts }).catch(() => {});
-    }
-
-    if (adminDb || db) {
-      const customerId = `${business.id}_${phone}`;
-      const customerPayload = {
-        id: customerId,
-        businessId: business.id,
-        name: order.customerName,
-        phone,
-        address: order.address,
-        lastOrderDate: Date.now(),
-        lastOrderId: order.id,
-        source: 'website',
-        leadStage: 'buyer',
-      };
-      if (adminDb) {
-        await adminDb.collection('customers').doc(customerId).set(customerPayload, { merge: true }).catch(() => {});
-      } else if (db) {
-        await setDoc(doc(db, 'customers', customerId), customerPayload, { merge: true }).catch(() => {});
-      }
-    }
-
-    await logActivity(
-      business.id,
-      'ORDER_WEB_CREATED',
-      `ওয়েবসাইট COD অর্ডার: ${order.id} (৳${order.totalPrice})`,
-      'success',
-      business.data?.ownerId,
-      order
-    );
-
-    const autoBook = isFeatureEnabled(business.data?.features, 'autoCourierBookingEnabled')
-      && business.data?.courierConfig?.autoBooking !== false
-      && business.data?.courierConfig?.steadfastApiKey;
-    if (autoBook) {
-      const booked = await bookSteadfastParcel(order, { ...business.data, id: business.id });
-      if (booked.success) {
-        const courierUpdates = {
-          courierStatus: 'in_review',
-          courierTrackingId: booked.trackingCode,
-          courierConsignmentId: booked.consignmentId || '',
-          status: 'shipped',
-        };
-        if (adminDb) {
-          await adminDb.collection('orders').doc(order.id).update(courierUpdates).catch(() => {});
-        } else if (db) {
-          await updateDoc(doc(db, 'orders', order.id), courierUpdates).catch(() => {});
-        }
-        order.courierTrackingId = booked.trackingCode;
-        order.status = 'shipped';
-      }
-    }
-
-    res.setHeader('Cache-Control', 'no-store');
-    return res.status(201).json({ order: sanitizePublicOrder(order) });
-  } catch (error: any) {
-    console.error('[Shop Checkout]', error?.message || error);
-    return res.status(500).json({ code: 'CHECKOUT_FAILED', error: 'অর্ডার সেভ করা যায়নি। আবার চেষ্টা করুন।' });
-  }
-});
-
-app.get('/api/shop/:businessId/orders', async (req, res) => {
-  const businessId = String(req.params.businessId || '').trim();
-  const phone = normalizePhone(String(req.query.phone || ''));
-  const orderId = String(req.query.orderId || '').trim();
-  if (!businessId || businessId.length > 128 || /[\/\u0000-\u001f]/.test(businessId)) {
-    return res.status(400).json({ error: 'Invalid business ID' });
-  }
-  if (phone.length !== 11) {
-    return res.status(400).json({ error: 'সঠিক মোবাইল নম্বর দিন' });
-  }
-
-  try {
-    const business = await loadBusinessBySlugOrId(businessId);
-    if (!business || business.data?.status === 'suspended') {
-      return res.status(404).json({ error: 'Store not found' });
-    }
-    const rows = await queryOrdersByField(business.id, 'phone', phone);
-    const filtered = rows
-      .filter((row: any) => !orderId || String(row.id) === orderId || String(row.id).toLowerCase() === orderId.toLowerCase())
-      .sort((a: any, b: any) => Number(b.createdAtMs || 0) - Number(a.createdAtMs || 0))
-      .slice(0, 10)
-      .map((row: any) => sanitizePublicOrder({ ...row, id: row.id }));
-    res.setHeader('Cache-Control', 'no-store');
-    return res.json({ orders: filtered });
-  } catch (error: any) {
-    console.error('[Shop Track]', error?.message || error);
-    return res.status(500).json({ error: 'অর্ডার খোঁজা যায়নি' });
-  }
+  res.setHeader('Cache-Control', 'public, max-age=60, stale-while-revalidate=300');
+  return res.json(sanitizePublicBusiness(business.id, business.data));
 });
 
 app.post('/api/chat/respond', async (req, res) => {

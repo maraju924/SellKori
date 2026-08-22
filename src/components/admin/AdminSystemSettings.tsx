@@ -24,8 +24,7 @@ import { Input } from '../ui/input';
 import { Textarea } from '../ui/textarea';
 import { Badge } from '../ui/badge';
 import { db } from '../../lib/firebase';
-import { getDocAcrossPanelDbs } from '../../lib/panelDb';
-import { deleteField, doc, setDoc } from 'firebase/firestore';
+import { deleteField, doc, getDoc, setDoc } from 'firebase/firestore';
 import { toast } from 'sonner';
 import { AVAILABLE_GEMINI_MODELS, testGeminiApiKeyAndModel } from '../../lib/gemini';
 
@@ -64,13 +63,13 @@ export function AdminSystemSettings() {
       }
       try {
         const [publicDoc, secretDoc] = await Promise.all([
-          getDocAcrossPanelDbs('system_config', 'public'),
-          getDocAcrossPanelDbs('system', 'settings'),
+          getDoc(doc(db, 'system_config', 'public')),
+          getDoc(doc(db, 'system', 'settings')),
         ]);
-        const publicData = publicDoc?.exists() ? (publicDoc.data() || {}) : {};
-        const secretData = secretDoc?.exists() ? (secretDoc.data() || {}) : {};
+        const publicData = publicDoc.exists() ? publicDoc.data() : {};
+        const secretData = secretDoc.exists() ? secretDoc.data() : {};
         const data = { ...publicData, ...secretData };
-        if (publicDoc?.exists() || secretDoc?.exists()) {
+        if (publicDoc.exists() || secretDoc.exists()) {
           if (data.globalAnnouncement) setAnnouncement(data.globalAnnouncement);
           if (data.tokenRatePerLakh) setTokenRatePerLakh(Number(data.tokenRatePerLakh));
           // Public fallback migrates keys saved by older releases.

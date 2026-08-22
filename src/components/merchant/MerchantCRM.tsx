@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { 
+  Users, 
   Search, 
   Phone, 
   MapPin, 
@@ -7,9 +8,10 @@ import {
   Megaphone
 } from 'lucide-react';
 import { Input } from '../ui/input';
+import { Badge } from '../ui/badge';
 import { BusinessConfig, Order } from '../../types';
-import { collection, query, where, limit } from 'firebase/firestore';
-import { listenQueryAcrossPanelDbs } from '../../lib/panelDb';
+import { db } from '../../lib/firebase';
+import { collection, onSnapshot, query, where, limit } from 'firebase/firestore';
 
 interface MerchantCRMProps {
   business: BusinessConfig;
@@ -38,14 +40,17 @@ export function MerchantCRM({ business, orders }: MerchantCRMProps) {
   // including which ad brought them (acquisition).
   useEffect(() => {
     if (!business.id) return;
-    return listenQueryAcrossPanelDbs<any>(
-      (database) => query(
-        collection(database, 'customers'),
-        where('businessId', '==', business.id),
-        limit(500)
-      ),
-      (docs) => setMessengerLeads(docs),
+    const q = query(
+      collection(db, 'customers'),
+      where('businessId', '==', business.id),
+      limit(500)
     );
+    const unsub = onSnapshot(q, (snap) => {
+      setMessengerLeads(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+    }, (err) => {
+      console.warn('[CRM] customers snapshot error:', err);
+    });
+    return () => unsub();
   }, [business.id]);
 
   const customerMap = new Map<string, CrmCustomer>();
@@ -123,13 +128,27 @@ export function MerchantCRM({ business, orders }: MerchantCRMProps) {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-        <h2 className="text-lg font-semibold text-zinc-900 dark:text-white">গ্রাহক</h2>
-        <div className="flex items-center gap-3 text-xs text-zinc-500">
-          <span>{customerList.length} জন</span>
+      {/* Header Bar */}
+      <div className="bg-white dark:bg-zinc-900 border border-zinc-200/80 dark:border-zinc-800 rounded-3xl p-6 shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div>
+          <div className="flex items-center gap-2">
+            <h2 className="text-xl md:text-2xl font-black text-zinc-900 dark:text-white">
+              কাস্টমার CRM ও লিড হাব
+            </h2>
+            <Badge className="bg-orange-100 text-orange-800 dark:bg-orange-950/60 dark:text-orange-300 border-none font-bold text-xs">
+              AI Contact Intelligence
+            </Badge>
+          </div>
+          <p className="text-xs text-zinc-500 mt-1">
+            মেসেঞ্জারে কথা বলা প্রতিটি লিড এবং অর্ডার করা প্রতিটি গ্রাহক — কে কোন বিজ্ঞাপন থেকে এসেছে সহ।
+          </p>
+        </div>
+
+        <div className="flex items-center gap-3 text-xs font-bold text-zinc-500">
+          <span>মোট লিড: {customerList.length} জন</span>
           {adLeadCount > 0 && (
-            <span className="flex items-center gap-1">
-              <Megaphone className="w-3.5 h-3.5" /> অ্যাড: {adLeadCount}
+            <span className="flex items-center gap-1 text-purple-600 dark:text-purple-400">
+              <Megaphone className="w-3.5 h-3.5" /> অ্যাড থেকে: {adLeadCount} জন
             </span>
           )}
         </div>
@@ -172,8 +191,12 @@ export function MerchantCRM({ business, orders }: MerchantCRMProps) {
 
       {/* Customers Grid */}
       {filteredCustomers.length === 0 ? (
-        <div className="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl p-10 text-center">
-          <p className="text-sm text-zinc-400">কোনো গ্রাহক নেই</p>
+        <div className="bg-white dark:bg-zinc-900 border border-zinc-200/80 dark:border-zinc-800 rounded-3xl p-12 text-center space-y-3">
+          <Users className="w-12 h-12 text-zinc-300 dark:text-zinc-700 mx-auto" />
+          <h3 className="font-black text-sm text-zinc-800 dark:text-zinc-200">কোনো গ্রাহক রেকর্ড পাওয়া যায়নি</h3>
+          <p className="text-xs text-zinc-500 max-w-sm mx-auto">
+            মেসেঞ্জারে গ্রাহক মেসেজ দেওয়ার সাথে সাথে তাদের প্রোফাইল স্বয়ংক্রিয়ভাবে এখানে তৈরি হবে।
+          </p>
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">

@@ -5,7 +5,7 @@
 
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import { getAuth } from 'firebase/auth';
-import { getFirestore, type Firestore } from 'firebase/firestore';
+import { getFirestore } from 'firebase/firestore';
 import { getStorage } from 'firebase/storage';
 // `with { type: 'json' }` is required for plain Node ESM (Vercel functions);
 // Vite/tsx also support it.
@@ -26,37 +26,8 @@ const firebaseConfigData = {
 // Reuse the default app when it already exists (e.g. the API server
 // initializes Firebase too); initializeApp throws on duplicate [DEFAULT].
 const app = getApps().length ? getApp() : initializeApp(firebaseConfigData);
-const configuredDbId = String(
-  viteEnv.VITE_FIREBASE_DATABASE_ID || firebaseConfig.firestoreDatabaseId || '',
-).trim();
+const dbId = viteEnv.VITE_FIREBASE_DATABASE_ID || firebaseConfig.firestoreDatabaseId;
 
-export const firestoreDatabaseId = configuredDbId && configuredDbId !== '(default)'
-  ? configuredDbId
-  : '(default)';
-
-export const defaultDb = getFirestore(app);
-export const namedDb = firestoreDatabaseId !== '(default)'
-  ? getFirestore(app, firestoreDatabaseId)
-  : null;
-
-// Primary client DB stays the configured named database (AI Studio).
-// This is a live binding so panels can point writes at "(default)" when
-// that's where the real documents actually live.
-export let db = namedDb || defaultDb;
+export const db = (dbId && dbId !== "") ? getFirestore(app, dbId) : getFirestore(app);
 export const auth = getAuth(app);
 export const storage = getStorage(app);
-
-/** Panels must read both DBs: server writes used to fall back to "(default)". */
-export function getPanelFirestoreDbs(): Firestore[] {
-  if (namedDb) return [namedDb, defaultDb];
-  return [defaultDb];
-}
-
-export function firestoreDatabaseLabel(instance: Firestore): string {
-  if (namedDb && instance === namedDb) return firestoreDatabaseId;
-  return '(default)';
-}
-
-export function setPanelWriteDb(instance: Firestore) {
-  db = instance;
-}

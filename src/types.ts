@@ -5,27 +5,6 @@ export interface ProductTier {
   label?: string; // e.g. "১ পিস ট্রায়াল", "২ পিস বেস্ট ডিল", "৩ পিস কম্বো"
 }
 
-export type ProductCondition = 'new' | 'used' | 'refurbished';
-
-export interface ProductSpecRow {
-  label: string;
-  value: string;
-}
-
-export interface ProductReview {
-  id?: string;
-  author: string;
-  rating: number;
-  text: string;
-  date?: string;
-  verified?: boolean;
-}
-
-export interface ProductFaqItem {
-  question: string;
-  answer: string;
-}
-
 export interface Product {
   id: string;
   name: string;
@@ -39,38 +18,6 @@ export interface Product {
   images?: string[];
   reviewImages?: string[];
   isAvailable?: boolean;
-  slug?: string;
-  seoTitle?: string;
-  seoDescription?: string;
-  brand?: string;
-  sku?: string;
-  model?: string;
-  gtin?: string;
-  tags?: string[];
-  highlights?: string[];
-  imageAlts?: string[];
-  compareAtPrice?: number;
-  condition?: ProductCondition;
-  material?: string;
-  color?: string;
-  colors?: string[];
-  sizes?: string[];
-  weight?: string;
-  dimensions?: string;
-  origin?: string;
-  gender?: string;
-  warranty?: string;
-  boxContents?: string;
-  careInstructions?: string;
-  sizeGuide?: string;
-  videoUrl?: string;
-  suitableFor?: string;
-  deliveryNote?: string;
-  returnPolicy?: string;
-  soldCount?: number;
-  specRows?: ProductSpecRow[];
-  reviews?: ProductReview[];
-  faqItems?: ProductFaqItem[];
 }
 
 export interface FAQ {
@@ -146,8 +93,6 @@ export interface BusinessConfig {
   id: string;
   ownerId: string;
   name: string;
-  /** Public store path: sell-kori.vercel.app/{slug} */
-  slug?: string;
   description?: string;
   phone?: string;
   address?: string;
@@ -159,8 +104,6 @@ export interface BusinessConfig {
   products: Product[];
   faqs: FAQ[];
   facebookConfig?: FacebookConfig;
-  /** Public Pixel id only — never the CAPI token. */
-  facebookPixelId?: string;
   courierConfig?: CourierConfigType;
   features?: BusinessFeatures;
   customSystemPrompt?: string;
@@ -215,15 +158,6 @@ export interface OrderStatusEvent {
   note?: string;
 }
 
-export interface OrderItem {
-  productId: string;
-  productName: string;
-  quantity: number;
-  unitPrice: number;
-  lineTotal: number;
-  image?: string;
-}
-
 export interface Order {
   id: string;
   businessId: string;
@@ -242,9 +176,6 @@ export interface Order {
   totalPrice: number;
   deliveryFee?: number;
   discount?: number;
-  /** Multi-item website cart. Messenger orders stay single-line on the root fields. */
-  items?: OrderItem[];
-  cartSignature?: string;
   status: OrderStatus;
   paymentStatus: PaymentStatus;
   paymentMethod?: PaymentMethod;

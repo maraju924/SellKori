@@ -16,7 +16,7 @@ service cloud.firestore {
     
     function isAdmin() {
       return isSignedIn() && (
-        request.auth.token.email == 'maraju924@gmail.com' ||
+        request.auth.token.email == 'maraju924@gmail.com' || 
         (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin')
       );
@@ -46,10 +46,7 @@ service cloud.firestore {
     }
 
     match /businesses/{businessId} {
-      // Split get/list: collection queries cannot be proven from get() of
-      // another document, so list must match the query fields directly.
-      allow get: if isAdmin() || isMerchantOf(resource.data);
-      allow list: if isAdmin() || (isSignedIn() && resource.data.ownerId == request.auth.uid);
+      allow read: if isAdmin() || isMerchantOf(resource.data);
       allow create: if isSignedIn() && request.resource.data.ownerId == request.auth.uid;
       allow update: if isAdmin() || (
         isMerchantOf(resource.data) &&
@@ -65,22 +62,10 @@ service cloud.firestore {
 
     match /orders/{orderId} {
       allow create: if true;
-      // isMerchantByBizId() uses get() and cannot be proven for list queries
-      // like where('businessId' == ...). Signed-in list unblocks the panels;
-      // get stays available for checkout session lookups.
-      allow get: if isAdmin() ||
-                   (isSignedIn() && (
-                     resource.data.ownerId == request.auth.uid ||
-                     resource.data.merchantId == request.auth.uid ||
-                     isMerchantByBizId(resource.data.businessId)
-                   )) ||
+      allow read: if isAdmin() || 
+                   (isSignedIn() && (resource.data.ownerId == request.auth.uid || isMerchantByBizId(resource.data.businessId))) ||
                    (resource.data.sessionId != null);
-      allow list: if isAdmin() || isSignedIn();
-      allow write: if isAdmin() || (isSignedIn() && (
-        resource.data.ownerId == request.auth.uid ||
-        resource.data.merchantId == request.auth.uid ||
-        isMerchantByBizId(resource.data.businessId)
-      ));
+      allow write: if isAdmin() || (isSignedIn() && (resource.data.ownerId == request.auth.uid || isMerchantByBizId(resource.data.businessId)));
     }
 
     match /payments/{paymentId} {
@@ -88,8 +73,7 @@ service cloud.firestore {
       // client SDK when Admin credentials are absent). Token crediting is
       // verified against ZiniPay server-side before it happens.
       allow create: if true;
-      allow get: if isAdmin() || (isSignedIn() && isMerchantByBizId(resource.data.businessId));
-      allow list: if isAdmin() || isSignedIn();
+      allow read: if isAdmin() || (isSignedIn() && isMerchantByBizId(resource.data.businessId));
       allow update: if true;
       allow delete: if isAdmin();
     }
@@ -113,8 +97,7 @@ service cloud.firestore {
 
     match /analytics/{eventId} {
       allow create: if true;
-      allow get: if isAdmin() || isMerchantByBizId(resource.data.businessId);
-      allow list: if isAdmin() || isSignedIn();
+      allow read: if isAdmin() || isMerchantByBizId(resource.data.businessId);
     }
 
     match /system/{documentId} {

@@ -1,23 +1,28 @@
 import React from 'react';
-import {
-  BarChart3,
-  Package,
-  Tag,
-  Users,
-  Bot,
-  Terminal,
-  MessageCircle,
-  Megaphone,
-  HelpCircle,
-  ShieldCheck,
-  Globe,
-  Truck,
-  CreditCard,
+import { 
+  BarChart3, 
+  Package, 
+  Tag, 
+  Users, 
+  Bot, 
+  Terminal, 
+  MessageCircle, 
+  Megaphone, 
+  HelpCircle, 
+  ShieldCheck, 
+  Globe, 
+  Truck, 
+  CreditCard, 
   Store,
   X,
+  Zap,
+  ChevronRight,
+  ExternalLink,
+  Sliders
 } from 'lucide-react';
 import { BusinessConfig, UserProfile } from '../../types';
 import { Link } from 'react-router-dom';
+import { isFeatureEnabled } from '../../lib/featureFlags';
 
 interface MerchantSidebarProps {
   activeTab: string;
@@ -38,100 +43,184 @@ export function MerchantSidebar({
 
   const menuGroups = [
     ...(isAdmin ? [{
-      group: 'অ্যাডমিন',
+      group: 'সুপার অ্যাডমিন পোর্টাল',
       items: [
-        { id: 'admin-portal', label: 'অ্যাডমিন', icon: ShieldCheck, isExternalRoute: true, href: '/admin' }
+        { id: 'admin-portal', label: 'প্ল্যাটফর্ম অ্যাডমিন কন্ট্রোল', icon: ShieldCheck, badge: 'Root', isExternalRoute: true, href: '/admin' }
       ]
     }] : []),
     {
-      group: '',
+      group: 'মূল ড্যাশবোর্ড',
       items: [
-        { id: 'analytics', label: 'ওভারভিউ', icon: BarChart3 },
-        { id: 'orders', label: 'অর্ডার', icon: Package },
-        { id: 'products', label: 'পণ্য', icon: Tag },
-        { id: 'customers', label: 'গ্রাহক', icon: Users },
-        { id: 'info', label: 'স্টোর', icon: Store },
+        { id: 'analytics', label: 'ওভারভিউ ও অ্যানালিটিক্স', icon: BarChart3, badge: 'Live' },
       ]
     },
     {
-      group: 'এআই',
+      group: 'কমার্স ও ইনভেন্টরি',
       items: [
-        { id: 'ai-control', label: 'এআই', icon: Bot },
-        { id: 'test-chat', label: 'টেস্ট চ্যাট', icon: Terminal },
-        { id: 'messenger', label: 'মেসেঞ্জার', icon: MessageCircle },
-        { id: 'broadcasting', label: 'ব্রডকাস্ট', icon: Megaphone },
-        { id: 'faqs', label: 'FAQ', icon: HelpCircle },
-        { id: 'features', label: 'ফিচার', icon: ShieldCheck },
+        { id: 'orders', label: 'অর্ডার ও ডেলিভারি ট্র্যাকিং', icon: Package },
+        { id: 'products', label: 'পণ্য ক্যাটালগ ও মূল্য সীমা', icon: Tag },
+        { id: 'customers', label: 'গ্রাহক সিআরএম ও লিডস', icon: Users },
+        { id: 'info', label: 'স্টোর প্রোফাইল ও ব্র্যান্ডিং', icon: Store },
       ]
     },
     {
-      group: 'সেটিংস',
+      group: 'এআই ও অটোমেশন ইঞ্জিন',
       items: [
-        { id: 'facebook', label: 'পিক্সেল', icon: Globe },
-        { id: 'integrations', label: 'কুরিয়ার', icon: Truck },
-        { id: 'billing', label: 'বিলিং', icon: CreditCard },
+        { id: 'ai-control', label: 'এআই সেলস ব্রেন ও দরদাম', icon: Bot, isHighlighted: true, live: isFeatureEnabled(business.features, 'aiEnabled') },
+        { id: 'test-chat', label: 'লাইভ চ্যাট সিমুলেটর', icon: Terminal, live: isFeatureEnabled(business.features, 'aiEnabled') },
+        { id: 'messenger', label: 'ফেসবুক মেসেঞ্জার ওয়েবহুক', icon: MessageCircle, live: isFeatureEnabled(business.features, 'messengerRepliesEnabled') },
+        { id: 'broadcasting', label: 'টার্গেটেড ব্রডকাস্টিং', icon: Megaphone, live: isFeatureEnabled(business.features, 'broadcastingEnabled') },
+        { id: 'faqs', label: 'পলিসি ও নলেজবেস', icon: HelpCircle, live: isFeatureEnabled(business.features, 'faqEnabled') },
+        { id: 'features', label: 'সিস্টেম ফিচার সুইচ', icon: ShieldCheck, badge: 'Control' },
+      ]
+    },
+    {
+      group: 'ইন্টিগ্রেশন ও ওয়ালেট',
+      items: [
+        { id: 'facebook', label: 'মেটা পিক্সেল ও CAPI', icon: Globe },
+        { id: 'integrations', label: 'কুরিয়ার ও এপিআই গেটওয়ে', icon: Truck },
+        { id: 'billing', label: 'টোকেন ওয়ালেট ও বিলিং', icon: CreditCard, badge: 'Recharge' },
       ]
     }
   ];
 
   return (
-    <aside className="w-full md:w-56 bg-white dark:bg-zinc-950 md:border-r border-zinc-200 dark:border-zinc-800 h-full flex flex-col overflow-y-auto">
-      <div className="p-3 space-y-4">
-        <div className="flex md:hidden justify-between items-center pb-2 border-b border-zinc-200 dark:border-zinc-800">
-          <p className="font-semibold text-sm truncate">{business.name || 'স্টোর'}</p>
+    <aside className="w-full md:w-72 bg-white dark:bg-zinc-950 md:border-r border-zinc-200/80 dark:border-zinc-800/80 h-full flex flex-col justify-between overflow-y-auto scrollbar-none transition-colors no-select">
+      <div className="p-4 space-y-5">
+        {/* Android Native Drawer Top Profile Header */}
+        <div className="flex md:hidden justify-between items-center pb-3 border-b border-zinc-200 dark:border-zinc-800">
+          <div className="flex items-center gap-2.5">
+            <div className="w-10 h-10 rounded-2xl bg-orange-600 text-white flex items-center justify-center font-black text-sm shadow-md shadow-orange-600/30">
+              SK
+            </div>
+            <div>
+              <h3 className="font-black text-sm text-zinc-900 dark:text-white leading-tight">
+                {business.name || 'মার্চেন্ট প্যানেল'}
+              </h3>
+              <p className="text-[10px] text-zinc-500 font-bold">SellKori Native App</p>
+            </div>
+          </div>
           <button
             onClick={onClose}
-            className="w-8 h-8 rounded-lg flex items-center justify-center text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-900"
+            className="w-8 h-8 rounded-full bg-zinc-100 dark:bg-zinc-900 flex items-center justify-center text-zinc-500 native-ripple"
           >
             <X className="w-4 h-4" />
           </button>
         </div>
 
+        {/* Categorized Enterprise Menu */}
         <div className="space-y-4">
           {menuGroups.map((grp, gIdx) => (
-            <div key={gIdx} className="space-y-0.5">
-              {grp.group ? (
-                <h4 className="text-[11px] font-medium text-zinc-400 px-2.5 pb-1">{grp.group}</h4>
-              ) : null}
-              {grp.items.map((item: any) => {
-                const Icon = item.icon;
-                const isActive = activeTab === item.id;
+            <div key={gIdx} className="space-y-1">
+              <h4 className="text-[10px] font-black uppercase tracking-wider text-zinc-400 dark:text-zinc-500 px-3 py-0.5">
+                {grp.group}
+              </h4>
+              <div className="space-y-0.5">
+                {grp.items.map((item: any) => {
+                  const Icon = item.icon;
+                  const isActive = activeTab === item.id;
+                  
+                  if (item.isExternalRoute && item.href) {
+                    return (
+                      <Link
+                        key={item.id}
+                        to={item.href}
+                        onClick={() => {
+                          if (onClose) onClose();
+                        }}
+                        className="w-full flex items-center justify-between px-3.5 py-2.5 rounded-2xl text-xs font-bold transition-all native-ripple text-left bg-zinc-900 dark:bg-zinc-800 text-orange-400 hover:bg-zinc-800 border border-zinc-700/80 shadow-xs mb-1.5"
+                      >
+                        <div className="flex items-center gap-3">
+                          <Icon className="w-4 h-4 text-orange-500 shrink-0" />
+                          <span className="truncate">{item.label}</span>
+                        </div>
+                        {item.badge && (
+                          <span className="text-[9px] font-black px-1.5 py-0.5 rounded-md bg-orange-600 text-white">
+                            {item.badge}
+                          </span>
+                        )}
+                      </Link>
+                    );
+                  }
 
-                if (item.isExternalRoute && item.href) {
                   return (
-                    <Link
+                    <button
                       key={item.id}
-                      to={item.href}
-                      onClick={() => onClose?.()}
-                      className="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-[13px] text-zinc-700 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-900"
+                      onClick={() => {
+                        setActiveTab(item.id);
+                        if (onClose) onClose();
+                      }}
+                      className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-2xl text-xs font-bold transition-all native-ripple text-left ${
+                        isActive
+                          ? 'bg-orange-600 text-white shadow-md shadow-orange-600/20 scale-[1.01]'
+                          : 'text-zinc-700 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-900/80 hover:text-zinc-950 dark:hover:text-white'
+                      }`}
                     >
-                      <Icon className="w-4 h-4 text-zinc-500" />
-                      {item.label}
-                    </Link>
-                  );
-                }
+                      <div className="flex items-center gap-3">
+                        <Icon className={`w-4 h-4 shrink-0 ${isActive ? 'text-white' : item.isHighlighted ? 'text-orange-500' : 'text-zinc-500'}`} />
+                        <span className="truncate">{item.label}</span>
+                      </div>
 
-                return (
-                  <button
-                    key={item.id}
-                    onClick={() => {
-                      setActiveTab(item.id);
-                      onClose?.();
-                    }}
-                    className={`w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-[13px] text-left ${
-                      isActive
-                        ? 'bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900'
-                        : 'text-zinc-700 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-900'
-                    }`}
-                  >
-                    <Icon className={`w-4 h-4 ${isActive ? '' : 'text-zinc-500'}`} />
-                    {item.label}
-                  </button>
-                );
-              })}
+                      <div className="flex items-center gap-2 shrink-0">
+                        {typeof item.live === 'boolean' && (
+                          <span
+                            className={`w-1.5 h-1.5 rounded-full ${
+                              item.live
+                                ? isActive ? 'bg-emerald-300' : 'bg-emerald-500'
+                                : isActive ? 'bg-white/40' : 'bg-zinc-300 dark:bg-zinc-600'
+                            }`}
+                            title={item.live ? 'মডিউল সক্রিয়' : 'সুইচবোর্ডে বন্ধ'}
+                          />
+                        )}
+                        {item.badge && (
+                          <span className={`text-[9px] font-black px-1.5 py-0.5 rounded-md ${
+                            isActive
+                              ? 'bg-white/20 text-white'
+                              : item.badge === 'Live'
+                              ? 'bg-emerald-100 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300'
+                              : 'bg-orange-100 dark:bg-orange-950/60 text-orange-700 dark:text-orange-300'
+                          }`}>
+                            {item.badge}
+                          </span>
+                        )}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
             </div>
           ))}
         </div>
+      </div>
+
+      {/* Floating Quota Card */}
+      <div className="p-3.5 border-t border-zinc-200/80 dark:border-zinc-800/80 bg-zinc-50/80 dark:bg-zinc-900/50 m-3 rounded-2xl space-y-2">
+        <div className="flex items-center justify-between">
+          <span className="text-[11px] font-black text-zinc-600 dark:text-zinc-300 flex items-center gap-1.5">
+            <Zap className="w-3.5 h-3.5 text-orange-500 fill-orange-500" />
+            এআই টোকেন কোটা
+          </span>
+          <span className="text-[10px] font-mono font-black text-orange-600 dark:text-orange-400">
+            {(business.tokenBalance || 0).toLocaleString()}
+          </span>
+        </div>
+
+        <div className="w-full h-1.5 bg-zinc-200 dark:bg-zinc-800 rounded-full overflow-hidden">
+          <div
+            className="h-full bg-linear-to-r from-orange-500 to-amber-400 rounded-full transition-all"
+            style={{ width: `${Math.min(100, Math.max(8, ((business.tokenBalance || 0) / 100000) * 100))}%` }}
+          />
+        </div>
+
+        <button
+          onClick={() => {
+            setActiveTab('billing');
+            if (onClose) onClose();
+          }}
+          className="w-full py-1 text-center text-[10px] font-black text-orange-600 dark:text-orange-400 hover:underline block"
+        >
+          + টোকেন প্যাক রিচার্জ
+        </button>
       </div>
     </aside>
   );

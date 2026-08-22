@@ -73,7 +73,7 @@ export function MerchantTestChat({ business }: MerchantTestChatProps) {
         timestamp: Date.now()
       }]);
       setInput('');
-      toast.message('এআই এখন বন্ধ');
+      toast.message('এআই সুইচবোর্ডে বন্ধ বা নীরব সময় চলছে');
       return;
     }
 
@@ -140,7 +140,9 @@ export function MerchantTestChat({ business }: MerchantTestChatProps) {
         });
         if (saved) {
           setOrderPlacedId(saved.id);
-          toast.success('টেস্ট অর্ডার তৈরি হয়েছে');
+          toast.success(`সিমুলেটরে টেস্ট অর্ডার তৈরি হয়েছে!`, {
+            description: `অর্ডার পেইজে গিয়ে আপনি এই ইনভয়েসটি দেখতে পারেন।`
+          });
         }
       }
     } catch (e) {
@@ -162,21 +164,35 @@ export function MerchantTestChat({ business }: MerchantTestChatProps) {
     setChatSummary('');
     setCollected({});
     setOrderPlacedId('');
-    toast.success('রিসেট হয়েছে');
+    toast.success('চ্যাট সিমুলেটর রিসেট করা হয়েছে');
   };
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between gap-3">
-        <h2 className="text-lg font-semibold text-zinc-900 dark:text-white">টেস্ট চ্যাট</h2>
+      {/* Header Bar */}
+      <div className="bg-white dark:bg-zinc-900 border border-zinc-200/80 dark:border-zinc-800 rounded-3xl p-6 shadow-xs flex items-center justify-between gap-4">
+        <div>
+          <div className="flex items-center gap-2">
+            <h2 className="text-xl md:text-2xl font-black text-zinc-900 dark:text-white">
+              লাইভ চ্যাট সিমুলেটর ও স্যান্ডবক্স
+            </h2>
+            <Badge className="bg-orange-100 text-orange-800 dark:bg-orange-950/60 dark:text-orange-300 border-none font-bold text-xs">
+              Live Sandbox
+            </Badge>
+          </div>
+          <p className="text-xs text-zinc-500 mt-1">
+            আপনার বটের সাথে কথা বলুন, দামাদামি করুন এবং অর্ডার মেমো তৈরীর প্রক্রিয়া যাচাই করুন।
+          </p>
+        </div>
+
         <Button
           variant="outline"
           size="sm"
           onClick={handleResetChat}
-          className="rounded-lg text-xs h-9 px-3"
+          className="rounded-2xl text-xs font-bold border-zinc-200 dark:border-zinc-700 h-10 px-4"
         >
           <RefreshCw className="w-3.5 h-3.5 mr-1.5" />
-          রিসেট
+          রিসেট চ্যাট
         </Button>
       </div>
 

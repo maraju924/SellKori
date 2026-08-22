@@ -4,79 +4,26 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { BrowserRouter as Router, Routes, Route, Link, useNavigate, Navigate, useSearchParams, useLocation, useParams } from 'react-router-dom';
+import { BrowserRouter as Router, Routes, Route, Link, useNavigate, Navigate, useSearchParams, useLocation } from 'react-router-dom';
 import { User as FirebaseUser, onAuthStateChanged, signOut, GoogleAuthProvider, signInWithPopup } from 'firebase/auth';
-import { doc, setDoc, serverTimestamp } from 'firebase/firestore';
+import { doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore';
 import { Zap, ShieldCheck, LayoutDashboard, LogOut } from 'lucide-react';
 import { Toaster, toast } from 'sonner';
 
 import { auth, db } from './lib/firebase';
-import { getDocAcrossPanelDbs } from './lib/panelDb';
 import { UserProfile } from './types';
 import { Button } from './components/ui/button';
 import { LandingPage } from './components/landing/LandingPage';
 import { MerchantPanel } from './components/merchant/MerchantPanel';
 import { AdminPanel } from './components/admin/AdminPanel';
 import { ChatView } from './components/chat/ChatView';
-import { ShopLayout } from './components/shop/ShopLayout';
-import { ShopHome } from './components/shop/ShopHome';
-import { ShopProduct } from './components/shop/ShopProduct';
-import { ShopCart } from './components/shop/ShopCart';
-import { ShopCheckout } from './components/shop/ShopCheckout';
-import { ShopOrder } from './components/shop/ShopOrder';
-import { ShopTrack } from './components/shop/ShopTrack';
-import { ShopCategory, ShopCategoryIndex } from './components/shop/ShopCategory';
-import { fetchShop } from './lib/shopApi';
-import { shopPath } from './lib/storefront';
-import { isPublicCustomerPath } from './lib/storeSlug';
-
-function isPlatformPath(pathname: string) {
-  return (
-    pathname.startsWith('/dashboard')
-    || pathname.startsWith('/admin')
-    || pathname.startsWith('/login')
-  );
-}
-
-function ShopLegacyRedirect() {
-  const { storeSlug } = useParams<{ storeSlug: string }>();
-  const location = useLocation();
-  const [target, setTarget] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!storeSlug) {
-      setTarget('/');
-      return;
-    }
-    let cancelled = false;
-    fetchShop(storeSlug)
-      .then((shop) => {
-        if (cancelled) return;
-        if (!shop) {
-          setTarget('/');
-          return;
-        }
-        const rest = location.pathname.replace(/^\/shop\/[^/]+/, '') || '';
-        setTarget(`${shopPath(shop)}${rest}${location.search}`);
-      })
-      .catch(() => {
-        if (!cancelled) setTarget('/');
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [storeSlug, location.pathname, location.search]);
-
-  if (!target) return null;
-  return <Navigate to={target} replace />;
-}
 
 function GlobalBanner() {
   const location = useLocation();
   const [announcement, setAnnouncement] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!isPlatformPath(location.pathname)) return;
+    if (location.pathname === '/') return;
     const controller = new AbortController();
     fetch('/api/public/config', { signal: controller.signal })
       .then((response) => (response.ok ? response.json() : null))
@@ -87,7 +34,7 @@ function GlobalBanner() {
     return () => controller.abort();
   }, [location.pathname]);
 
-  if (!isPlatformPath(location.pathname) || !announcement) return null;
+  if (location.pathname === '/' || !announcement) return null;
 
   return (
     <div className="bg-slate-900 text-white py-2 px-4 text-center text-xs tracking-wide sticky top-0 z-[1000]">
@@ -232,13 +179,14 @@ export default function App() {
       try {
         setUser(u);
         if (u) {
-          const docSnap = await getDocAcrossPanelDbs('users', u.uid);
+          const docRef = doc(db, 'users', u.uid);
+          const docSnap = await getDoc(docRef);
           const isAdminUser = u.email === 'maraju924@gmail.com';
-          if (docSnap?.exists()) {
+          if (docSnap.exists()) {
             const existing = docSnap.data() as UserProfile;
             if (isAdminUser && existing.role !== 'admin') {
               existing.role = 'admin';
-              await setDoc(doc(db, 'users', u.uid), { role: 'admin' }, { merge: true });
+              await setDoc(docRef, { role: 'admin' }, { merge: true });
             }
             setProfile(existing);
           } else {
@@ -249,7 +197,7 @@ export default function App() {
               role: isAdminUser ? 'admin' : 'merchant',
               createdAt: serverTimestamp()
             };
-            await setDoc(doc(db, 'users', u.uid), newProfile);
+            await setDoc(docRef, newProfile);
             setProfile(newProfile);
           }
         } else {
@@ -263,11 +211,7 @@ export default function App() {
     });
   }, []);
 
-  const customerStorefront = isPublicCustomerPath(
-    typeof window !== 'undefined' ? window.location.pathname : ''
-  );
-
-  if (loading && !customerStorefront) {
+  if (loading) {
     return (
       <div className="h-screen flex flex-col items-center justify-center bg-zinc-50 dark:bg-zinc-950">
         <div className="w-10 h-10 rounded-md bg-slate-900 text-white flex items-center justify-center font-heading text-sm">
@@ -306,8 +250,6 @@ export default function App() {
           {/* Public Customer Chat Room */}
           <Route path="/chat/:businessId" element={<ChatView />} />
 
-          <Route path="/shop/:storeSlug/*" element={<ShopLegacyRedirect />} />
-
           {/* Merchant Control Center */}
           <Route
             path="/dashboard/*"
@@ -325,18 +267,6 @@ export default function App() {
               )
             }
           />
-
-          {/* Public merchant storefront: sell-kori.vercel.app/myshop */}
-          <Route path="/:storeSlug" element={<ShopLayout />}>
-            <Route index element={<ShopHome />} />
-            <Route path="c" element={<ShopCategoryIndex />} />
-            <Route path="c/:categoryKey" element={<ShopCategory />} />
-            <Route path="p/:productId" element={<ShopProduct />} />
-            <Route path="cart" element={<ShopCart />} />
-            <Route path="checkout" element={<ShopCheckout />} />
-            <Route path="order/:orderId" element={<ShopOrder />} />
-            <Route path="track" element={<ShopTrack />} />
-          </Route>
 
           {/* Catch-all Fallback */}
           <Route path="*" element={<Navigate to="/" replace />} />

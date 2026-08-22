@@ -11,8 +11,8 @@ import {
 } from 'lucide-react';
 import { Button } from '../ui/button';
 import { Badge } from '../ui/badge';
-import { collection, query, orderBy, limit } from 'firebase/firestore';
-import { listenQueryAcrossPanelDbs } from '../../lib/panelDb';
+import { collection, query, orderBy, limit, onSnapshot } from 'firebase/firestore';
+import { db } from '../../lib/firebase';
 
 export function AdminLogsTelemetry() {
   const [logs, setLogs] = useState<any[]>([]);
@@ -32,11 +32,10 @@ export function AdminLogsTelemetry() {
   };
 
   useEffect(() => {
-    return listenQueryAcrossPanelDbs<any>(
-      (database) => query(collection(database, 'system_logs'), orderBy('timestamp', 'desc'), limit(50)),
-      (docs) => setLogs(docs),
-      (database) => query(collection(database, 'system_logs'), limit(50)),
-    );
+    const q = query(collection(db, 'system_logs'), orderBy('timestamp', 'desc'), limit(50));
+    return onSnapshot(q, (snap) => {
+      setLogs(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+    }, () => {});
   }, []);
 
   const sampleLogs = logs.length > 0 ? logs : [

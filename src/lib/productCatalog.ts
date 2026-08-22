@@ -1,20 +1,23 @@
 import { Product, ProductTier } from '../types';
-import { cleanFirestoreData } from './utils';
-import { asProductList, finiteNumber, sameProductId } from './productList';
-import {
-  isValidProductSlug,
-  normalizeProductSlug,
-  optionalBlock,
-  optionalText,
-  optionalTextList,
-  sanitizeProductCondition,
-  sanitizeProductFaqs,
-  sanitizeProductReviews,
-  sanitizeSpecRows,
-  uniqueProductSlug,
-} from './productSeo';
+import { cleanFirestoreData, finiteNumber } from './utils';
 
-export { asProductList, sameProductId } from './productList';
+export function sameProductId(a?: string | number | null, b?: string | number | null): boolean {
+  if (a == null || b == null) return false;
+  const left = String(a).trim();
+  const right = String(b).trim();
+  return left.length > 0 && left === right;
+}
+
+/** Firestore sometimes stores `products` as a map instead of an array. */
+export function asProductList(raw: unknown): Product[] {
+  if (Array.isArray(raw)) {
+    return raw.filter(Boolean) as Product[];
+  }
+  if (raw && typeof raw === 'object') {
+    return Object.values(raw as Record<string, Product>).filter(Boolean);
+  }
+  return [];
+}
 
 export function normalizeTier(tier: Partial<ProductTier> | null | undefined, fallbackPrice = 0): ProductTier {
   const price = finiteNumber(tier?.price, fallbackPrice);
@@ -26,103 +29,29 @@ export function normalizeTier(tier: Partial<ProductTier> | null | undefined, fal
   };
 }
 
-export function sanitizeProduct(
-  prod: Partial<Product> & { id?: string },
-  catalog: Product[] = []
-): Product {
+export function sanitizeProduct(prod: Partial<Product> & { id?: string }): Product {
   const price = finiteNumber(prod.price, 0);
   const tiers = Array.isArray(prod.pricingTiers)
     ? prod.pricingTiers.map(t => normalizeTier(t, price))
     : undefined;
-  const productId = String(prod.id || `prod-${Date.now()}`);
-  const wantedSlug = normalizeProductSlug(prod.slug);
-  const slug = wantedSlug
-    ? uniqueProductSlug(catalog, wantedSlug, productId)
-    : '';
 
   const payload: Product = {
-    id: productId,
+    id: String(prod.id || `prod-${Date.now()}`),
     name: String(prod.name || '').trim(),
     price,
     minPrice: finiteNumber(prod.minPrice, price),
     description: String(prod.description || ''),
-    specs: optionalBlock(prod.specs, 4_000),
+    specs: prod.specs ? String(prod.specs) : undefined,
     stock: finiteNumber(prod.stock, 0),
     category: String(prod.category || 'জেনারেল').trim() || 'জেনারেল',
-    images: Array.isArray(prod.images) ? prod.images.filter(Boolean).map(String).slice(0, 12) : [],
-    reviewImages: Array.isArray(prod.reviewImages) ? prod.reviewImages.filter(Boolean).map(String).slice(0, 12) : [],
+    images: Array.isArray(prod.images) ? prod.images.filter(Boolean).map(String) : [],
+    reviewImages: Array.isArray(prod.reviewImages) ? prod.reviewImages.filter(Boolean).map(String) : [],
     isAvailable: prod.isAvailable ?? true
   };
 
   if (tiers && tiers.length > 0) {
     payload.pricingTiers = tiers;
   }
-
-  if (isValidProductSlug(slug)) payload.slug = slug;
-  const seoTitle = optionalText(prod.seoTitle, 70);
-  if (seoTitle) payload.seoTitle = seoTitle;
-  const seoDescription = optionalBlock(prod.seoDescription, 170);
-  if (seoDescription) payload.seoDescription = seoDescription;
-  const brand = optionalText(prod.brand, 80);
-  if (brand) payload.brand = brand;
-  const sku = optionalText(prod.sku, 60);
-  if (sku) payload.sku = sku;
-  const model = optionalText(prod.model, 80);
-  if (model) payload.model = model;
-  const gtin = optionalText(prod.gtin, 32);
-  if (gtin) payload.gtin = gtin;
-  const tags = optionalTextList(prod.tags, 16, 40);
-  if (tags) payload.tags = tags;
-  const highlights = optionalTextList(prod.highlights, 8, 140);
-  if (highlights) payload.highlights = highlights;
-  const imageAlts = Array.isArray(prod.imageAlts)
-    ? prod.imageAlts.slice(0, 12).map(alt => String(alt || '').trim().slice(0, 140))
-    : undefined;
-  if (imageAlts && imageAlts.some(Boolean)) payload.imageAlts = imageAlts;
-  const compareAtPrice = finiteNumber(prod.compareAtPrice, 0);
-  if (compareAtPrice > 0) payload.compareAtPrice = compareAtPrice;
-  const condition = sanitizeProductCondition(prod.condition);
-  if (condition) payload.condition = condition;
-  const material = optionalText(prod.material, 80);
-  if (material) payload.material = material;
-  const color = optionalText(prod.color, 60);
-  if (color) payload.color = color;
-  const colors = optionalTextList(prod.colors, 16, 40);
-  if (colors) payload.colors = colors;
-  const sizes = optionalTextList(prod.sizes, 20, 40);
-  if (sizes) payload.sizes = sizes;
-  const weight = optionalText(prod.weight, 40);
-  if (weight) payload.weight = weight;
-  const dimensions = optionalText(prod.dimensions, 80);
-  if (dimensions) payload.dimensions = dimensions;
-  const origin = optionalText(prod.origin, 80);
-  if (origin) payload.origin = origin;
-  const gender = optionalText(prod.gender, 40);
-  if (gender) payload.gender = gender;
-  const warranty = optionalBlock(prod.warranty, 1_200);
-  if (warranty) payload.warranty = warranty;
-  const boxContents = optionalBlock(prod.boxContents, 1_200);
-  if (boxContents) payload.boxContents = boxContents;
-  const careInstructions = optionalBlock(prod.careInstructions, 1_200);
-  if (careInstructions) payload.careInstructions = careInstructions;
-  const sizeGuide = optionalBlock(prod.sizeGuide, 2_000);
-  if (sizeGuide) payload.sizeGuide = sizeGuide;
-  const videoUrl = optionalText(prod.videoUrl, 500);
-  if (videoUrl) payload.videoUrl = videoUrl;
-  const suitableFor = optionalBlock(prod.suitableFor, 800);
-  if (suitableFor) payload.suitableFor = suitableFor;
-  const deliveryNote = optionalBlock(prod.deliveryNote, 1_200);
-  if (deliveryNote) payload.deliveryNote = deliveryNote;
-  const returnPolicy = optionalBlock(prod.returnPolicy, 1_200);
-  if (returnPolicy) payload.returnPolicy = returnPolicy;
-  const soldCount = Math.max(0, Math.round(finiteNumber(prod.soldCount, 0)));
-  if (soldCount > 0) payload.soldCount = soldCount;
-  const specRows = sanitizeSpecRows(prod.specRows);
-  if (specRows) payload.specRows = specRows;
-  const reviews = sanitizeProductReviews(prod.reviews);
-  if (reviews) payload.reviews = reviews;
-  const faqItems = sanitizeProductFaqs(prod.faqItems);
-  if (faqItems) payload.faqItems = faqItems;
 
   return payload;
 }
@@ -180,11 +109,7 @@ export function stripInlineDataUrls(products: Product[]): Product[] {
 }
 
 export function prepareProductsForWrite(products: Product[]): Product[] {
-  const out: Product[] = [];
-  for (const product of products) {
-    out.push(sanitizeProduct(product, out));
-  }
-  return cleanFirestoreData(out);
+  return cleanFirestoreData(products.map(sanitizeProduct));
 }
 
 export function findSavedProduct(list: Product[], payload: Product): Product | undefined {

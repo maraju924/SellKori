@@ -3,17 +3,22 @@ import {
   Bot,
   Save,
   Search,
+  ShieldCheck,
+  Sparkles,
   Power,
   Clock3,
   MessageSquare,
+  Sliders,
   CheckCircle2,
   AlertTriangle,
+  ArrowRight,
   Radio,
   Moon
 } from 'lucide-react';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 import { Textarea } from '../ui/textarea';
+import { Badge } from '../ui/badge';
 import { BusinessConfig, BusinessFeatures } from '../../types';
 import { db } from '../../lib/firebase';
 import { doc, setDoc, serverTimestamp } from 'firebase/firestore';
@@ -90,7 +95,9 @@ export function MerchantFeatures({ business, onNavigateTab, onFeaturesChange }: 
       onFeaturesChange?.(next);
       setLastSavedAt(Date.now());
       if (!silent) {
-        toast.success('সেভ হয়েছে');
+        toast.success('কন্ট্রোল সেন্টার আপডেট হয়েছে', {
+          description: 'মেসেঞ্জার, অর্ডার ও এআই এই মুহূর্তে নতুন নিয়ম মানবে।'
+        });
       }
     } catch (e: any) {
       console.error('[Feature switchboard save]', e);
@@ -132,39 +139,63 @@ export function MerchantFeatures({ business, onNavigateTab, onFeaturesChange }: 
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
-        <div className="flex flex-wrap items-center gap-2">
-          <h2 className="text-lg font-semibold text-zinc-900 dark:text-white">ফিচার</h2>
-          <span className="text-xs text-zinc-400">
-            {aiLive ? 'এআই চালু' : quietNow ? 'নীরব সময়' : 'এআই বন্ধ'} · {stats.on}/{stats.total}
-          </span>
+      <div className="relative overflow-hidden rounded-3xl bg-linear-to-br from-zinc-950 via-zinc-900 to-orange-950 text-white p-6 md:p-8 shadow-xl">
+        <div className="absolute -right-10 -top-10 h-40 w-40 rounded-full bg-orange-500/20 blur-3xl" />
+        <div className="relative z-10 flex flex-col lg:flex-row lg:items-center justify-between gap-6">
+          <div className="space-y-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge className="bg-white/10 text-orange-200 border-white/10 font-bold text-[10px] uppercase tracking-wider">
+                Command Center
+              </Badge>
+              <span className={`inline-flex items-center gap-1.5 text-[11px] font-black px-2.5 py-1 rounded-full ${
+                aiLive ? 'bg-emerald-500/20 text-emerald-300' : 'bg-rose-500/20 text-rose-200'
+              }`}>
+                <span className={`w-1.5 h-1.5 rounded-full ${aiLive ? 'bg-emerald-400 animate-pulse' : 'bg-rose-400'}`} />
+                {aiLive ? 'এআই অনলাইন' : quietNow ? 'নীরব সময় চলছে' : 'এআই অফলাইন'}
+              </span>
+            </div>
+            <h2 className="text-2xl md:text-3xl font-black tracking-tight">
+              ফিচার সুইচবোর্ড ও কন্ট্রোল
+            </h2>
+            <p className="text-xs md:text-sm text-zinc-300 max-w-xl leading-relaxed">
+              এখান থেকে এআই, অর্ডার, ছবি, কুরিয়ার, ব্রডকাস্ট ও নীরব সময় — সবকিছু এক জায়গায় চালু/বন্ধ করুন। পরিবর্তন সাথে সাথে লাইভ সিস্টেমে প্রয়োগ হয়।
+            </p>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="rounded-2xl bg-white/8 border border-white/10 px-4 py-3 min-w-[120px]">
+              <div className="text-[10px] uppercase tracking-wider text-zinc-400 font-bold">মডিউল লাইভ</div>
+              <div className="text-2xl font-black text-white">{stats.on}<span className="text-sm text-zinc-400">/{stats.total}</span></div>
+            </div>
+            <Button
+              type="button"
+              onClick={() => patch({ aiEnabled: features.aiEnabled === false }, false)}
+              className={`h-12 px-5 rounded-2xl font-black text-xs ${
+                features.aiEnabled === false
+                  ? 'bg-emerald-500 hover:bg-emerald-600 text-white'
+                  : 'bg-rose-600 hover:bg-rose-700 text-white'
+              }`}
+            >
+              <Power className="w-4 h-4 mr-1.5" />
+              {features.aiEnabled === false ? 'এআই চালু করুন' : 'এআই কিল সুইচ'}
+            </Button>
+            <Button
+              type="button"
+              onClick={() => persist(features, false)}
+              disabled={isSaving}
+              className="h-12 px-5 rounded-2xl bg-orange-600 hover:bg-orange-500 text-white font-black text-xs"
+            >
+              <Save className="w-4 h-4 mr-1.5" />
+              {isSaving ? 'সেভ হচ্ছে...' : 'সব সেটিংস সেভ'}
+            </Button>
+          </div>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <Button
-            type="button"
-            onClick={() => patch({ aiEnabled: features.aiEnabled === false }, false)}
-            variant="outline"
-            className="h-9 px-3 rounded-lg text-xs"
-          >
-            <Power className="w-4 h-4 mr-1.5" />
-            {features.aiEnabled === false ? 'এআই চালু' : 'এআই বন্ধ'}
-          </Button>
-          <Button
-            type="button"
-            onClick={() => persist(features, false)}
-            disabled={isSaving}
-            className="h-9 px-3 rounded-lg bg-zinc-900 hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-900 text-white text-xs"
-          >
-            <Save className="w-4 h-4 mr-1.5" />
-            {isSaving ? 'সেভ...' : 'সেভ'}
-          </Button>
-        </div>
+        {lastSavedAt && (
+          <p className="relative z-10 mt-4 text-[11px] text-zinc-400 font-medium">
+            শেষ আপডেট {new Date(lastSavedAt).toLocaleTimeString('bn-BD')}
+          </p>
+        )}
       </div>
-      {lastSavedAt && (
-        <p className="text-xs text-zinc-400">
-          {new Date(lastSavedAt).toLocaleTimeString('bn-BD')}
-        </p>
-      )}
 
       <div className="flex flex-col md:flex-row gap-3">
         <div className="relative flex-1">
@@ -172,7 +203,7 @@ export function MerchantFeatures({ business, onNavigateTab, onFeaturesChange }: 
           <Input
             value={searchTerm}
             onChange={e => setSearchTerm(e.target.value)}
-            placeholder="খুঁজুন..."
+            placeholder="মডিউল খুঁজুন — দরদাম, ছবি, কুরিয়ার, ব্রডকাস্ট..."
             className="pl-9 h-11 rounded-2xl bg-white dark:bg-zinc-900 text-xs"
           />
         </div>
@@ -216,9 +247,11 @@ export function MerchantFeatures({ business, onNavigateTab, onFeaturesChange }: 
         return (
           <section key={group.id} className="space-y-3">
             <div>
-              <h3 className="text-sm font-semibold text-zinc-900 dark:text-white">
+              <h3 className="text-sm font-black text-zinc-900 dark:text-white flex items-center gap-2">
+                <ShieldCheck className="w-4 h-4 text-orange-500" />
                 {group.title}
               </h3>
+              <p className="text-[11px] text-zinc-500">{group.hint}</p>
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               {items.map(feat => (
@@ -239,8 +272,11 @@ export function MerchantFeatures({ business, onNavigateTab, onFeaturesChange }: 
         <div className="rounded-3xl border border-zinc-200/80 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-5 space-y-4">
           <div className="flex items-center gap-2">
             <Clock3 className="w-4 h-4 text-orange-500" />
-            <h3 className="font-semibold text-sm">নীরব সময়</h3>
+            <h3 className="font-black text-sm">নীরব সময় শিডিউল (বাংলাদেশ সময়)</h3>
           </div>
+          <p className="text-[11px] text-zinc-500">
+            চালু থাকলে এই সময়ে এআই অফলাইন মেসেজ দিবে এবং নতুন অর্ডার নেবে না।
+          </p>
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1">
               <label className="text-[11px] font-bold text-zinc-600">শুরু</label>
@@ -272,8 +308,11 @@ export function MerchantFeatures({ business, onNavigateTab, onFeaturesChange }: 
         <div className="rounded-3xl border border-zinc-200/80 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-5 space-y-3">
           <div className="flex items-center gap-2">
             <MessageSquare className="w-4 h-4 text-orange-500" />
-            <h3 className="font-semibold text-sm">অফলাইন মেসেজ</h3>
+            <h3 className="font-black text-sm">অফলাইন / নীরব মেসেজ</h3>
           </div>
+          <p className="text-[11px] text-zinc-500">
+            এআই বন্ধ বা নীরব সময়ে কাস্টমার এই মেসেজটি পাবে (মেসেঞ্জার রিপ্লাই চালু থাকলে)।
+          </p>
           <Textarea
             value={features.offlineMessage || ''}
             onChange={e => setFeatures(prev => ({ ...prev, offlineMessage: e.target.value }))}
@@ -284,6 +323,28 @@ export function MerchantFeatures({ business, onNavigateTab, onFeaturesChange }: 
         </div>
       </div>
 
+      <div className="rounded-3xl border border-dashed border-orange-300/70 dark:border-orange-900 bg-orange-50/40 dark:bg-orange-950/20 p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <div className="flex items-start gap-3">
+          <Sparkles className="w-5 h-5 text-orange-600 shrink-0 mt-0.5" />
+          <div>
+            <h4 className="font-black text-sm text-zinc-900 dark:text-white">সিস্টেম কীভাবে মানবে</h4>
+            <p className="text-[11px] text-zinc-600 dark:text-zinc-400 leading-relaxed mt-1">
+              এই সুইচগুলো মেসেঞ্জার ওয়েবহুক, টেস্ট চ্যাট, আসল ব্রডকাস্ট, কমেন্ট-টু-ইনবক্স, স্টেডফাস্ট অটো-বুক এবং স্টক কাটার লজিক সরাসরি কন্ট্রোল করে। শুধু সেভ নয় — বন্ধ মানে সত্যিই বন্ধ।
+            </p>
+          </div>
+        </div>
+        {onNavigateTab && (
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => onNavigateTab('test-chat')}
+            className="rounded-2xl text-xs font-black h-10"
+          >
+            টেস্ট চ্যাটে যাচাই করুন
+            <ArrowRight className="w-3.5 h-3.5 ml-1.5" />
+          </Button>
+        )}
+      </div>
     </div>
   );
 }
@@ -302,17 +363,26 @@ function FeatureCard({
 }): React.ReactElement {
   return (
     <div
-      className={`p-3.5 rounded-xl border ${
+      className={`p-4 rounded-3xl border transition-all ${
         on
-          ? 'bg-white dark:bg-zinc-900 border-zinc-200 dark:border-zinc-800'
-          : 'bg-zinc-50 dark:bg-zinc-950 border-zinc-200 dark:border-zinc-800'
+          ? 'bg-white dark:bg-zinc-900 border-orange-500/25 shadow-xs'
+          : 'bg-zinc-50 dark:bg-zinc-950 border-zinc-200 dark:border-zinc-800 opacity-80'
       }`}
     >
-      <div className="flex items-center justify-between gap-3">
-        <button type="button" onClick={onToggle} className="text-left flex-1 min-w-0">
-          <h4 className="font-medium text-sm text-zinc-900 dark:text-white">{feat.title}</h4>
+      <div className="flex items-start justify-between gap-3">
+        <button type="button" onClick={onToggle} className="text-left flex-1 min-w-0 space-y-1">
+          <div className="flex items-center gap-2">
+            <h4 className="font-black text-sm text-zinc-900 dark:text-white">{feat.title}</h4>
+            {feat.danger && (
+              <Badge className="bg-rose-100 text-rose-700 dark:bg-rose-950/60 dark:text-rose-300 border-none text-[9px] font-black">
+                MASTER
+              </Badge>
+            )}
+          </div>
+          <p className="text-[11px] text-zinc-500 leading-relaxed">{feat.desc}</p>
+          <p className="text-[10px] font-bold text-orange-700/80 dark:text-orange-400/80">{feat.impact}</p>
         </button>
-        <button type="button" onClick={onToggle} aria-pressed={on} aria-label={feat.title}>
+        <button type="button" onClick={onToggle} aria-pressed={on} aria-label={feat.title} className="mt-0.5">
           <Toggle on={on} />
         </button>
       </div>
@@ -320,9 +390,10 @@ function FeatureCard({
         <button
           type="button"
           onClick={onJump}
-          className="mt-2 text-xs text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200"
+          className="mt-3 text-[11px] font-black text-zinc-500 hover:text-orange-600 inline-flex items-center gap-1"
         >
-          সেটিংস
+          <Sliders className="w-3 h-3" />
+          সম্পর্কিত সেটিংস
         </button>
       )}
     </div>

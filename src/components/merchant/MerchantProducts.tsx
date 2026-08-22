@@ -56,15 +56,6 @@ import {
   sanitizeProduct,
   stripInlineDataUrls
 } from '../../lib/productCatalog';
-import { isValidProductSlug, suggestedProductSlug, uniqueProductSlug } from '../../lib/productSeo';
-import { shopCategories } from '../../lib/storefront';
-import {
-  emptyProductPageFields,
-  fieldsFromProduct,
-  MerchantProductSeoFields,
-  payloadFromFields,
-  type ProductPageFields,
-} from './MerchantProductSeoFields';
 
 interface MerchantProductsProps {
   business: BusinessConfig;
@@ -100,7 +91,6 @@ export function MerchantProducts({ business, onProductsChange }: MerchantProduct
   const [reviewImages, setReviewImages] = useState<string[]>([]);
   const [productLinkInput, setProductLinkInput] = useState('');
   const [reviewLinkInput, setReviewLinkInput] = useState('');
-  const [page, setPage] = useState<ProductPageFields>(emptyProductPageFields());
   
   const [isUploadingImages, setIsUploadingImages] = useState(false);
   const [isUploadingReviews, setIsUploadingReviews] = useState(false);
@@ -148,7 +138,6 @@ export function MerchantProducts({ business, onProductsChange }: MerchantProduct
     setReviewImages([]);
     setProductLinkInput('');
     setReviewLinkInput('');
-    setPage(emptyProductPageFields());
     setIsModalOpen(true);
   };
 
@@ -184,7 +173,6 @@ export function MerchantProducts({ business, onProductsChange }: MerchantProduct
     setReviewImages(prod.reviewImages || []);
     setProductLinkInput('');
     setReviewLinkInput('');
-    setPage(fieldsFromProduct(prod));
     setIsModalOpen(true);
   };
 
@@ -313,21 +301,11 @@ export function MerchantProducts({ business, onProductsChange }: MerchantProduct
     const [selected] = updated.splice(index, 1);
     updated.unshift(selected);
     setImages(updated);
-    setPage(current => {
-      const alts = [...current.imageAlts];
-      const [alt] = alts.splice(index, 1);
-      alts.unshift(alt || '');
-      return { ...current, imageAlts: alts };
-    });
     toast.info('প্রধান ছবি নির্ধারণ করা হয়েছে');
   };
 
   const handleRemoveProductImage = (index: number) => {
     setImages(images.filter((_, i) => i !== index));
-    setPage(current => ({
-      ...current,
-      imageAlts: current.imageAlts.filter((_, i) => i !== index),
-    }));
   };
 
   const handleRemoveReviewImage = (index: number) => {
@@ -430,11 +408,6 @@ export function MerchantProducts({ business, onProductsChange }: MerchantProduct
       finalTiers = [{ quantity: 1, price: finalPrice, minPrice: finalMinPrice, label: '১ পিস' }];
     }
 
-    if (page.slug.trim() && !isValidProductSlug(page.slug)) {
-      toast.error('পণ্যের লিংক ইংরেজি অক্ষর, সংখ্যা ও হাইফেন দিয়ে লিখুন, যেমন: cotton-panjabi');
-      return;
-    }
-
     savingRef.current = true;
     setIsSubmitting(true);
     try {
@@ -444,17 +417,6 @@ export function MerchantProducts({ business, onProductsChange }: MerchantProduct
       const productId = (editingProduct?.id && String(editingProduct.id).trim())
         ? String(editingProduct.id)
         : `prod-${Date.now()}`;
-
-      const bizRef = doc(db, 'businesses', business.id);
-      const latestSnap = await getDoc(bizRef);
-      const latestData = latestSnap.exists() ? latestSnap.data() : null;
-      const currentProducts = asProductList(latestData?.products ?? catalog);
-      const extra = payloadFromFields(page);
-      const slug = uniqueProductSlug(
-        currentProducts,
-        extra.slug || suggestedProductSlug(name.trim(), extra.slug),
-        productId
-      );
 
       const productPayload = sanitizeProduct({
         id: productId,
@@ -468,10 +430,13 @@ export function MerchantProducts({ business, onProductsChange }: MerchantProduct
         category: category.trim() || 'জেনারেল',
         images: hostedImages,
         reviewImages: hostedReviews,
-        isAvailable: editingProduct?.isAvailable ?? true,
-        ...extra,
-        slug,
-      }, currentProducts);
+        isAvailable: editingProduct?.isAvailable ?? true
+      });
+
+      const bizRef = doc(db, 'businesses', business.id);
+      const latestSnap = await getDoc(bizRef);
+      const latestData = latestSnap.exists() ? latestSnap.data() : null;
+      const currentProducts = asProductList(latestData?.products ?? catalog);
 
       let updatedProducts: Product[];
       if (editingProduct) {
@@ -544,15 +509,29 @@ export function MerchantProducts({ business, onProductsChange }: MerchantProduct
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-        <h2 className="text-lg font-semibold text-zinc-900 dark:text-white">পণ্য</h2>
+      {/* Top Header */}
+      <div className="bg-white dark:bg-zinc-900 border border-zinc-200/80 dark:border-zinc-800 rounded-3xl p-6 shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div>
+          <div className="flex items-center gap-2">
+            <h2 className="text-xl md:text-2xl font-black text-zinc-900 dark:text-white">
+              পণ্য ক্যাটালগ ও বান্ডেল প্রাইসিং হাব
+            </h2>
+            <Badge className="bg-orange-100 text-orange-800 dark:bg-orange-950/60 dark:text-orange-300 border-none font-bold text-xs">
+              ১/২/৩ পিস বান্ডেল + Smart Bargaining
+            </Badge>
+          </div>
+          <p className="text-xs text-zinc-500 mt-1">
+            ১ পিস, ২ পিস, ৩ পিস কোয়ান্টিটি বান্ডেল প্রাইস, সর্বনিম্ন দরদাম সীমা (Min Price), মাল্টিপল প্রোডাক্ট ছবি এবং কাস্টমার রিভিউ স্ক্রিনশট পরিচালনা করুন।
+          </p>
+        </div>
+
         <Button
           id="add-product-btn"
           onClick={openAddModal}
-          className="bg-zinc-900 hover:bg-zinc-800 dark:bg-zinc-100 dark:hover:bg-white dark:text-zinc-900 text-white text-xs rounded-lg h-9 px-4 shrink-0"
+          className="bg-linear-to-r from-orange-600 to-amber-500 hover:from-orange-700 hover:to-amber-600 text-white font-black text-xs rounded-2xl h-11 px-6 shadow-md shadow-orange-600/20 active:scale-95 transition-all shrink-0 flex items-center gap-2"
         >
-          <Plus className="w-4 h-4 mr-1.5" />
-          নতুন পণ্য
+          <Plus className="w-4 h-4" />
+          <span>নতুন প্রোডাক্ট যোগ করুন</span>
         </Button>
       </div>
 
@@ -569,14 +548,22 @@ export function MerchantProducts({ business, onProductsChange }: MerchantProduct
 
       {/* Products Grid */}
       {filteredProducts.length === 0 ? (
-        <div className="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl p-10 text-center space-y-3">
-          <p className="text-sm text-zinc-500">কোনো পণ্য নেই</p>
+        <div className="bg-white dark:bg-zinc-900 border border-zinc-200/80 dark:border-zinc-800 rounded-3xl p-12 text-center space-y-4 shadow-xs">
+          <div className="w-16 h-16 rounded-3xl bg-orange-50 dark:bg-orange-950/40 border border-orange-200 dark:border-orange-900/60 flex items-center justify-center text-orange-600 mx-auto">
+            <Tag className="w-8 h-8" />
+          </div>
+          <div>
+            <h3 className="font-black text-base text-zinc-900 dark:text-zinc-100">কোনো প্রোডাক্ট পাওয়া যায়নি</h3>
+            <p className="text-xs text-zinc-500 max-w-md mx-auto mt-1">
+              আপনার স্টোরে ১ পিস, ২ পিস, ৩ পিস অফার, ছবি এবং কাস্টমার রিভিউ যুক্ত করুন যেন এআই স্বয়ংক্রিয়ভাবে মেসেঞ্জারে বান্ডেল ডিল অফার করে বেশি সেল আনতে পারে।
+            </p>
+          </div>
           <Button
             onClick={openAddModal}
-            className="bg-zinc-900 hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-900 text-white text-xs rounded-lg px-4 h-9"
+            className="bg-orange-600 hover:bg-orange-700 text-white font-bold text-xs rounded-xl px-5 h-10"
           >
             <Plus className="w-4 h-4 mr-1.5" />
-            পণ্য যোগ
+            প্রথম প্রোডাক্ট যুক্ত করুন
           </Button>
         </div>
       ) : (
@@ -765,7 +752,7 @@ export function MerchantProducts({ business, onProductsChange }: MerchantProduct
                   {editingProduct ? 'প্রোডাক্ট ও প্রাইসিং এডিট করুন' : 'নতুন প্রোডাক্ট ও বান্ডেল প্রাইসিং যুক্ত করুন'}
                 </DialogTitle>
                 <DialogDescription className="text-xs text-zinc-500">
-                  দাম, ছবি, স্পেক, লিংক ও পেজের কনটেন্ট এক জায়গায় সেভ করুন। খালি ফিল্ড পেজে দেখাবে না।
+                  ১ পিস, ২ পিস, ৩ পিস বান্ডেল অফার, দরদাম সীমা (Min Price), ছবি এবং কাস্টমার রিভিউ আপলোড করুন।
                 </DialogDescription>
               </div>
             </div>
@@ -800,13 +787,7 @@ export function MerchantProducts({ business, onProductsChange }: MerchantProduct
                     onChange={e => setCategory(readInputValue(e))}
                     placeholder="যেমন: ফ্যাশন, গ্যাজেট, বিউটি"
                     className="h-10 rounded-xl text-xs"
-                    list="product-category-options"
                   />
-                  <datalist id="product-category-options">
-                    {shopCategories(catalog).map(item => (
-                      <option key={item} value={item} />
-                    ))}
-                  </datalist>
                 </div>
                 <div className="space-y-1.5">
                   <label className="font-bold text-zinc-700 dark:text-zinc-300">স্টক পরিমাণ (In Stock Quantity)</label>
@@ -1257,15 +1238,6 @@ export function MerchantProducts({ business, onProductsChange }: MerchantProduct
                 </div>
               )}
             </div>
-
-            <MerchantProductSeoFields
-              fields={page}
-              onChange={setPage}
-              productName={name}
-              images={images}
-              specs={specs}
-              onSpecsChange={setSpecs}
-            />
           </div>
 
           <DialogFooter className="mx-0 mb-0 z-10 relative gap-2 px-6 py-4 shrink-0 rounded-b-3xl border-t border-zinc-100 dark:border-zinc-800">
