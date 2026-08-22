@@ -509,29 +509,15 @@ export function MerchantProducts({ business, onProductsChange }: MerchantProduct
 
   return (
     <div className="space-y-6">
-      {/* Top Header */}
-      <div className="bg-white dark:bg-zinc-900 border border-zinc-200/80 dark:border-zinc-800 rounded-3xl p-6 shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-4">
-        <div>
-          <div className="flex items-center gap-2">
-            <h2 className="text-xl md:text-2xl font-black text-zinc-900 dark:text-white">
-              পণ্য ক্যাটালগ ও বান্ডেল প্রাইসিং হাব
-            </h2>
-            <Badge className="bg-orange-100 text-orange-800 dark:bg-orange-950/60 dark:text-orange-300 border-none font-bold text-xs">
-              ১/২/৩ পিস বান্ডেল + Smart Bargaining
-            </Badge>
-          </div>
-          <p className="text-xs text-zinc-500 mt-1">
-            ১ পিস, ২ পিস, ৩ পিস কোয়ান্টিটি বান্ডেল প্রাইস, সর্বনিম্ন দরদাম সীমা (Min Price), মাল্টিপল প্রোডাক্ট ছবি এবং কাস্টমার রিভিউ স্ক্রিনশট পরিচালনা করুন।
-          </p>
-        </div>
-
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <h2 className="text-lg font-semibold text-zinc-900 dark:text-white">পণ্য</h2>
         <Button
           id="add-product-btn"
           onClick={openAddModal}
-          className="bg-linear-to-r from-orange-600 to-amber-500 hover:from-orange-700 hover:to-amber-600 text-white font-black text-xs rounded-2xl h-11 px-6 shadow-md shadow-orange-600/20 active:scale-95 transition-all shrink-0 flex items-center gap-2"
+          className="bg-zinc-900 hover:bg-zinc-800 dark:bg-zinc-100 dark:hover:bg-white dark:text-zinc-900 text-white text-xs rounded-lg h-9 px-4 shrink-0"
         >
-          <Plus className="w-4 h-4" />
-          <span>নতুন প্রোডাক্ট যোগ করুন</span>
+          <Plus className="w-4 h-4 mr-1.5" />
+          নতুন পণ্য
         </Button>
       </div>
 
@@ -548,22 +534,14 @@ export function MerchantProducts({ business, onProductsChange }: MerchantProduct
 
       {/* Products Grid */}
       {filteredProducts.length === 0 ? (
-        <div className="bg-white dark:bg-zinc-900 border border-zinc-200/80 dark:border-zinc-800 rounded-3xl p-12 text-center space-y-4 shadow-xs">
-          <div className="w-16 h-16 rounded-3xl bg-orange-50 dark:bg-orange-950/40 border border-orange-200 dark:border-orange-900/60 flex items-center justify-center text-orange-600 mx-auto">
-            <Tag className="w-8 h-8" />
-          </div>
-          <div>
-            <h3 className="font-black text-base text-zinc-900 dark:text-zinc-100">কোনো প্রোডাক্ট পাওয়া যায়নি</h3>
-            <p className="text-xs text-zinc-500 max-w-md mx-auto mt-1">
-              আপনার স্টোরে ১ পিস, ২ পিস, ৩ পিস অফার, ছবি এবং কাস্টমার রিভিউ যুক্ত করুন যেন এআই স্বয়ংক্রিয়ভাবে মেসেঞ্জারে বান্ডেল ডিল অফার করে বেশি সেল আনতে পারে।
-            </p>
-          </div>
+        <div className="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl p-10 text-center space-y-3">
+          <p className="text-sm text-zinc-500">কোনো পণ্য নেই</p>
           <Button
             onClick={openAddModal}
-            className="bg-orange-600 hover:bg-orange-700 text-white font-bold text-xs rounded-xl px-5 h-10"
+            className="bg-zinc-900 hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-900 text-white text-xs rounded-lg px-4 h-9"
           >
             <Plus className="w-4 h-4 mr-1.5" />
-            প্রথম প্রোডাক্ট যুক্ত করুন
+            পণ্য যোগ
           </Button>
         </div>
       ) : (

@@ -3,17 +3,10 @@ import {
   Truck, 
   Globe, 
   Save, 
-  Check, 
-  ExternalLink, 
-  ShieldCheck, 
-  Key, 
-  Sparkles,
-  Zap,
   Radio
 } from 'lucide-react';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
-import { Badge } from '../ui/badge';
 import { BusinessConfig } from '../../types';
 import { db } from '../../lib/firebase';
 import { doc, updateDoc } from 'firebase/firestore';
@@ -108,9 +101,7 @@ export function MerchantIntegrations({ business }: MerchantIntegrationsProps) {
       });
 
       await updateDoc(doc(db, 'businesses', business.id), payload);
-      toast.success('ইন্টিগ্রেশন সেটিংস সংরক্ষিত হয়েছে!', {
-        description: 'স্টেডফাস্ট ও মেটা CAPI সিঙ্ক সক্রিয় হয়েছে।'
-      });
+      toast.success('সেভ হয়েছে');
     } catch (e: any) {
       console.error('[Save Integrations Error]', e);
       toast.error(e?.message ? `সংরক্ষণ ব্যর্থ: ${e.message}` : 'সংরক্ষণ ব্যর্থ হয়েছে');
@@ -121,29 +112,15 @@ export function MerchantIntegrations({ business }: MerchantIntegrationsProps) {
 
   return (
     <div className="space-y-6">
-      {/* Header */}
-      <div className="bg-white dark:bg-zinc-900 border border-zinc-200/80 dark:border-zinc-800 rounded-3xl p-6 shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-4">
-        <div>
-          <div className="flex items-center gap-2">
-            <h2 className="text-xl md:text-2xl font-black text-zinc-900 dark:text-white">
-              কুরিয়ার ও মেটা CAPI ইন্টিগ্রেশন
-            </h2>
-            <Badge className="bg-orange-100 text-orange-800 dark:bg-orange-950/60 dark:text-orange-300 border-none font-bold text-xs">
-              Direct API Connections
-            </Badge>
-          </div>
-          <p className="text-xs text-zinc-500 mt-1">
-            ১-ক্লিকে পার্সেল বুকিং এবং ফেসবুক বিজ্ঞাপনের কনভারশন নির্ভুল ট্র্যাকিং নিশ্চিত করুন।
-          </p>
-        </div>
-
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <h2 className="text-lg font-semibold text-zinc-900 dark:text-white">ইন্টিগ্রেশন</h2>
         <Button
           onClick={handleSave}
           disabled={isSaving}
-          className="bg-orange-600 hover:bg-orange-700 text-white font-black text-xs rounded-2xl h-11 px-6 shadow-md shadow-orange-600/20"
+          className="bg-zinc-900 hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-900 text-white text-xs rounded-lg h-9 px-4"
         >
           <Save className="w-4 h-4 mr-1.5" />
-          {isSaving ? 'সংরক্ষণ হচ্ছে...' : 'সেটিংস সেভ করুন'}
+          {isSaving ? 'সেভ হচ্ছে...' : 'সেভ'}
         </Button>
       </div>
 
@@ -156,8 +133,7 @@ export function MerchantIntegrations({ business }: MerchantIntegrationsProps) {
                 <Truck className="w-4 h-4" />
               </div>
               <div>
-                <h3 className="font-black text-sm text-zinc-900 dark:text-white">Steadfast Courier API</h3>
-                <p className="text-[11px] text-zinc-500">স্টেডফাস্ট ড্যাশবোর্ড থেকে এপিআই কি দিন</p>
+                <h3 className="font-semibold text-sm text-zinc-900 dark:text-white">স্টেডফাস্ট</h3>
               </div>
             </div>
             {steadfastApiKey && (
@@ -232,8 +208,7 @@ export function MerchantIntegrations({ business }: MerchantIntegrationsProps) {
                 <Globe className="w-4 h-4" />
               </div>
               <div>
-                <h3 className="font-black text-sm text-zinc-900 dark:text-white">Meta Pixel & Conversions API (CAPI)</h3>
-                <p className="text-[11px] text-zinc-500">iOS 14+ কনভারশন ট্র্যাকিং নিশ্চিত করতে</p>
+                <h3 className="font-semibold text-sm text-zinc-900 dark:text-white">পিক্সেল</h3>
               </div>
             </div>
             {pixelId && (
@@ -293,9 +268,6 @@ export function MerchantIntegrations({ business }: MerchantIntegrationsProps) {
               </div>
             )}
 
-            <div className="p-3 rounded-xl bg-indigo-50/60 dark:bg-indigo-950/20 border border-indigo-100 dark:border-indigo-900/40 text-[10px] text-zinc-500 leading-relaxed">
-              <strong className="text-indigo-700 dark:text-indigo-300">অটো ফানেল ট্র্যাকিং:</strong> সেটআপ সম্পন্ন হলে মেসেঞ্জার চ্যাটের প্রতিটি ধাপ স্বয়ংক্রিয়ভাবে পিক্সেলে যাবে — Lead (অ্যাড থেকে মেসেজ), ViewContent (পণ্য জানতে চাওয়া), AddToCart, InitiateCheckout (ঠিকানা/ফোন দেওয়া) এবং Purchase (আসল টাকার অংকসহ অর্ডার)। এতে ফেসবুক শিখে যায় কোন ধরনের মানুষ আসলে কেনে, ফলে অ্যাডের রেজাল্ট ও ROAS অনেক ভালো হয়।
-            </div>
           </div>
         </div>
       </div>

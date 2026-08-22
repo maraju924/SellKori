@@ -12,7 +12,6 @@ import {
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 import { Textarea } from '../ui/textarea';
-import { Badge } from '../ui/badge';
 import { BusinessConfig } from '../../types';
 import { db } from '../../lib/firebase';
 import { doc, updateDoc } from 'firebase/firestore';
@@ -87,53 +86,36 @@ export function MerchantInfo({ business }: MerchantInfoProps) {
 
   return (
     <div className="space-y-6">
-      {/* Header */}
-      <div className="bg-white dark:bg-zinc-900 border border-zinc-200/80 dark:border-zinc-800 rounded-3xl p-6 shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-4">
-        <div>
-          <div className="flex items-center gap-2">
-            <h2 className="text-xl md:text-2xl font-black text-zinc-900 dark:text-white">
-              স্টোর প্রোফাইল ও পরিচিতি
-            </h2>
-            <Badge className="bg-orange-100 text-orange-800 dark:bg-orange-950/60 dark:text-orange-300 border-none font-bold text-xs">
-              Merchant Identity
-            </Badge>
-          </div>
-          <p className="text-xs text-zinc-500 mt-1">
-            নাম, লোগো ও পরিচিতি ওয়েবসাইট এবং এআই চ্যাট—দুই জায়গাতেই দেখাবে।
-          </p>
-        </div>
-
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <h2 className="text-lg font-semibold text-zinc-900 dark:text-white">স্টোর</h2>
         <Button
           onClick={handleSave}
           disabled={isSaving}
-          className="bg-orange-600 hover:bg-orange-700 text-white font-black text-xs rounded-2xl h-11 px-6 shadow-md shadow-orange-600/20"
+          className="bg-zinc-900 hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-900 text-white text-xs rounded-lg h-9 px-4"
         >
           <Save className="w-4 h-4 mr-1.5" />
-          {isSaving ? 'সংরক্ষণ হচ্ছে...' : 'প্রোফাইল সেভ করুন'}
+          {isSaving ? 'সেভ হচ্ছে...' : 'সেভ'}
         </Button>
       </div>
 
-      <div className="bg-orange-50 dark:bg-orange-950/30 border border-orange-200/70 dark:border-orange-900/50 rounded-3xl p-5 max-w-3xl flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-        <div className="min-w-0">
-          <p className="text-xs font-black text-orange-800 dark:text-orange-300">কাস্টমার ওয়েবসাইট</p>
-          <p className="text-[12px] font-mono text-zinc-600 dark:text-zinc-400 truncate">
-            {publicUrl}
-          </p>
-        </div>
+      <div className="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl p-4 max-w-3xl flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <p className="text-sm font-mono text-zinc-600 dark:text-zinc-400 truncate min-w-0">
+          {publicUrl}
+        </p>
         <div className="flex gap-2 shrink-0">
           <Button
             type="button"
             variant="outline"
-            className="h-10 rounded-xl text-xs font-bold"
+            className="h-9 rounded-lg text-xs"
             onClick={() => {
               navigator.clipboard.writeText(publicUrl);
-              toast.success('ওয়েবসাইট লিংক কপি হয়েছে');
+              toast.success('লিংক কপি হয়েছে');
             }}
           >
             <Copy className="w-3.5 h-3.5 mr-1.5" /> কপি
           </Button>
           <a href={shopPath(previewShop)} target="_blank" rel="noreferrer">
-            <Button type="button" className="h-10 rounded-xl text-xs font-bold bg-orange-600 hover:bg-orange-700 text-white">
+            <Button type="button" className="h-9 rounded-lg text-xs bg-zinc-900 hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-900 text-white">
               <ExternalLink className="w-3.5 h-3.5 mr-1.5" /> খুলুন
             </Button>
           </a>
@@ -171,9 +153,7 @@ export function MerchantInfo({ business }: MerchantInfoProps) {
               className="h-11 rounded-2xl font-mono text-xs"
             />
           </div>
-          <p className="text-[11px] text-zinc-500">
-            কাস্টমার এই লিংকে ঢুকবে: <span className="font-mono text-orange-700">{publicUrl}</span>
-          </p>
+          <p className="text-[11px] font-mono text-zinc-400">{publicUrl}</p>
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
