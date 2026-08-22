@@ -2,10 +2,35 @@
   "version": 2,
   "functions": {
     "api/*.ts": {
-      "maxDuration": 60
+      "maxDuration": 60,
+      "includeFiles": "firebase-applet-config.json"
     }
   },
   "rewrites": [
+    {
+      "source": "/api/healthz",
+      "destination": "/api/health"
+    },
+    {
+      "source": "/api/ping",
+      "destination": "/api/health"
+    },
+    {
+      "source": "/api/shop/:businessId/checkout",
+      "destination": "/api/shop?businessId=:businessId&op=checkout"
+    },
+    {
+      "source": "/api/shop/:businessId/orders",
+      "destination": "/api/shop?businessId=:businessId&op=orders"
+    },
+    {
+      "source": "/api/shop/:businessId",
+      "destination": "/api/shop?businessId=:businessId"
+    },
+    {
+      "source": "/api/public/shop-slug",
+      "destination": "/api/shop?op=slug"
+    },
     {
       "source": "/api/webhook/:businessId",
       "destination": "/api/webhook"
