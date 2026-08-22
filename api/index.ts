@@ -34,7 +34,6 @@ import {
   type BroadcastAudience
 } from '../src/lib/outreach.js';
 import { parseFirebaseServiceAccount } from '../src/lib/aiPool.js';
-import { asProductList } from '../src/lib/productCatalog.js';
 import {
   isReservedShopSlug,
   isValidShopSlug,
@@ -43,7 +42,7 @@ import {
   normalizeShopSlug,
   publicShopSlug,
   suggestedShopSlug,
-} from '../src/lib/storeSlug.js';
+} from './shopSlug.js';
 
 export const maxDuration = 60;
 
@@ -2306,6 +2305,12 @@ function consumePublicChatQuota(key: string) {
     }
   }
   return { allowed: true, retryAfterSeconds: 0 };
+}
+
+function asProductList(raw: unknown): any[] {
+  if (Array.isArray(raw)) return raw.filter(Boolean);
+  if (raw && typeof raw === 'object') return Object.values(raw as Record<string, any>).filter(Boolean);
+  return [];
 }
 
 function sanitizePublicBusiness(id: string, data: any) {
