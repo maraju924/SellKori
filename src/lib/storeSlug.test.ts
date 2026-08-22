@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import {
   fallbackShopSlug,
+  isPublicCustomerPath,
   isReservedShopSlug,
   isValidShopSlug,
   nextShopSlugCandidate,
@@ -21,6 +22,12 @@ assert.equal(slugifyStoreName('ফ্যাশন হাউজ'), '');
 assert.equal(normalizeShopSlug(' My-Shop!! '), 'my-shop');
 assert.equal(isReservedShopSlug('login'), true);
 assert.equal(isReservedShopSlug('myshop'), false);
+assert.equal(isPublicCustomerPath('/rojbeuty'), true);
+assert.equal(isPublicCustomerPath('/rojbeuty/checkout'), true);
+assert.equal(isPublicCustomerPath('/chat/biz-1'), true);
+assert.equal(isPublicCustomerPath('/login'), false);
+assert.equal(isPublicCustomerPath('/dashboard'), false);
+assert.equal(isPublicCustomerPath('/'), false);
 assert.equal(isValidShopSlug('myshop'), true);
 assert.equal(isValidShopSlug('my-shop'), true);
 assert.equal(isValidShopSlug('login'), false);

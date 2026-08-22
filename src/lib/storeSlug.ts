@@ -65,6 +65,14 @@ export function isReservedShopSlug(slug?: string | null): boolean {
   return !value || RESERVED_SHOP_SLUGS.has(value);
 }
 
+/** Customer storefront/chat — must not flash the SellKori SaaS splash. */
+export function isPublicCustomerPath(pathname?: string | null): boolean {
+  const first = String(pathname || '').split('/').filter(Boolean)[0] || '';
+  if (!first) return false;
+  if (first === 'chat' || first === 'shop') return true;
+  return !isReservedShopSlug(first);
+}
+
 export function isValidShopSlug(slug?: string | null): boolean {
   const value = normalizeShopSlug(slug);
   if (value.length < SHOP_SLUG_MIN || value.length > SHOP_SLUG_MAX) return false;

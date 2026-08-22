@@ -8,6 +8,19 @@
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="theme-color" content="#f4f2ee" />
     <title>SellKori — Messenger commerce platform</title>
+    <script>
+      (function () {
+        var first = (location.pathname || '').split('/').filter(Boolean)[0] || '';
+        var reserved = {
+          login: 1, dashboard: 1, admin: 1, api: 1, webhook: 1, messenger: 1,
+          assets: 1, static: 1, media: 1, billing: 1, pricing: 1, about: 1,
+          help: 1, support: 1, terms: 1, privacy: 1, sitemap: 1, robots: 1, index: 1
+        };
+        if (first && !reserved[first]) {
+          document.title = 'দোকান খুলছে...';
+        }
+      })();
+    </script>
     
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
