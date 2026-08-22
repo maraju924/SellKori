@@ -111,3 +111,69 @@ export function shopPublicUrl(origin: string, shop: ShopRef, suffix = ''): strin
   const base = String(origin || '').replace(/\/$/, '');
   return `${base}${shopPublicPath(shop, suffix)}`;
 }
+
+export function slugEditDistance(a: string, b: string): number {
+  const left = normalizeShopSlug(a);
+  const right = normalizeShopSlug(b);
+  if (left === right) return 0;
+  const rows = left.length + 1;
+  const cols = right.length + 1;
+  const grid = Array.from({ length: rows }, (_, i) => {
+    const row = new Array(cols).fill(0);
+    row[0] = i;
+    return row;
+  });
+  for (let j = 0; j < cols; j += 1) grid[0][j] = j;
+  for (let i = 1; i < rows; i += 1) {
+    for (let j = 1; j < cols; j += 1) {
+      const cost = left[i - 1] === right[j - 1] ? 0 : 1;
+      grid[i][j] = Math.min(
+        grid[i - 1][j] + 1,
+        grid[i][j - 1] + 1,
+        grid[i - 1][j - 1] + cost
+      );
+    }
+  }
+  return grid[left.length][right.length];
+}
+
+export function shopSlugKeys(input: { slug?: string | null; name?: string | null; id?: string | null }): string[] {
+  const keys = new Set<string>();
+  const push = (value?: string | null) => {
+    const slug = normalizeShopSlug(value || '');
+    if (slug) keys.add(slug);
+    const compact = slugifyStoreName(value || '');
+    if (compact) keys.add(compact);
+  };
+  push(input.slug);
+  push(input.name);
+  return [...keys];
+}
+
+export function matchRequestedShopSlug(
+  businesses: Array<{ id: string; slug?: string | null; name?: string | null }>,
+  requested: string
+): { id: string; kind: 'exact' | 'alias' | 'close' } | null {
+  const want = normalizeShopSlug(requested);
+  if (!want) return null;
+
+  const exact: string[] = [];
+  const alias: string[] = [];
+  const close: string[] = [];
+
+  for (const business of businesses) {
+    const keys = shopSlugKeys(business);
+    if (normalizeShopSlug(business.slug) === want) {
+      exact.push(business.id);
+    } else if (keys.includes(want)) {
+      alias.push(business.id);
+    } else if (keys.some(key => slugEditDistance(key, want) === 1)) {
+      close.push(business.id);
+    }
+  }
+
+  if (exact.length === 1) return { id: exact[0], kind: 'exact' };
+  if (alias.length === 1) return { id: alias[0], kind: 'alias' };
+  if (close.length === 1) return { id: close[0], kind: 'close' };
+  return null;
+}

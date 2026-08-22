@@ -5,9 +5,11 @@ import {
   isValidShopSlug,
   nextShopSlugCandidate,
   normalizeShopSlug,
+  matchRequestedShopSlug,
   publicShopSlug,
   shopPublicPath,
   shopPublicUrl,
+  slugEditDistance,
   slugifyStoreName,
   suggestedShopSlug,
 } from './storeSlug.ts';
@@ -34,5 +36,22 @@ assert.equal(publicShopSlug({ slug: 'myshop', id: 'biz-9', name: 'Ignored' }), '
 assert.equal(shopPublicPath({ slug: 'myshop' }, 'cart'), '/myshop/cart');
 assert.equal(shopPublicPath('myshop', 'p/1'), '/myshop/p/1');
 assert.equal(shopPublicUrl('https://sell-kori.vercel.app', { slug: 'myshop' }), 'https://sell-kori.vercel.app/myshop');
+
+assert.equal(slugEditDistance('rojbeauty', 'rojbeuty'), 1);
+assert.equal(slugifyStoreName('Roj Beauty'), 'rojbeauty');
+assert.deepEqual(
+  matchRequestedShopSlug(
+    [{ id: 'b1', name: 'Roj Beauty' }, { id: 'b2', name: 'My Shop' }],
+    'rojbeuty'
+  ),
+  { id: 'b1', kind: 'close' }
+);
+assert.equal(
+  matchRequestedShopSlug(
+    [{ id: 'b1', slug: 'rojbeuty', name: 'Roj Beauty' }],
+    'rojbeuty'
+  )?.kind,
+  'exact'
+);
 
 console.log('storeSlug tests passed');

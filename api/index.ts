@@ -36,15 +36,9 @@ import {
 import { parseFirebaseServiceAccount } from '../src/lib/aiPool.js';
 import { asProductList } from '../src/lib/productCatalog.js';
 import {
-  buildStoreCheckoutOrder,
-  decrementShopStock,
-  isRepeatWebsiteCheckout,
-  sanitizeCart,
-  sanitizePublicOrder,
-} from '../src/lib/storefront.js';
-import {
   isReservedShopSlug,
   isValidShopSlug,
+  matchRequestedShopSlug,
   nextShopSlugCandidate,
   normalizeShopSlug,
   publicShopSlug,
@@ -687,6 +681,22 @@ async function ensureBusinessSlug(business: { id: string; data: any }): Promise<
   return candidate;
 }
 
+async function listBusinessDocs(max = 400): Promise<Array<{ id: string; data: any }>> {
+  try {
+    if (adminDb) {
+      const snap = await adminDb.collection('businesses').limit(max).get();
+      return snap.docs.map((d: any) => ({ id: d.id, data: d.data() }));
+    }
+    if (db) {
+      const snap = await getDocs(query(collection(db, 'businesses'), limit(max)));
+      return snap.docs.map(d => ({ id: d.id, data: d.data() }));
+    }
+  } catch (err) {
+    console.warn('[listBusinessDocs]', err);
+  }
+  return [];
+}
+
 async function loadBusinessBySlugOrId(slugOrId: string): Promise<{ id: string; data: any } | null> {
   const raw = String(slugOrId || '').trim();
   if (!raw) return null;
@@ -700,7 +710,24 @@ async function loadBusinessBySlugOrId(slugOrId: string): Promise<{ id: string; d
     await ensureBusinessSlug(bySlug);
     return bySlug;
   }
-  return null;
+
+  const all = await listBusinessDocs();
+  const match = matchRequestedShopSlug(
+    all.map(row => ({ id: row.id, slug: row.data?.slug, name: row.data?.name })),
+    raw
+  );
+  if (!match) return null;
+  const found = all.find(row => row.id === match.id);
+  if (!found) return null;
+
+  const requested = normalizeShopSlug(raw);
+  const existing = normalizeShopSlug(found.data?.slug);
+  if (!existing && isValidShopSlug(requested) && !(await isShopSlugTaken(requested, found.id))) {
+    await persistBusinessSlug(found, requested);
+  } else {
+    await ensureBusinessSlug(found);
+  }
+  return found;
 }
 
 async function findBusinessByVerifyToken(token: string): Promise<{ id: string; data: any } | null> {
@@ -2344,12 +2371,17 @@ async function handlePublicShopGet(req: any, res: any) {
   if (!businessId || businessId.length > 128 || /[\/\u0000-\u001f]/.test(businessId)) {
     return res.status(400).json({ error: 'Invalid business ID' });
   }
-  const business = await loadBusinessBySlugOrId(businessId);
-  if (!business || business.data?.status === 'suspended') {
-    return res.status(404).json({ error: 'Store not found' });
+  try {
+    const business = await loadBusinessBySlugOrId(businessId);
+    if (!business || business.data?.status === 'suspended') {
+      return res.status(404).json({ error: 'Store not found' });
+    }
+    res.setHeader('Cache-Control', 'public, max-age=60, stale-while-revalidate=300');
+    return res.json(sanitizePublicBusiness(business.id, business.data));
+  } catch (error: any) {
+    console.error('[Public Shop GET]', error?.message || error);
+    return res.status(500).json({ error: 'Store unavailable' });
   }
-  res.setHeader('Cache-Control', 'public, max-age=60, stale-while-revalidate=300');
-  return res.json(sanitizePublicBusiness(business.id, business.data));
 }
 
 app.get('/api/public/shop-slug', async (req, res) => {
@@ -2415,6 +2447,13 @@ app.post('/api/shop/:businessId/checkout', async (req, res) => {
       return res.status(404).json({ code: 'STORE_NOT_FOUND', error: 'স্টোরটি পাওয়া যায়নি।' });
     }
 
+    const {
+      buildStoreCheckoutOrder,
+      decrementShopStock,
+      isRepeatWebsiteCheckout,
+      sanitizeCart,
+      sanitizePublicOrder,
+    } = await import('../src/lib/storefront.js');
     const catalog = asProductList(business.data?.products);
     const built = buildStoreCheckoutOrder({
       business: {
@@ -2530,6 +2569,7 @@ app.get('/api/shop/:businessId/orders', async (req, res) => {
     if (!business || business.data?.status === 'suspended') {
       return res.status(404).json({ error: 'Store not found' });
     }
+    const { sanitizePublicOrder } = await import('../src/lib/storefront.js');
     const rows = await queryOrdersByField(business.id, 'phone', phone);
     const filtered = rows
       .filter((row: any) => !orderId || String(row.id) === orderId || String(row.id).toLowerCase() === orderId.toLowerCase())
