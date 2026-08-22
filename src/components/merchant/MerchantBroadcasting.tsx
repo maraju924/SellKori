@@ -21,10 +21,10 @@ import {
   parseCommentKeywords
 } from '../../lib/outreach';
 import { db } from '../../lib/firebase';
+import { listenQueryAcrossPanelDbs } from '../../lib/panelDb';
 import {
   collection,
   doc,
-  onSnapshot,
   query,
   setDoc,
   where,
@@ -79,21 +79,18 @@ export function MerchantBroadcasting({ business }: MerchantBroadcastingProps) {
 
   useEffect(() => {
     if (!business.id) return;
-    const q = query(
-      collection(db, 'broadcasts'),
-      where('businessId', '==', business.id),
-      limit(40)
-    );
-    const unsub = onSnapshot(
-      q,
-      snap => {
-        const rows = snap.docs.map(d => ({ id: d.id, ...(d.data() as Omit<BroadcastingCampaign, 'id'>) }));
-        rows.sort((a, b) => (b.createdAtMs || 0) - (a.createdAtMs || 0));
-        setCampaigns(rows);
+    return listenQueryAcrossPanelDbs<BroadcastingCampaign>(
+      (database) => query(
+        collection(database, 'broadcasts'),
+        where('businessId', '==', business.id),
+        limit(40)
+      ),
+      (rows) => {
+        const sorted = [...rows];
+        sorted.sort((a, b) => ((b as any).createdAtMs || 0) - ((a as any).createdAtMs || 0));
+        setCampaigns(sorted);
       },
-      err => console.warn('broadcast snapshot', err)
     );
-    return () => unsub();
   }, [business.id]);
 
   useEffect(() => {

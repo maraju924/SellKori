@@ -6,7 +6,8 @@ import { Button } from '../ui/button';
 import { Badge } from '../ui/badge';
 import { BusinessConfig } from '../../types';
 import { db } from '../../lib/firebase';
-import { doc, updateDoc, increment, collection, onSnapshot, query, where, limit } from 'firebase/firestore';
+import { doc, updateDoc, increment, collection, query, where, limit } from 'firebase/firestore';
+import { listenQueryAcrossPanelDbs } from '../../lib/panelDb';
 import { toast } from 'sonner';
 import { parseJsonResponse } from '../../lib/safeJson';
 
@@ -22,13 +23,14 @@ export function MerchantBilling({ business }: MerchantBillingProps) {
   // Live payment history for this store
   useEffect(() => {
     if (!business.id) return;
-    const q = query(collection(db, 'payments'), where('businessId', '==', business.id), limit(100));
-    const unsub = onSnapshot(q, (snap) => {
-      const list = snap.docs.map(d => ({ id: d.id, ...d.data() } as any));
-      list.sort((a, b) => (b.createdAtMs || 0) - (a.createdAtMs || 0));
-      setPayments(list);
-    }, (err) => console.warn('[Billing] payments snapshot error:', err));
-    return () => unsub();
+    return listenQueryAcrossPanelDbs<any>(
+      (database) => query(collection(database, 'payments'), where('businessId', '==', business.id), limit(100)),
+      (list) => {
+        const sorted = [...list];
+        sorted.sort((a, b) => (b.createdAtMs || 0) - (a.createdAtMs || 0));
+        setPayments(sorted);
+      },
+    );
   }, [business.id]);
 
   // Settle any paid-but-uncredited payment (server marks paid after ZiniPay

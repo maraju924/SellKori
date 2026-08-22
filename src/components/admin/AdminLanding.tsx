@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import { Layout, Save, RotateCcw } from 'lucide-react';
-import { doc, getDoc, setDoc } from 'firebase/firestore';
+import { doc, setDoc } from 'firebase/firestore';
 import { toast } from 'sonner';
 import { db } from '../../lib/firebase';
+import { getDocAcrossPanelDbs } from '../../lib/panelDb';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 import { Textarea } from '../ui/textarea';
@@ -42,8 +43,8 @@ export function AdminLanding() {
   useEffect(() => {
     (async () => {
       try {
-        const snap = await getDoc(doc(db, 'system_config', 'public'));
-        if (snap.exists()) {
+        const snap = await getDocAcrossPanelDbs('system_config', 'public');
+        if (snap?.exists()) {
           const data = snap.data() || {};
           if (data.freeTrialTokens) setFreeTrialTokens(Number(data.freeTrialTokens));
           if (data.monthlyServerCost) setMonthlyServerCost(Number(data.monthlyServerCost));

@@ -8,8 +8,8 @@ import {
 } from 'lucide-react';
 import { Input } from '../ui/input';
 import { BusinessConfig, Order } from '../../types';
-import { db } from '../../lib/firebase';
-import { collection, onSnapshot, query, where, limit } from 'firebase/firestore';
+import { collection, query, where, limit } from 'firebase/firestore';
+import { listenQueryAcrossPanelDbs } from '../../lib/panelDb';
 
 interface MerchantCRMProps {
   business: BusinessConfig;
@@ -38,17 +38,14 @@ export function MerchantCRM({ business, orders }: MerchantCRMProps) {
   // including which ad brought them (acquisition).
   useEffect(() => {
     if (!business.id) return;
-    const q = query(
-      collection(db, 'customers'),
-      where('businessId', '==', business.id),
-      limit(500)
+    return listenQueryAcrossPanelDbs<any>(
+      (database) => query(
+        collection(database, 'customers'),
+        where('businessId', '==', business.id),
+        limit(500)
+      ),
+      (docs) => setMessengerLeads(docs),
     );
-    const unsub = onSnapshot(q, (snap) => {
-      setMessengerLeads(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-    }, (err) => {
-      console.warn('[CRM] customers snapshot error:', err);
-    });
-    return () => unsub();
   }, [business.id]);
 
   const customerMap = new Map<string, CrmCustomer>();
