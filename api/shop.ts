@@ -32,14 +32,14 @@ import {
   suggestedShopSlug,
 } from './shopSlug.js';
 import { parseShopRequest, readJsonBody } from './shopRoute.js';
-import { omitUndefined } from '../src/lib/productList.js';
 import {
   buildStoreCheckoutOrder,
   decrementShopStock,
   isRepeatWebsiteCheckout,
+  omitUndefined,
   sanitizeCart,
   sanitizePublicOrder,
-} from '../src/lib/storefront.js';
+} from './shopCheckout.js';
 
 export const maxDuration = 60;
 
