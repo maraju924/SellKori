@@ -24,6 +24,7 @@ import { ShopCart } from './components/shop/ShopCart';
 import { ShopCheckout } from './components/shop/ShopCheckout';
 import { ShopOrder } from './components/shop/ShopOrder';
 import { ShopTrack } from './components/shop/ShopTrack';
+import { ShopCategory, ShopCategoryIndex } from './components/shop/ShopCategory';
 import { fetchShop } from './lib/shopApi';
 import { shopPath } from './lib/storefront';
 import { isPublicCustomerPath } from './lib/storeSlug';
@@ -328,6 +329,8 @@ export default function App() {
           {/* Public merchant storefront: sell-kori.vercel.app/myshop */}
           <Route path="/:storeSlug" element={<ShopLayout />}>
             <Route index element={<ShopHome />} />
+            <Route path="c" element={<ShopCategoryIndex />} />
+            <Route path="c/:categoryKey" element={<ShopCategory />} />
             <Route path="p/:productId" element={<ShopProduct />} />
             <Route path="cart" element={<ShopCart />} />
             <Route path="checkout" element={<ShopCheckout />} />
