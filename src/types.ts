@@ -104,6 +104,8 @@ export interface BusinessConfig {
   products: Product[];
   faqs: FAQ[];
   facebookConfig?: FacebookConfig;
+  /** Public Pixel id only — never the CAPI token. */
+  facebookPixelId?: string;
   courierConfig?: CourierConfigType;
   features?: BusinessFeatures;
   customSystemPrompt?: string;
@@ -158,6 +160,15 @@ export interface OrderStatusEvent {
   note?: string;
 }
 
+export interface OrderItem {
+  productId: string;
+  productName: string;
+  quantity: number;
+  unitPrice: number;
+  lineTotal: number;
+  image?: string;
+}
+
 export interface Order {
   id: string;
   businessId: string;
@@ -176,6 +187,9 @@ export interface Order {
   totalPrice: number;
   deliveryFee?: number;
   discount?: number;
+  /** Multi-item website cart. Messenger orders stay single-line on the root fields. */
+  items?: OrderItem[];
+  cartSignature?: string;
   status: OrderStatus;
   paymentStatus: PaymentStatus;
   paymentMethod?: PaymentMethod;

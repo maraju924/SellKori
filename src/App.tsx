@@ -17,13 +17,20 @@ import { LandingPage } from './components/landing/LandingPage';
 import { MerchantPanel } from './components/merchant/MerchantPanel';
 import { AdminPanel } from './components/admin/AdminPanel';
 import { ChatView } from './components/chat/ChatView';
+import { ShopLayout } from './components/shop/ShopLayout';
+import { ShopHome } from './components/shop/ShopHome';
+import { ShopProduct } from './components/shop/ShopProduct';
+import { ShopCart } from './components/shop/ShopCart';
+import { ShopCheckout } from './components/shop/ShopCheckout';
+import { ShopOrder } from './components/shop/ShopOrder';
+import { ShopTrack } from './components/shop/ShopTrack';
 
 function GlobalBanner() {
   const location = useLocation();
   const [announcement, setAnnouncement] = useState<string | null>(null);
 
   useEffect(() => {
-    if (location.pathname === '/') return;
+    if (location.pathname === '/' || location.pathname.startsWith('/shop') || location.pathname.startsWith('/chat')) return;
     const controller = new AbortController();
     fetch('/api/public/config', { signal: controller.signal })
       .then((response) => (response.ok ? response.json() : null))
@@ -34,7 +41,7 @@ function GlobalBanner() {
     return () => controller.abort();
   }, [location.pathname]);
 
-  if (location.pathname === '/' || !announcement) return null;
+  if (location.pathname === '/' || location.pathname.startsWith('/shop') || location.pathname.startsWith('/chat') || !announcement) return null;
 
   return (
     <div className="bg-slate-900 text-white py-2 px-4 text-center text-xs tracking-wide sticky top-0 z-[1000]">
@@ -249,6 +256,16 @@ export default function App() {
 
           {/* Public Customer Chat Room */}
           <Route path="/chat/:businessId" element={<ChatView />} />
+
+          {/* Public merchant storefront */}
+          <Route path="/shop/:businessId" element={<ShopLayout />}>
+            <Route index element={<ShopHome />} />
+            <Route path="p/:productId" element={<ShopProduct />} />
+            <Route path="cart" element={<ShopCart />} />
+            <Route path="checkout" element={<ShopCheckout />} />
+            <Route path="order/:orderId" element={<ShopOrder />} />
+            <Route path="track" element={<ShopTrack />} />
+          </Route>
 
           {/* Merchant Control Center */}
           <Route

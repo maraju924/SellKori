@@ -99,6 +99,7 @@ import {
   whatsappTemplate,
   WhatsAppTemplate,
 } from '../../lib/orderUtils';
+import { orderProductLabel } from '../../lib/storefront';
 
 interface MerchantOrdersProps {
   business: BusinessConfig;
@@ -1219,8 +1220,7 @@ function OrdersTable({
                   <RiskChips order={ord} allOrders={allOrders} />
                 </td>
                 <td className="p-3">
-                  <div className="font-bold line-clamp-1">{ord.productName}</div>
-                  <div className="text-zinc-500">×{ord.quantity}</div>
+                  <div className="font-bold line-clamp-2">{orderProductLabel(ord)}</div>
                 </td>
                 <td className="p-3 text-right font-black text-orange-600">{formatMoney(ord.totalPrice)}</td>
                 <td className="p-3" onClick={e => e.stopPropagation()}>
@@ -1329,7 +1329,7 @@ function OrderCard({
         </div>
         <div className="space-y-1.5 bg-zinc-50 dark:bg-zinc-800/40 p-3.5 rounded-2xl">
           <p className="font-bold text-zinc-400 text-[10px] uppercase">পণ্য ও মূল্য</p>
-          <p className="font-black text-sm">{order.productName} <span className="text-orange-600">(x{order.quantity})</span></p>
+          <p className="font-black text-sm">{orderProductLabel(order)}</p>
           <div className="flex justify-between"><span className="text-zinc-500">একক</span><span className="font-bold">{formatMoney(order.unitPrice)}</span></div>
           <div className="flex justify-between border-t border-zinc-200 dark:border-zinc-700 pt-1">
             <span className="font-bold">মোট</span>
@@ -1403,7 +1403,7 @@ function KanbanBoard({
                     <span className="text-[10px] font-black text-orange-600">{formatMoney(o.totalPrice)}</span>
                   </div>
                   <p className="font-black text-xs line-clamp-1">{o.customerName}</p>
-                  <p className="text-[11px] text-zinc-500 line-clamp-1">{o.productName} ×{o.quantity}</p>
+                  <p className="text-[11px] text-zinc-500 line-clamp-1">{orderProductLabel(o)}</p>
                   <RiskChips order={o} allOrders={allOrders} />
                   <select
                     value={o.status}
@@ -1577,7 +1577,7 @@ function OrderDrawer({
 
           <section className="rounded-2xl bg-zinc-50 dark:bg-zinc-900 border border-zinc-100 dark:border-zinc-800 p-4 space-y-2 text-xs">
             <p className="text-[10px] font-black uppercase text-zinc-400">পণ্য ও বিল</p>
-            <p className="font-black text-sm">{order.productName} × {order.quantity}</p>
+            <p className="font-black text-sm">{orderProductLabel(order)}</p>
             <div className="space-y-1">
               <Row k="একক মূল্য" v={formatMoney(order.unitPrice)} />
               <Row k="ডেলিভারি" v={formatMoney(order.deliveryFee)} />
