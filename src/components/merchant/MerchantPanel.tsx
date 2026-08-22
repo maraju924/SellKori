@@ -13,8 +13,6 @@ import {
   serverTimestamp 
 } from 'firebase/firestore';
 import { 
-  Plus, 
-  Bot, 
   Package, 
   Tag, 
   Search, 
@@ -23,11 +21,15 @@ import {
   Globe, 
   TrendingUp, 
   Sliders, 
-  Share2,
   Users
 } from 'lucide-react';
-import { db } from '../../lib/firebase';
+import { db, firestoreDatabaseLabel, getPanelFirestoreDbs, setPanelWriteDb } from '../../lib/firebase';
 import { BusinessConfig, Order, UserProfile } from '../../types';
+import {
+  firestoreErrorMessage,
+  reconcileMultiDbSnapshots,
+  type DatabaseSnapshotState,
+} from '../../lib/panelFirestore';
 
 import { MerchantHeader } from './MerchantHeader';
 import { MerchantSidebar } from './MerchantSidebar';
@@ -47,6 +49,7 @@ import { MerchantFeatures } from './MerchantFeatures';
 import { MerchantInfo } from './MerchantInfo';
 import { toast } from 'sonner';
 import { parseJsonResponse } from '../../lib/safeJson';
+import { suggestedShopSlug } from '../../lib/storeSlug';
 
 interface MerchantPanelProps {
   user: FirebaseUser | null;
@@ -62,6 +65,7 @@ export function MerchantPanel({ user, profile }: MerchantPanelProps) {
   const [searchQuery, setSearchQuery] = useState('');
   const [orders, setOrders] = useState<Order[]>([]);
   const [isDark, setIsDark] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const navigate = useNavigate();
 
   // Returning from ZiniPay: billing tab is not mounted by default, so verify
@@ -129,87 +133,145 @@ export function MerchantPanel({ user, profile }: MerchantPanelProps) {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
-  // Load business config for current user
+  // Load business config for current user from the named AI Studio DB and
+  // the project "(default)" DB. Server writes used to land in default, so a
+  // named-only listener looked like an empty shop and auto-created a blank one.
   useEffect(() => {
     if (!user) return;
-    const q = query(collection(db, 'businesses'), where('ownerId', '==', user.uid));
-    return onSnapshot(q, (snapshot) => {
-      if (!snapshot.empty) {
-        const docSnap = snapshot.docs[0];
-        const data = docSnap.data() as BusinessConfig;
-        // Always use the Firestore document ID for writes. Using `data.id`
-        // when it differs from the doc path makes updateDoc a no-op / not-found
-        // — product edits look like they save but never persist.
-        setBusiness({ ...data, id: docSnap.id });
-      } else {
-        const newId = `biz-${Date.now()}`;
-        const initialConfig: BusinessConfig = {
-          id: newId,
-          ownerId: user.uid,
-          name: "আমার অনলাইন শপ",
-          description: "একটি বিশ্বস্ত ও আধুনিক অনলাইন শপ।",
-          walletBalance: 0,
-          tokenBalance: 100000,
-          totalTokensUsed: 0,
-          products: [],
-          faqs: [],
-          facebookConfig: { pixelId: '', accessToken: '', testEventCode: '' },
-          courierConfig: {
-            deliveryChargeInsideDhaka: 70,
-            deliveryChargeOutsideDhaka: 130,
-            autoBooking: true
-          },
-          features: {
-            aiEnabled: true,
-            orderTrackingEnabled: true,
-            proactiveNotificationsEnabled: true,
-            chatSummaryEnabled: true,
-            negotiationEnabled: true,
-            imageDisplayEnabled: true,
-            inventoryEnabled: true,
-            analyticsEnabled: true,
-            invoicingEnabled: true,
-            broadcastingEnabled: true,
-            commentToInboxEnabled: true,
-            messengerRepliesEnabled: true,
-            photoReplyEnabled: true,
-            voiceReplyEnabled: true,
-            upsellEnabled: true,
-            autoOrderEnabled: true,
-            reviewImagesEnabled: true,
-            faqEnabled: true,
-            autoCourierBookingEnabled: true,
-            humanHandoverEnabled: true,
-            quietHoursEnabled: false
-          },
-          aiPersona: 'friendly',
-          aiLanguage: 'bangla',
-          bargainingSensitivity: 60,
-          customSystemPrompt: '',
-          messengerVerifyToken: `sk_${newId}`,
-          verifyToken: `sk_${newId}`,
-          status: 'active',
-          plan: 'free',
-          verificationStatus: 'pending',
-          createdAt: serverTimestamp()
-        };
-        // Show the new store immediately; surface create failures instead of
-        // leaving a permanent blank screen.
-        setBusiness(initialConfig);
-        setDoc(doc(db, 'businesses', newId), initialConfig).catch((err) => {
-          console.error('[MerchantPanel] Failed to create initial business:', err);
-        });
+    const dbs = getPanelFirestoreDbs();
+    const states: DatabaseSnapshotState<BusinessConfig>[] = dbs.map(() => ({ status: 'pending' }));
+    let cancelled = false;
+    let created = false;
+
+    const applyBusiness = () => {
+      if (cancelled) return;
+      const result = reconcileMultiDbSnapshots(states);
+      if (!result.ready) return;
+
+      if (result.docs.length > 0) {
+        const found = result.docs[0];
+        const sourceIndex = states.findIndex(
+          (state) => state.status === 'ready' && state.docs.some((row) => row.id === found.id),
+        );
+        if (sourceIndex >= 0) setPanelWriteDb(dbs[sourceIndex]);
+
+        const resolved = { ...found.data, id: found.id };
+        if (!resolved.slug) {
+          const slug = suggestedShopSlug(resolved);
+          resolved.slug = slug;
+          setDoc(doc(db, 'businesses', found.id), { slug }, { merge: true }).catch(() => {});
+        }
+        setBusiness(resolved);
+        setLoadError(null);
+        setLoading(false);
+        return;
       }
+
+      if (result.allFailed) {
+        setLoadError(result.error);
+        setLoading(false);
+        return;
+      }
+
+      if (created) return;
+      created = true;
+      const newId = `biz-${Date.now()}`;
+      const initialConfig: BusinessConfig = {
+        id: newId,
+        ownerId: user.uid,
+        name: "আমার অনলাইন শপ",
+        slug: suggestedShopSlug({ name: 'আমার অনলাইন শপ', id: newId }),
+        description: "একটি বিশ্বস্ত ও আধুনিক অনলাইন শপ।",
+        walletBalance: 0,
+        tokenBalance: 100000,
+        totalTokensUsed: 0,
+        products: [],
+        faqs: [],
+        facebookConfig: { pixelId: '', accessToken: '', testEventCode: '' },
+        courierConfig: {
+          deliveryChargeInsideDhaka: 70,
+          deliveryChargeOutsideDhaka: 130,
+          autoBooking: true
+        },
+        features: {
+          aiEnabled: true,
+          orderTrackingEnabled: true,
+          proactiveNotificationsEnabled: true,
+          chatSummaryEnabled: true,
+          negotiationEnabled: true,
+          imageDisplayEnabled: true,
+          inventoryEnabled: true,
+          analyticsEnabled: true,
+          invoicingEnabled: true,
+          broadcastingEnabled: true,
+          commentToInboxEnabled: true,
+          messengerRepliesEnabled: true,
+          photoReplyEnabled: true,
+          voiceReplyEnabled: true,
+          upsellEnabled: true,
+          autoOrderEnabled: true,
+          reviewImagesEnabled: true,
+          faqEnabled: true,
+          autoCourierBookingEnabled: true,
+          humanHandoverEnabled: true,
+          quietHoursEnabled: false
+        },
+        aiPersona: 'friendly',
+        aiLanguage: 'bangla',
+        bargainingSensitivity: 60,
+        customSystemPrompt: '',
+        messengerVerifyToken: `sk_${newId}`,
+        verifyToken: `sk_${newId}`,
+        status: 'active',
+        plan: 'free',
+        verificationStatus: 'pending',
+        createdAt: serverTimestamp()
+      };
+      setBusiness(initialConfig);
+      setLoadError(null);
       setLoading(false);
+      setDoc(doc(db, 'businesses', newId), initialConfig).catch((err) => {
+        console.error('[MerchantPanel] Failed to create initial business:', err);
+        setLoadError(firestoreErrorMessage(err));
+      });
+    };
+
+    const unsubs = dbs.map((database, index) => {
+      const q = query(collection(database, 'businesses'), where('ownerId', '==', user.uid));
+      return onSnapshot(q, (snapshot) => {
+        states[index] = {
+          status: 'ready',
+          docs: snapshot.docs.map((d) => ({
+            id: d.id,
+            data: { ...d.data(), id: d.id } as BusinessConfig,
+            databaseId: firestoreDatabaseLabel(database),
+          })),
+        };
+        applyBusiness();
+      }, (err) => {
+        console.error('[MerchantPanel] businesses snapshot failed:', err);
+        states[index] = { status: 'error', error: firestoreErrorMessage(err) };
+        applyBusiness();
+      });
     });
+
+    return () => {
+      cancelled = true;
+      unsubs.forEach((unsub) => unsub());
+    };
   }, [user]);
 
-  // Load orders (fallback without orderBy if composite index is missing)
+  // Load orders from both Firestore databases (fallback without orderBy if
+  // the composite index is missing).
   useEffect(() => {
     if (!business?.id) return;
 
-    const applySnap = (snap: { docs: { id: string; data: () => any }[] }) => {
-      const list = snap.docs.map(d => ({ id: d.id, ...d.data() } as Order));
+    const applyMerged = (
+      states: DatabaseSnapshotState<Order>[],
+    ) => {
+      const result = reconcileMultiDbSnapshots(states);
+      if (!result.ready) return;
+      const list = result.docs.map((row) => row.data);
       list.sort((a: any, b: any) => {
         const ta = a.createdAtMs || a.createdAt?.toMillis?.() || Date.parse(a.createdAt || '') || 0;
         const tb = b.createdAtMs || b.createdAt?.toMillis?.() || Date.parse(b.createdAt || '') || 0;
@@ -218,61 +280,90 @@ export function MerchantPanel({ user, profile }: MerchantPanelProps) {
       setOrders(list);
     };
 
-    const withOrder = query(
-      collection(db, 'orders'),
-      where('businessId', '==', business.id),
-      orderBy('createdAt', 'desc')
-    );
-    let unsubFallback: (() => void) | null = null;
-    const unsub = onSnapshot(withOrder, applySnap, () => {
-      const withoutOrder = query(
-        collection(db, 'orders'),
-        where('businessId', '==', business.id)
+    const dbs = getPanelFirestoreDbs();
+    const states: DatabaseSnapshotState<Order>[] = dbs.map(() => ({ status: 'pending' }));
+    const unsubs: Array<() => void> = [];
+
+    dbs.forEach((database, index) => {
+      const toDocs = (snap: { docs: { id: string; data: () => any }[] }) =>
+        snap.docs.map((d) => ({
+          id: d.id,
+          data: { id: d.id, ...d.data() } as Order,
+          databaseId: firestoreDatabaseLabel(database),
+        }));
+
+      const withOrder = query(
+        collection(database, 'orders'),
+        where('businessId', '==', business.id),
+        orderBy('createdAt', 'desc')
       );
-      unsubFallback = onSnapshot(withoutOrder, applySnap, (err) => {
-        console.error('[Orders load failed]', err);
+      let unsubFallback: (() => void) | null = null;
+      const unsub = onSnapshot(withOrder, (snap) => {
+        states[index] = { status: 'ready', docs: toDocs(snap) };
+        applyMerged(states);
+      }, () => {
+        const withoutOrder = query(
+          collection(database, 'orders'),
+          where('businessId', '==', business.id)
+        );
+        unsubFallback = onSnapshot(withoutOrder, (snap) => {
+          states[index] = { status: 'ready', docs: toDocs(snap) };
+          applyMerged(states);
+        }, (err) => {
+          console.error('[Orders load failed]', err);
+          states[index] = { status: 'error', error: firestoreErrorMessage(err) };
+          applyMerged(states);
+        });
+      });
+      unsubs.push(() => {
+        unsub();
+        unsubFallback?.();
       });
     });
-    return () => {
-      unsub();
-      unsubFallback?.();
-    };
+
+    return () => unsubs.forEach((unsub) => unsub());
   }, [business?.id]);
 
   const isAdmin = profile?.role === 'admin' || profile?.email === 'maraju924@gmail.com' || user?.email === 'maraju924@gmail.com';
 
   const searchableItems = [
-    ...(isAdmin ? [{ id: 'admin-portal', title: 'সুপার অ্যাডমিন পোর্টাল', desc: 'মার্চেন্ট ভেরিফিকেশন ও সিস্টেম কন্ট্রোল', icon: Sliders, href: '/admin' }] : []),
-    { id: 'analytics', title: 'ওভারভিউ ও অ্যানালিটিক্স', desc: 'দৈনিক সেলস গ্রাফ ও মোট বিক্রয়', icon: TrendingUp },
-    { id: 'orders', title: 'অর্ডার তালিকা ও মেমো', desc: 'গ্রাহকের অর্ডার ও কুরিয়ার ট্র্যাকিং', icon: Package },
-    { id: 'products', title: 'পণ্য ক্যাটালগ ও মূল্য সীমা', desc: 'প্রোডাক্ট যোগ ও মিনিমাম প্রাইজ লক', icon: Tag },
-    { id: 'customers', title: 'গ্রাহক সিআরএম ও লিডস', desc: 'কাস্টমার তালিকা, অ্যাড সোর্স ও লিড স্টেজ', icon: Users },
-    { id: 'ai-control', title: 'এআই সেলস ব্রেন', desc: 'পারসোনা, ভাষা ও বার্গেইনিং সেন্সিটিভিটি', icon: Bot },
-    { id: 'test-chat', title: 'লাইভ চ্যাট সিমুলেটর', desc: 'এআই-এর সাথে কথা বলে টেস্ট করুন', icon: Zap },
-    { id: 'messenger', title: 'ফেসবুক মেসেঞ্জার ওয়েবহুক', desc: 'পেজ কানেকশন, মাল্টি-পেজ ও অ্যাড ম্যাপিং', icon: Globe },
-    { id: 'broadcasting', title: 'টার্গেটেড ব্রডকাস্টিং', desc: 'কাস্টমারদের ইনবক্সে ক্যাম্পেইন পাঠান', icon: Zap },
-    { id: 'faqs', title: 'পলিসি ও নলেজবেস', desc: 'FAQ ও ডেলিভারি পলিসি', icon: Tag },
-    { id: 'features', title: 'সিস্টেম ফিচার সুইচ', desc: 'সব ফিচার চালু/বন্ধ কন্ট্রোল', icon: Sliders },
-    { id: 'info', title: 'স্টোর প্রোফাইল ও ব্র্যান্ডিং', desc: 'দোকানের নাম, লোগো ও ঠিকানা', icon: Tag },
-    { id: 'facebook', title: 'মেটা পিক্সেল ও CAPI', desc: 'কনভার্সন এপিআই ও ইভেন্ট সেটআপ', icon: Globe },
-    { id: 'integrations', title: 'কুরিয়ার ও এপিআই গেটওয়ে', desc: 'স্টেডফাস্ট কুরিয়ার সংযোগ', icon: Package },
-    { id: 'billing', title: 'টোকেন ওয়ালেট ও রিচার্জ', desc: 'এআই ব্যালেন্স ও পেমেন্ট হিস্ট্রি', icon: Sliders },
+    ...(isAdmin ? [{ id: 'admin-portal', title: 'অ্যাডমিন', icon: Sliders, href: '/admin' }] : []),
+    { id: 'analytics', title: 'ওভারভিউ', icon: TrendingUp },
+    { id: 'orders', title: 'অর্ডার', icon: Package },
+    { id: 'products', title: 'পণ্য', icon: Tag },
+    { id: 'customers', title: 'গ্রাহক', icon: Users },
+    { id: 'ai-control', title: 'এআই', icon: Sliders },
+    { id: 'test-chat', title: 'টেস্ট চ্যাট', icon: Zap },
+    { id: 'messenger', title: 'মেসেঞ্জার', icon: Globe },
+    { id: 'broadcasting', title: 'ব্রডকাস্ট', icon: Zap },
+    { id: 'faqs', title: 'FAQ', icon: Tag },
+    { id: 'features', title: 'ফিচার', icon: Sliders },
+    { id: 'info', title: 'স্টোর', icon: Tag },
+    { id: 'facebook', title: 'পিক্সেল', icon: Globe },
+    { id: 'integrations', title: 'কুরিয়ার', icon: Package },
+    { id: 'billing', title: 'বিলিং', icon: Sliders },
   ];
 
   const filteredCommands = searchableItems.filter(item => 
-    item.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    item.desc.toLowerCase().includes(searchQuery.toLowerCase())
+    item.title.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
   const pendingCount = orders.filter(o => o.status === 'pending').length;
 
   if (loading) {
     return (
-      <div className="min-h-[80vh] flex flex-col items-center justify-center space-y-4">
-        <div className="w-12 h-12 rounded-3xl bg-orange-600 animate-spin flex items-center justify-center text-white font-black text-sm shadow-xl shadow-orange-600/30">
-          SK
+      <div className="min-h-[80vh] flex items-center justify-center">
+        <div className="h-8 w-8 animate-spin rounded-full border-2 border-zinc-200 border-t-zinc-700 dark:border-zinc-800 dark:border-t-zinc-300" />
+      </div>
+    );
+  }
+
+  if (loadError && !business) {
+    return (
+      <div className="min-h-[80vh] flex items-center justify-center p-6">
+        <div className="max-w-md rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+          ড্যাশবোর্ডের ডাটা আসছে না: {loadError}
         </div>
-        <p className="text-xs font-black tracking-widest text-zinc-500 uppercase">SellKori OS Initializing...</p>
       </div>
     );
   }
@@ -339,28 +430,30 @@ export function MerchantPanel({ user, profile }: MerchantPanelProps) {
 
         {/* Center Content Workspace */}
         <main className="flex-1 p-3.5 sm:p-6 md:p-8 min-w-0">
+          {loadError && (
+            <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-200">
+              ডাটাবেস থেকে কিছু ডাটা আসছে না: {loadError}
+            </div>
+          )}
           {/* Prepaid token wallet alerts */}
           {!business.useOwnApiKey && (business.tokenBalance || 0) <= 0 && activeTab !== 'billing' && (
             <button
               onClick={() => setActiveTab('billing')}
-              className="w-full mb-4 p-4 rounded-2xl bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900/60 text-left flex items-center justify-between gap-3"
+              className="w-full mb-4 p-3 rounded-lg bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900/60 text-left flex items-center justify-between gap-3"
             >
-              <div>
-                <p className="font-black text-sm text-red-700 dark:text-red-300">টোকেন ব্যালেন্স শেষ — বট এখন কাস্টমারদের উত্তর দিচ্ছে না!</p>
-                <p className="text-[11px] text-red-600/80 dark:text-red-400/80 mt-0.5">রিচার্জ করলেই বট সাথে সাথে আবার চালু হবে। এখানে চেপে বিলিং-এ যান।</p>
-              </div>
-              <span className="shrink-0 px-3 py-1.5 rounded-xl bg-red-600 text-white text-xs font-black">রিচার্জ করুন</span>
+              <p className="text-sm font-medium text-red-700 dark:text-red-300">টোকেন শেষ</p>
+              <span className="shrink-0 px-3 py-1.5 rounded-lg bg-red-600 text-white text-xs font-medium">রিচার্জ</span>
             </button>
           )}
           {!business.useOwnApiKey && (business.tokenBalance || 0) > 0 && (business.tokenBalance || 0) < 50000 && activeTab !== 'billing' && (
             <button
               onClick={() => setActiveTab('billing')}
-              className="w-full mb-4 p-3 rounded-2xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-900/60 text-left flex items-center justify-between gap-3"
+              className="w-full mb-4 p-3 rounded-lg bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-900/60 text-left flex items-center justify-between gap-3"
             >
-              <p className="font-bold text-xs text-amber-700 dark:text-amber-300">
-                টোকেন প্রায় শেষ ({(business.tokenBalance || 0).toLocaleString()} বাকি) — শেষ হয়ে গেলে বট থেমে যাবে।
+              <p className="text-sm font-medium text-amber-700 dark:text-amber-300">
+                টোকেন কম ({(business.tokenBalance || 0).toLocaleString()})
               </p>
-              <span className="shrink-0 px-2.5 py-1 rounded-lg bg-amber-500 text-white text-[10px] font-black">রিচার্জ</span>
+              <span className="shrink-0 px-3 py-1.5 rounded-lg bg-amber-600 text-white text-xs font-medium">রিচার্জ</span>
             </button>
           )}
 
@@ -437,29 +530,6 @@ export function MerchantPanel({ user, profile }: MerchantPanelProps) {
         </main>
       </div>
 
-      {/* Android Native Floating Action Button (FAB) on Mobile */}
-      <div className="md:hidden fixed bottom-20 right-4 z-40">
-        <button
-          onClick={() => {
-            if (activeTab === 'products') {
-              // Trigger product modal
-              const btn = document.getElementById('add-product-btn');
-              if (btn) btn.click();
-            } else {
-              setActiveTab('test-chat');
-            }
-          }}
-          className="w-14 h-14 rounded-2xl bg-orange-600 text-white flex items-center justify-center shadow-2xl shadow-orange-600/50 native-ripple active:scale-95 transition-transform"
-          aria-label="Action Button"
-        >
-          {activeTab === 'products' ? (
-            <Plus className="w-6 h-6 stroke-[2.5]" />
-          ) : (
-            <Bot className="w-6 h-6 stroke-[2.2]" />
-          )}
-        </button>
-      </div>
-
       {/* Android M3 Bottom Navigation Bar */}
       <MerchantMobileNav
         activeTab={activeTab}
@@ -476,17 +546,17 @@ export function MerchantPanel({ user, profile }: MerchantPanelProps) {
               initial={{ opacity: 0, scale: 0.95, y: -10 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.95, y: -10 }}
-              className="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-3xl w-full max-w-lg shadow-2xl overflow-hidden"
+              className="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl w-full max-w-md shadow-xl overflow-hidden"
             >
-              <div className="p-3.5 border-b border-zinc-200 dark:border-zinc-800 flex items-center gap-2.5">
+              <div className="p-3 border-b border-zinc-200 dark:border-zinc-800 flex items-center gap-2.5">
                 <Search className="w-4 h-4 text-zinc-400 shrink-0" />
                 <input
                   autoFocus
                   type="text"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="সেলকরি সফটওয়্যার কমান্ড খুঁজুন..."
-                  className="flex-1 bg-transparent text-xs sm:text-sm font-medium outline-none text-zinc-900 dark:text-white"
+                  placeholder="খুঁজুন..."
+                  className="flex-1 bg-transparent text-sm outline-none text-zinc-900 dark:text-white"
                 />
                 <button
                   onClick={() => setIsCommandOpen(false)}
@@ -510,15 +580,12 @@ export function MerchantPanel({ user, profile }: MerchantPanelProps) {
                         }
                         setIsCommandOpen(false);
                       }}
-                      className="w-full flex items-center gap-3 p-2.5 rounded-2xl hover:bg-orange-50 dark:hover:bg-orange-950/40 text-left transition-colors group"
+                      className="w-full flex items-center gap-3 p-2.5 rounded-lg hover:bg-zinc-50 dark:hover:bg-zinc-800 text-left"
                     >
-                      <div className="w-8 h-8 rounded-xl bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-300 group-hover:bg-orange-600 group-hover:text-white flex items-center justify-center shrink-0 transition-colors">
+                      <div className="w-8 h-8 rounded-lg bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-300 flex items-center justify-center shrink-0">
                         <Icon className="w-4 h-4" />
                       </div>
-                      <div>
-                        <p className="text-xs font-black text-zinc-900 dark:text-white">{cmd.title}</p>
-                        <p className="text-[10px] text-zinc-500">{cmd.desc}</p>
-                      </div>
+                      <p className="text-sm font-medium text-zinc-900 dark:text-white">{cmd.title}</p>
                     </button>
                   );
                 })}

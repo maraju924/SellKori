@@ -69,8 +69,38 @@ function initializeAdminApp(projectId: string) {
 
 // Load firebase config for server-side use
 let db: any;
+let defaultClientDb: any;
 let firebaseApp: any;
 let adminDb: any;
+let defaultAdminDb: any;
+
+function clientFirestoreDbs(): any[] {
+  const out: any[] = [];
+  if (db) out.push(db);
+  if (defaultClientDb && defaultClientDb !== db) out.push(defaultClientDb);
+  return out;
+}
+
+function adminFirestoreDbs(): any[] {
+  const out: any[] = [];
+  if (adminDb) out.push(adminDb);
+  if (defaultAdminDb && defaultAdminDb !== adminDb) out.push(defaultAdminDb);
+  return out;
+}
+
+function attachDefaultStores(firebaseAppInstance: any, adminApp: any, dbId: string | undefined) {
+  defaultClientDb = getFirestore(firebaseAppInstance);
+  if (dbId && dbId !== '(default)' && adminApp) {
+    try {
+      defaultAdminDb = getAdminFirestore(adminApp);
+    } catch (err) {
+      console.warn('[Firebase] Could not open (default) Admin Firestore:', err);
+      defaultAdminDb = null;
+    }
+  } else {
+    defaultAdminDb = adminDb;
+  }
+}
 
 try {
   const firebaseConfigPath = path.join(process.cwd(), 'firebase-applet-config.json');
@@ -80,6 +110,7 @@ try {
     db = firebaseConfig.firestoreDatabaseId 
       ? getFirestore(firebaseApp, firebaseConfig.firestoreDatabaseId) 
       : getFirestore(firebaseApp);
+    defaultClientDb = getFirestore(firebaseApp);
     
     // Initialize Admin SDK
     try {
@@ -88,6 +119,7 @@ try {
       
       // Try to get Admin Firestore for the specific database ID
       adminDb = getAdminFirestore(adminApp, dbId && dbId !== '(default)' ? dbId : undefined);
+      attachDefaultStores(firebaseApp, adminApp, dbId);
       
       // Verification test — IMPORTANT: this must NOT block module load with a
       // top-level `await`. On a Vercel serverless cold start, the exported
@@ -102,22 +134,12 @@ try {
           console.log(`[Firebase] Admin SDK Verified on Database: ${dbId || '(default)'}`);
         })
         .catch((testErr: any) => {
-          if (dbId && dbId !== '(default)') {
-            console.log(`[Firebase] Admin DB "${dbId}" access denied. Falling back to (default) database...`);
-            const fallbackDb = getAdminFirestore(adminApp);
-            fallbackDb.collection('businesses').limit(1).get()
-              .then(() => {
-                adminDb = fallbackDb;
-                console.log('[Firebase] Admin SDK switched to (default) database.');
-              })
-              .catch(() => {
-                console.warn('[Firebase] Admin SDK unusable on any database. Falling back to Client SDK only.');
-                adminDb = null;
-              });
-          } else {
-            console.warn('[Firebase] Admin SDK permission denied on (default) DB. Falling back to Client SDK.');
-            adminDb = null;
-          }
+          // Do NOT switch to a different Firestore database. The web panels
+          // read the configured named DB; writing here to "(default)" made
+          // admin/merchant screens look empty even though data existed.
+          console.warn(
+            `[Firebase] Admin SDK check failed on "${dbId || '(default)'}": ${testErr?.message || testErr}. Keeping this database; client SDK will be used if Admin writes fail.`,
+          );
         });
     } catch (adminErr: any) {
       console.error('[Firebase] Admin Setup Error:', adminErr?.message);
@@ -134,6 +156,7 @@ try {
        db = firebaseConfig.firestoreDatabaseId 
          ? getFirestore(firebaseApp, firebaseConfig.firestoreDatabaseId) 
          : getFirestore(firebaseApp);
+       defaultClientDb = getFirestore(firebaseApp);
 
     // Initialize Admin SDK (fallback)
     try {
@@ -145,6 +168,7 @@ try {
       } else {
         adminDb = getAdminFirestore(adminApp);
       }
+      attachDefaultStores(firebaseApp, adminApp, dbId);
       console.log(`[Firebase] Admin Firestore ready (fallback)`);
     } catch (e) {
       console.error('[Firebase] Fallback Admin Error:', e);
@@ -595,16 +619,21 @@ async function loadBusinessCustomers(businessId: string): Promise<any[]> {
 
 async function loadBusinessById(businessId: string): Promise<{ id: string; data: any } | null> {
   if (!businessId) return null;
-  try {
-    if (adminDb) {
-      const snap = await adminDb.collection('businesses').doc(businessId).get();
+  for (const store of adminFirestoreDbs()) {
+    try {
+      const snap = await store.collection('businesses').doc(businessId).get();
       if (snap.exists) return { id: snap.id, data: snap.data() };
-    } else if (db) {
-      const snap = await getDoc(doc(db, 'businesses', businessId));
-      if (snap.exists()) return { id: snap.id, data: snap.data() };
+    } catch (err) {
+      console.warn('[loadBusinessById] admin', err);
     }
-  } catch (err) {
-    console.warn('[loadBusinessById]', err);
+  }
+  for (const client of clientFirestoreDbs()) {
+    try {
+      const snap = await getDoc(doc(client, 'businesses', businessId));
+      if (snap.exists()) return { id: snap.id, data: snap.data() };
+    } catch (err) {
+      console.warn('[loadBusinessById] client', err);
+    }
   }
   return null;
 }

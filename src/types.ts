@@ -93,6 +93,7 @@ export interface BusinessConfig {
   id: string;
   ownerId: string;
   name: string;
+  slug?: string;
   description?: string;
   phone?: string;
   address?: string;

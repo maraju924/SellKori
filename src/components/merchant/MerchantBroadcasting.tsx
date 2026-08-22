@@ -4,7 +4,6 @@ import {
   Clock,
   MessageSquare,
   Save,
-  AlertTriangle,
   RefreshCw
 } from 'lucide-react';
 import { Button } from '../ui/button';
@@ -22,10 +21,10 @@ import {
   parseCommentKeywords
 } from '../../lib/outreach';
 import { db } from '../../lib/firebase';
+import { listenQueryAcrossPanelDbs } from '../../lib/panelDb';
 import {
   collection,
   doc,
-  onSnapshot,
   query,
   setDoc,
   where,
@@ -80,21 +79,18 @@ export function MerchantBroadcasting({ business }: MerchantBroadcastingProps) {
 
   useEffect(() => {
     if (!business.id) return;
-    const q = query(
-      collection(db, 'broadcasts'),
-      where('businessId', '==', business.id),
-      limit(40)
-    );
-    const unsub = onSnapshot(
-      q,
-      snap => {
-        const rows = snap.docs.map(d => ({ id: d.id, ...(d.data() as Omit<BroadcastingCampaign, 'id'>) }));
-        rows.sort((a, b) => (b.createdAtMs || 0) - (a.createdAtMs || 0));
-        setCampaigns(rows);
+    return listenQueryAcrossPanelDbs<BroadcastingCampaign>(
+      (database) => query(
+        collection(database, 'broadcasts'),
+        where('businessId', '==', business.id),
+        limit(40)
+      ),
+      (rows) => {
+        const sorted = [...rows];
+        sorted.sort((a, b) => ((b as any).createdAtMs || 0) - ((a as any).createdAtMs || 0));
+        setCampaigns(sorted);
       },
-      err => console.warn('broadcast snapshot', err)
     );
-    return () => unsub();
   }, [business.id]);
 
   useEffect(() => {
@@ -138,7 +134,7 @@ export function MerchantBroadcasting({ business }: MerchantBroadcastingProps) {
 
   const handleSendBroadcast = async () => {
     if (!broadcastingOn) {
-      toast.error('ব্রডকাস্টিং সুইচবোর্ডে বন্ধ আছে');
+      toast.error('ব্রডকাস্ট বন্ধ আছে');
       return;
     }
     if (!messengerOn) {
@@ -206,23 +202,11 @@ export function MerchantBroadcasting({ business }: MerchantBroadcastingProps) {
 
   return (
     <div className="space-y-6">
-      <div className="bg-white dark:bg-zinc-900 border border-zinc-200/80 dark:border-zinc-800 rounded-3xl p-6 shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-4">
-        <div>
-          <div className="flex flex-wrap items-center gap-2">
-            <h2 className="text-xl md:text-2xl font-black text-zinc-900 dark:text-white">
-              লাইভ মেসেঞ্জার ব্রডকাস্ট
-            </h2>
-            <Badge className="bg-orange-100 text-orange-800 dark:bg-orange-950/60 dark:text-orange-300 border-none font-bold text-xs">
-              24h window
-            </Badge>
-            {!broadcastingOn && (
-              <Badge className="bg-rose-100 text-rose-700 border-none font-bold text-xs">সুইচবোর্ডে বন্ধ</Badge>
-            )}
-          </div>
-          <p className="text-xs text-zinc-500 mt-1">
-            নকল শিডিউল নয় — যাদের সাথে গত ২৪ ঘণ্টায় চ্যাট হয়েছে, তাদের ফেসবুক ইনবক্সে সত্যিই মেসেজ যাবে।
-          </p>
-        </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <h2 className="text-lg font-semibold text-zinc-900 dark:text-white">ব্রডকাস্ট</h2>
+        {!broadcastingOn && (
+          <span className="text-xs text-rose-600">বন্ধ</span>
+        )}
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -301,30 +285,20 @@ export function MerchantBroadcasting({ business }: MerchantBroadcastingProps) {
           </div>
         </div>
 
-        <div className="bg-zinc-50 dark:bg-zinc-800/40 border border-zinc-200/80 dark:border-zinc-800 rounded-3xl p-6 space-y-3 text-xs">
-          <h4 className="font-black text-sm text-zinc-900 dark:text-white">২৪-ঘণ্টা মেসেজিং পলিসি</h4>
-          <p className="text-zinc-500 leading-relaxed">
-            ফেসবুক শুধুমাত্র গত ২৪ ঘণ্টায় মেসেজ করা কাস্টমারকে প্রোমোশনাল আপডেট পাঠাতে দেয়। উইন্ডোর বাইরের নম্বরে পাঠানো হবে না — স্প্যাম স্ট্রাইক এড়াতে।
-          </p>
-          <div className="flex items-start gap-2 text-amber-700 dark:text-amber-300">
-            <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
-            <p className="leading-relaxed">পেজ অ্যাক্সেস টোকেন ও মেসেঞ্জার ওয়েবহুক সেট না থাকলে পাঠানো যাবে না।</p>
-          </div>
+        <div className="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl p-5 space-y-2 text-sm">
+          <h4 className="font-semibold text-zinc-900 dark:text-white">২৪ ঘণ্টা</h4>
+          <p className="text-zinc-500 text-xs">গত ২৪ ঘণ্টায় চ্যাট করা গ্রাহকই পাবে।</p>
         </div>
       </div>
 
       <div className="bg-white dark:bg-zinc-900 border border-zinc-200/80 dark:border-zinc-800 rounded-3xl p-6 shadow-xs space-y-4">
         <div className="flex flex-wrap items-center gap-2">
           <MessageSquare className="w-4 h-4 text-orange-500" />
-          <h3 className="text-lg font-black text-zinc-900 dark:text-white">কমেন্ট-টু-ইনবক্স</h3>
-          <Badge className={`border-none font-bold text-xs ${commentOn ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-700'}`}>
-            {commentOn ? 'সক্রিয়' : 'সুইচবোর্ডে বন্ধ'}
-          </Badge>
+          <h3 className="text-sm font-semibold text-zinc-900 dark:text-white">কমেন্ট-টু-ইনবক্স</h3>
+          <span className={`text-xs ${commentOn ? 'text-emerald-600' : 'text-zinc-400'}`}>
+            {commentOn ? 'চালু' : 'বন্ধ'}
+          </span>
         </div>
-        <p className="text-xs text-zinc-500 leading-relaxed">
-          পোস্টে কেউ <strong>দাম / প্রাইস / ইনবক্স / অর্ডার</strong> লিখলে এআই প্রাইভেট মেসেজ খুলবে এবং পাবলিক কমেন্টে “ইনবক্স চেক করুন” লিখবে।
-          মেসেঞ্জার সেটাপে Webhooks ফিল্ডে <code className="font-mono bg-zinc-100 dark:bg-zinc-800 px-1 rounded">feed</code> সাবস্ক্রাইব করতে হবে।
-        </p>
 
         <div className="space-y-1.5">
           <label className="text-xs font-bold text-zinc-700 dark:text-zinc-300">ট্রিগার কিওয়ার্ড ({keywordCount}টি)</label>

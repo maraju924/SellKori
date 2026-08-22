@@ -6,11 +6,12 @@
 import React, { useState, useEffect } from 'react';
 import { BrowserRouter as Router, Routes, Route, Link, useNavigate, Navigate, useSearchParams, useLocation } from 'react-router-dom';
 import { User as FirebaseUser, onAuthStateChanged, signOut, GoogleAuthProvider, signInWithPopup } from 'firebase/auth';
-import { doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore';
+import { doc, setDoc, serverTimestamp } from 'firebase/firestore';
 import { Zap, ShieldCheck, LayoutDashboard, LogOut } from 'lucide-react';
 import { Toaster, toast } from 'sonner';
 
 import { auth, db } from './lib/firebase';
+import { getDocAcrossPanelDbs } from './lib/panelDb';
 import { UserProfile } from './types';
 import { Button } from './components/ui/button';
 import { LandingPage } from './components/landing/LandingPage';
@@ -179,14 +180,13 @@ export default function App() {
       try {
         setUser(u);
         if (u) {
-          const docRef = doc(db, 'users', u.uid);
-          const docSnap = await getDoc(docRef);
+          const docSnap = await getDocAcrossPanelDbs('users', u.uid);
           const isAdminUser = u.email === 'maraju924@gmail.com';
-          if (docSnap.exists()) {
+          if (docSnap?.exists()) {
             const existing = docSnap.data() as UserProfile;
             if (isAdminUser && existing.role !== 'admin') {
               existing.role = 'admin';
-              await setDoc(docRef, { role: 'admin' }, { merge: true });
+              await setDoc(doc(db, 'users', u.uid), { role: 'admin' }, { merge: true });
             }
             setProfile(existing);
           } else {
@@ -197,7 +197,7 @@ export default function App() {
               role: isAdminUser ? 'admin' : 'merchant',
               createdAt: serverTimestamp()
             };
-            await setDoc(docRef, newProfile);
+            await setDoc(doc(db, 'users', u.uid), newProfile);
             setProfile(newProfile);
           }
         } else {

@@ -12,7 +12,8 @@ import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 import { Badge } from '../ui/badge';
 import { db } from '../../lib/firebase';
-import { doc, getDoc, setDoc, collection, onSnapshot, query, limit } from 'firebase/firestore';
+import { getDocAcrossPanelDbs, listenQueryAcrossPanelDbs } from '../../lib/panelDb';
+import { doc, setDoc, collection, query, limit } from 'firebase/firestore';
 import { parseJsonResponse } from '../../lib/safeJson';
 import { toast } from 'sonner';
 
@@ -57,9 +58,9 @@ export function AdminBillingGateway() {
   useEffect(() => {
     (async () => {
       try {
-        const snap = await getDoc(doc(db, 'system', 'settings'));
-        if (snap.exists()) {
-          const d = snap.data();
+        const snap = await getDocAcrossPanelDbs('system', 'settings');
+        if (snap?.exists()) {
+          const d = snap.data() || {};
           if (d.zinipayApiKey) setZinipayApiKey(d.zinipayApiKey);
           if (d.tokenRatePerLakh) setTokenRatePerLakh(Number(d.tokenRatePerLakh) || 20);
         }
@@ -73,13 +74,14 @@ export function AdminBillingGateway() {
 
   // Live payment stream (admin has global read access)
   useEffect(() => {
-    const q = query(collection(db, 'payments'), limit(200));
-    const unsub = onSnapshot(q, (snap) => {
-      const list = snap.docs.map(d => ({ id: d.id, ...d.data() } as any));
-      list.sort((a, b) => (b.createdAtMs || 0) - (a.createdAtMs || 0));
-      setPayments(list);
-    }, (err) => console.warn('[AdminBilling] payments snapshot error:', err));
-    return () => unsub();
+    return listenQueryAcrossPanelDbs<any>(
+      (database) => query(collection(database, 'payments'), limit(200)),
+      (list) => {
+        const sorted = [...list];
+        sorted.sort((a, b) => (b.createdAtMs || 0) - (a.createdAtMs || 0));
+        setPayments(sorted);
+      },
+    );
   }, []);
 
   const handleSave = async () => {
