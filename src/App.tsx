@@ -26,6 +26,7 @@ import { ShopOrder } from './components/shop/ShopOrder';
 import { ShopTrack } from './components/shop/ShopTrack';
 import { fetchShop } from './lib/shopApi';
 import { shopPath } from './lib/storefront';
+import { isPublicCustomerPath } from './lib/storeSlug';
 
 function isPlatformPath(pathname: string) {
   return (
@@ -261,7 +262,11 @@ export default function App() {
     });
   }, []);
 
-  if (loading) {
+  const customerStorefront = isPublicCustomerPath(
+    typeof window !== 'undefined' ? window.location.pathname : ''
+  );
+
+  if (loading && !customerStorefront) {
     return (
       <div className="h-screen flex flex-col items-center justify-center bg-zinc-50 dark:bg-zinc-950">
         <div className="w-10 h-10 rounded-md bg-slate-900 text-white flex items-center justify-center font-heading text-sm">
