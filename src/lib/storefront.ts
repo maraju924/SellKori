@@ -7,9 +7,8 @@ import type {
   ProductTier,
 } from '../types';
 import { normalizePhone } from './orderIdentity';
-import { asProductList, sameProductId } from './productCatalog';
+import { asProductList, finiteNumber, omitUndefined, sameProductId } from './productList';
 import { shopPublicPath, type ShopRef } from './storeSlug';
-import { finiteNumber } from './utils';
 
 export type { ShopRef } from './storeSlug';
 export { publicShopSlug, shopPublicPath, shopPublicUrl } from './storeSlug';
@@ -19,6 +18,14 @@ const DHAKA_RE =
 
 export function addressLooksInsideDhaka(address?: string): boolean {
   return DHAKA_RE.test(address || '');
+}
+
+/** Courier zone from district/address. Client cannot pick the fee. */
+export function isInsideDhakaDelivery(input: { address?: string; district?: string }): boolean {
+  const district = String(input.district || '').trim();
+  if (district === 'ঢাকা') return true;
+  if (district) return false;
+  return addressLooksInsideDhaka(input.address || '');
 }
 
 export const SHOP_CART_STORAGE_PREFIX = 'sellkori.shop.cart.';
@@ -210,7 +217,7 @@ export function resolveCartLine(product: Product, quantity: number): ResolvedCar
 export function resolveCart(
   products: Product[] | unknown,
   lines: CartLine[],
-  options?: { address?: string; insideDhaka?: boolean; business?: Pick<BusinessConfig, 'courierConfig'> }
+  options?: { address?: string; district?: string; business?: Pick<BusinessConfig, 'courierConfig'> }
 ): CartTotals {
   const catalog = asProductList(products);
   const resolved: ResolvedCartLine[] = [];
@@ -221,7 +228,8 @@ export function resolveCart(
   }
   const subtotal = resolved.reduce((sum, line) => sum + line.lineTotal, 0);
   const address = options?.address || '';
-  const insideDhaka = options?.insideDhaka ?? addressLooksInsideDhaka(address);
+  const district = options?.district || '';
+  const insideDhaka = isInsideDhakaDelivery({ address, district });
   const deliveryFee = insideDhaka
     ? finiteNumber(options?.business?.courierConfig?.deliveryChargeInsideDhaka, 70)
     : finiteNumber(options?.business?.courierConfig?.deliveryChargeOutsideDhaka, 130);
@@ -315,7 +323,7 @@ export function orderItemsFromCart(totals: CartTotals): OrderItem[] {
     quantity: line.quantity,
     unitPrice: Math.round(line.unitPrice),
     lineTotal: line.lineTotal,
-    image: publicProductImage(line.product) || undefined,
+    image: publicProductImage(line.product) || '',
   }));
 }
 
@@ -367,12 +375,12 @@ export function buildStoreCheckoutOrder(input: {
   const address = String(input.customer.address || '').trim();
   const district = String(input.customer.district || '').trim();
   const fullAddress = district && !address.includes(district) ? `${address}, ${district}` : address;
-  const insideDhaka = input.customer.insideDhaka ?? addressLooksInsideDhaka(fullAddress);
   const totals = resolveCart(input.business.products, input.lines, {
     address: fullAddress,
-    insideDhaka,
+    district,
     business: input.business,
   });
+  const insideDhaka = totals.insideDhaka;
   if (totals.lines.length === 0) {
     return { ok: false, issues: [{ field: 'cart', message: 'কার্ট খালি। আগে পণ্য যোগ করুন' }] };
   }
@@ -406,7 +414,7 @@ export function buildStoreCheckoutOrder(input: {
     status: 'confirmed',
     paymentStatus: 'unpaid',
     paymentMethod: 'cod',
-    notes: String(input.customer.notes || '').trim() || undefined,
+    notes: String(input.customer.notes || '').trim(),
     source: 'website',
     tags: ['website', 'COD'],
     insideDhaka,
@@ -418,7 +426,7 @@ export function buildStoreCheckoutOrder(input: {
   return {
     ok: true as const,
     value: {
-      order,
+      order: omitUndefined(order),
       inventory: items.map(item => ({ productId: item.productId, quantity: item.quantity })),
     },
   };

@@ -4,7 +4,7 @@ import { toast } from 'sonner';
 import { checkoutShop } from '../../lib/shopApi';
 import {
   BD_DISTRICTS,
-  addressLooksInsideDhaka,
+  isInsideDhakaDelivery,
   resolveCart,
   shopPath,
   validateShopCheckout,
@@ -25,13 +25,15 @@ export function ShopCheckout() {
   const [district, setDistrict] = useState('ঢাকা');
   const [address, setAddress] = useState('');
   const [notes, setNotes] = useState('');
-  const [insideDhaka, setInsideDhaka] = useState(true);
   const [submitting, setSubmitting] = useState(false);
 
   const totals = useMemo(
-    () => resolveCart(business.products, cart.items, { address: `${address}, ${district}`, insideDhaka, business }),
-    [address, business, cart.items, district, insideDhaka]
+    () => resolveCart(business.products, cart.items, { address, district, business }),
+    [address, business, cart.items, district]
   );
+  const insideDhaka = totals.insideDhaka || isInsideDhakaDelivery({ address, district });
+  const insideFee = Number(business.courierConfig?.deliveryChargeInsideDhaka) || 70;
+  const outsideFee = Number(business.courierConfig?.deliveryChargeOutsideDhaka) || 130;
 
   if (cart.items.length === 0) {
     return (
@@ -44,7 +46,7 @@ export function ShopCheckout() {
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
-    const customer = { name, phone, address, district, notes, insideDhaka };
+    const customer = { name, phone, address, district, notes };
     const issues = validateShopCheckout(business.products, cart.items, customer);
     if (issues.length) {
       toast.error(issues[0].message);
@@ -88,10 +90,7 @@ export function ShopCheckout() {
           জেলা
           <select
             value={district}
-            onChange={e => {
-              setDistrict(e.target.value);
-              setInsideDhaka(e.target.value === 'ঢাকা');
-            }}
+            onChange={e => setDistrict(e.target.value)}
             className="w-full h-11 rounded-xl border border-zinc-200 bg-white px-3 text-sm"
           >
             {BD_DISTRICTS.map(item => (
@@ -103,23 +102,11 @@ export function ShopCheckout() {
           সম্পূর্ণ ঠিকানা
           <Textarea
             value={address}
-            onChange={e => {
-              setAddress(e.target.value);
-              if (addressLooksInsideDhaka(`${e.target.value} ${district}`)) setInsideDhaka(true);
-            }}
+            onChange={e => setAddress(e.target.value)}
             className="min-h-24 rounded-xl"
             placeholder="বাড়ি/রোড, এলাকা, থানা"
             required
           />
-        </label>
-        <label className="flex items-center gap-2 text-sm font-bold">
-          <input
-            type="checkbox"
-            checked={insideDhaka}
-            onChange={e => setInsideDhaka(e.target.checked)}
-            className="rounded"
-          />
-          ঢাকার ভিতরে ডেলিভারি
         </label>
         <label className="space-y-1 text-xs font-bold block">
           নোট (ঐচ্ছিক)
@@ -136,9 +123,14 @@ export function ShopCheckout() {
           </div>
         ))}
         <div className="flex justify-between text-sm">
-          <span className="text-zinc-500">ডেলিভারি</span>
+          <span className="text-zinc-500">
+            ডেলিভারি · {insideDhaka ? 'ঢাকার ভিতরে' : 'ঢাকার বাইরে'}
+          </span>
           <ShopMoney amount={totals.deliveryFee} className="font-bold" />
         </div>
+        <p className="text-[11px] text-zinc-400">
+          জেলা দেখে চার্জ অটো হিসাব হয়। ঢাকা ৳{insideFee}, অন্য জেলা ৳{outsideFee}।
+        </p>
         <div className="flex justify-between text-base pt-2 border-t border-zinc-100">
           <span className="font-black">সর্বমোট · COD</span>
           <ShopMoney amount={totals.total} className="font-black text-orange-600" />
