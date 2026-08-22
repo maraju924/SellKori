@@ -9,7 +9,13 @@ import type {
 import { normalizePhone } from './orderIdentity';
 import { asProductList, finiteNumber, omitUndefined, sameProductId } from './productList';
 import { shopPublicPath, type ShopRef } from './storeSlug';
-import { decodeProductParam, normalizeProductSlug, productPublicKey } from './productSeo';
+import {
+  decodeProductParam,
+  isValidProductSlug,
+  normalizeProductSlug,
+  productPublicKey,
+  slugifyProductName,
+} from './productSeo';
 
 export type { ShopRef } from './storeSlug';
 export { publicShopSlug, shopPublicPath, shopPublicUrl } from './storeSlug';
@@ -120,6 +126,59 @@ export function shopCategories(products: Product[]): string[] {
     if (category) seen.add(category);
   }
   return [...seen];
+}
+
+export function categoryPublicKey(name?: string | null): string {
+  const clean = String(name || '').trim();
+  if (!clean) return '';
+  const latin = slugifyProductName(clean);
+  return isValidProductSlug(latin) ? latin : clean;
+}
+
+export function categoryPath(shop: ShopRef, name: string): string {
+  const key = categoryPublicKey(name);
+  return shopPath(shop, `c/${encodeURIComponent(key)}`);
+}
+
+export function matchShopCategory(products: Product[], raw?: string | null): string | undefined {
+  const decoded = decodeProductParam(raw);
+  if (!decoded) return undefined;
+  const cats = shopCategories(products);
+  const wantSlug = normalizeProductSlug(decoded) || slugifyProductName(decoded);
+  return cats.find(cat => {
+    if (cat === decoded) return true;
+    const key = categoryPublicKey(cat);
+    if (key === decoded || key === String(raw || '').trim()) return true;
+    const catSlug = normalizeProductSlug(key) || slugifyProductName(cat);
+    return Boolean(wantSlug && catSlug && catSlug === wantSlug);
+  });
+}
+
+export interface ShopCategorySummary {
+  name: string;
+  count: number;
+  image: string;
+}
+
+export function shopCategorySummaries(products: Product[]): ShopCategorySummary[] {
+  const available = products.filter(isShopProductBuyable);
+  const map = new Map<string, ShopCategorySummary>();
+  for (const product of available) {
+    const name = String(product.category || '').trim();
+    if (!name) continue;
+    const existing = map.get(name);
+    if (existing) {
+      existing.count += 1;
+      if (!existing.image) existing.image = publicProductImage(product);
+    } else {
+      map.set(name, {
+        name,
+        count: 1,
+        image: publicProductImage(product),
+      });
+    }
+  }
+  return [...map.values()].sort((a, b) => b.count - a.count || a.name.localeCompare(b.name, 'bn'));
 }
 
 export function findShopProduct(products: Product[], productId?: string | null): Product | undefined {

@@ -18,6 +18,9 @@ import {
   orderProductLabel,
   parseStoredCart,
   productPath,
+  categoryPath,
+  matchShopCategory,
+  shopCategorySummaries,
   removeCartLine,
   resolveCart,
   sanitizeCart,
@@ -260,6 +263,12 @@ function testHelpers() {
   assert.equal(productPath({ slug: 'myshop' }, shirt), '/myshop/p/p1');
   assert.equal(findShopProduct([shirt], 'p1')?.name, shirt.name);
   assert.equal(findShopProduct([{ ...shirt, slug: 'premium-shirt' }], 'premium-shirt')?.id, 'p1');
+  assert.equal(categoryPath({ slug: 'myshop' }, 'Fashion Wear'), '/myshop/c/fashion-wear');
+  assert.equal(categoryPath({ slug: 'myshop' }, 'পোশাক'), `/myshop/c/${encodeURIComponent('পোশাক')}`);
+  assert.equal(matchShopCategory([shirt, ink], 'পোশাক'), 'পোশাক');
+  assert.equal(matchShopCategory([{ ...shirt, category: 'Fashion Wear' }], 'fashion-wear'), 'Fashion Wear');
+  const summaries = shopCategorySummaries([shirt, ink, hidden]);
+  assert.equal(summaries.find(row => row.name === 'পোশাক')?.count, 1);
 }
 
 function testVariantCart() {

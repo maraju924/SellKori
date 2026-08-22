@@ -57,6 +57,7 @@ import {
   stripInlineDataUrls
 } from '../../lib/productCatalog';
 import { isValidProductSlug, suggestedProductSlug, uniqueProductSlug } from '../../lib/productSeo';
+import { shopCategories } from '../../lib/storefront';
 import {
   emptyProductPageFields,
   fieldsFromProduct,
@@ -799,7 +800,13 @@ export function MerchantProducts({ business, onProductsChange }: MerchantProduct
                     onChange={e => setCategory(readInputValue(e))}
                     placeholder="যেমন: ফ্যাশন, গ্যাজেট, বিউটি"
                     className="h-10 rounded-xl text-xs"
+                    list="product-category-options"
                   />
+                  <datalist id="product-category-options">
+                    {shopCategories(catalog).map(item => (
+                      <option key={item} value={item} />
+                    ))}
+                  </datalist>
                 </div>
                 <div className="space-y-1.5">
                   <label className="font-bold text-zinc-700 dark:text-zinc-300">স্টক পরিমাণ (In Stock Quantity)</label>

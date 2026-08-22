@@ -97,6 +97,12 @@ function ShopHeader({ business, search, setSearch }: {
             </div>
           </form>
 
+          <Link to={shopPath(business, 'c')} className="hidden sm:flex">
+            <Button variant="ghost" className="h-10 rounded-xl text-xs font-bold">
+              <LayoutGrid className="w-4 h-4 mr-1.5" />
+              ক্যাটাগরি
+            </Button>
+          </Link>
           <Link to={shopPath(business, 'track')} className="hidden sm:flex">
             <Button variant="ghost" className="h-10 rounded-xl text-xs font-bold">
               <PackageSearch className="w-4 h-4 mr-1.5" />
@@ -154,6 +160,7 @@ function ShopFooter({ business }: { business: BusinessConfig }) {
           </p>
         </div>
         <div className="space-y-2">
+          <Link to={shopPath(business, 'c')} className="block font-bold text-zinc-800 hover:text-orange-600">ক্যাটাগরি</Link>
           <Link to={shopPath(business, 'track')} className="block font-bold text-zinc-800 hover:text-orange-600">অর্ডার ট্র্যাক করুন</Link>
           <Link to={`/chat/${business.id}`} className="block font-bold text-zinc-800 hover:text-orange-600">এআই সেলস চ্যাট</Link>
           <p className="text-xs text-zinc-400 pt-2">পেমেন্ট: ক্যাশ অন ডেলিভারি</p>
@@ -167,7 +174,7 @@ function ShopMobileNav({ business }: { business: BusinessConfig }) {
   const { itemCount } = useShopCart();
   const items = [
     { to: shopPath(business), label: 'হোম', icon: Home, end: true },
-    { to: `${shopPath(business)}#products`, label: 'পণ্য', icon: LayoutGrid },
+    { to: shopPath(business, 'c'), label: 'ক্যাটাগরি', icon: LayoutGrid },
     { to: shopPath(business, 'cart'), label: 'কার্ট', icon: ShoppingBag, badge: itemCount },
     { to: shopPath(business, 'track'), label: 'ট্র্যাক', icon: PackageSearch },
     { to: `/chat/${business.id}`, label: 'চ্যাট', icon: MessageCircle },

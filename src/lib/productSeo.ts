@@ -262,6 +262,62 @@ export function shopSeoDescription(shop: Pick<BusinessConfig, 'name' | 'descript
   return `${shop.name || 'এই দোকান'} থেকে পণ্য দেখুন, কার্টে রাখুন, ক্যাশ অন ডেলিভারিতে অর্ডার করুন।`.slice(0, 170);
 }
 
+export function categorySeoTitle(category: string, shopName?: string): string {
+  const name = String(category || 'ক্যাটাগরি').trim();
+  const shop = String(shopName || '').trim();
+  return (shop ? `${name} | ${shop}` : name).slice(0, 70);
+}
+
+export function categorySeoDescription(category: string, count: number, shopName?: string): string {
+  const shop = String(shopName || 'এই দোকান').trim();
+  const label = String(category || 'ক্যাটাগরি').trim();
+  const items = Math.max(0, Math.round(finiteNumber(count, 0)));
+  return `${shop} থেকে ${label} — ${items}টি পণ্য। ক্যাশ অন ডেলিভারি।`.slice(0, 170);
+}
+
+export function categoryJsonLd(input: {
+  category: string;
+  shopName: string;
+  url: string;
+  image?: string;
+  products: Array<{ name: string; url: string }>;
+  crumbs: Array<{ name: string; url: string }>;
+}): unknown[] {
+  const graph: unknown[] = [
+    {
+      '@context': 'https://schema.org',
+      '@type': 'CollectionPage',
+      name: input.category,
+      url: input.url,
+      image: input.image || undefined,
+      isPartOf: { '@type': 'WebSite', name: input.shopName },
+    },
+    {
+      '@context': 'https://schema.org',
+      '@type': 'BreadcrumbList',
+      itemListElement: input.crumbs.map((crumb, index) => ({
+        '@type': 'ListItem',
+        position: index + 1,
+        name: crumb.name,
+        item: crumb.url,
+      })),
+    },
+  ];
+  if (input.products.length) {
+    graph.push({
+      '@context': 'https://schema.org',
+      '@type': 'ItemList',
+      itemListElement: input.products.slice(0, 24).map((product, index) => ({
+        '@type': 'ListItem',
+        position: index + 1,
+        name: product.name,
+        url: product.url,
+      })),
+    });
+  }
+  return graph;
+}
+
 export function absoluteUrl(origin: string, pathname: string): string {
   const base = String(origin || '').replace(/\/$/, '');
   const path = pathname.startsWith('/') ? pathname : `/${pathname}`;

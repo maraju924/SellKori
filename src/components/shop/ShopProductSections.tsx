@@ -1,7 +1,7 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
 import type { BusinessConfig, Product, ProductFaqItem, ProductReview, ProductSpecRow } from '../../types';
-import { shopPath } from '../../lib/storefront';
+import { categoryPath, shopPath } from '../../lib/storefront';
 import {
   isDirectVideoUrl,
   productHighlights,
@@ -22,7 +22,7 @@ export function ShopBreadcrumb({
   const home = shopPath(shop);
   const items = [
     { label: shop.name || 'দোকান', href: home },
-    product.category ? { label: product.category, href: `${home}#products` } : null,
+    product.category ? { label: product.category, href: categoryPath(shop, product.category) } : null,
     { label: product.name, href: '' },
   ].filter(Boolean) as Array<{ label: string; href: string }>;
 
