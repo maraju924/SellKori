@@ -1,0 +1,17 @@
+{
+  "name": "SellKori",
+  "install": "npm ci",
+  "terminals": [
+    {
+      "name": "dev",
+      "command": "npm run dev",
+      "description": "SellKori app (Express API + Vite-served React frontend) on http://localhost:3000"
+    }
+  ],
+  "ports": [
+    {
+      "name": "app",
+      "port": 3000
+    }
+  ]
+}
