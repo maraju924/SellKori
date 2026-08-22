@@ -1,21 +1,21 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo } from 'react';
 import { useOutletContext } from 'react-router-dom';
 import { BadgeCheck, MessageCircle, Shield, Truck } from 'lucide-react';
-import { filterShopProducts, shopCategories, shopPath } from '../../lib/storefront';
+import { filterShopProducts, shopCategorySummaries, shopPath } from '../../lib/storefront';
 import { absoluteUrl, shopSeoDescription, shopSeoTitle } from '../../lib/productSeo';
 import { useDocumentMeta } from '../../lib/useDocumentMeta';
 import { ShopProductCard } from './ShopProductCard';
+import { ShopCategoryGrid } from './ShopCategoryGrid';
 import type { ShopOutletContext } from './ShopLayout';
 import { Link } from 'react-router-dom';
 
 export function ShopHome() {
   const { business, search } = useOutletContext<ShopOutletContext>();
-  const [category, setCategory] = useState('সব');
   const products = business.products || [];
-  const categories = useMemo(() => ['সব', ...shopCategories(products)], [products]);
+  const categories = useMemo(() => shopCategorySummaries(products), [products]);
   const visible = useMemo(
-    () => filterShopProducts(products, search, category),
-    [products, search, category]
+    () => filterShopProducts(products, search),
+    [products, search]
   );
   const inside = business.courierConfig?.deliveryChargeInsideDhaka || 70;
   const outside = business.courierConfig?.deliveryChargeOutsideDhaka || 130;
@@ -52,38 +52,37 @@ export function ShopHome() {
         <div className="absolute -right-8 -bottom-10 w-48 h-48 rounded-full bg-orange-600/30 blur-2xl" />
       </section>
 
-      <div id="products" className="flex gap-2 overflow-x-auto pb-1 scrollbar-none">
-        {categories.map(cat => (
-          <button
-            key={cat}
-            onClick={() => setCategory(cat)}
-            className={`shrink-0 px-3.5 py-1.5 rounded-full text-xs font-bold border transition-colors ${
-              category === cat
-                ? 'bg-orange-600 text-white border-orange-600'
-                : 'bg-white text-zinc-700 border-zinc-200 hover:border-orange-300'
-            }`}
-          >
-            {cat}
-          </button>
-        ))}
-      </div>
-
-      {visible.length === 0 ? (
-        <div className="bg-white border border-zinc-200 rounded-2xl p-10 text-center text-sm text-zinc-500">
-          {search ? 'এই খোঁজে কোনো পণ্য নেই।' : 'এই মুহূর্তে কোনো পণ্য যোগ করা নেই।'}
-          <div className="mt-4">
-            <Link to={`/chat/${business.id}`} className="inline-flex items-center gap-1.5 font-bold text-orange-600">
-              <MessageCircle className="w-4 h-4" /> চ্যাটে জিজ্ঞাসা করুন
+      {categories.length > 0 && !search && (
+        <section id="categories" className="space-y-3">
+          <div className="flex items-end justify-between gap-3">
+            <h2 className="text-lg font-black">ক্যাটাগরি</h2>
+            <Link to={shopPath(business, 'c')} className="text-xs font-bold text-orange-600 hover:text-orange-700">
+              সব দেখুন
             </Link>
           </div>
-        </div>
-      ) : (
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3 sm:gap-4">
-          {visible.map(product => (
-            <ShopProductCard key={product.id} business={business} product={product} />
-          ))}
-        </div>
+          <ShopCategoryGrid shop={business} categories={categories} />
+        </section>
       )}
+
+      <section id="products" className="space-y-3">
+        <h2 className="text-lg font-black">{search ? 'খোঁজার ফল' : 'সব পণ্য'}</h2>
+        {visible.length === 0 ? (
+          <div className="bg-white border border-zinc-200 rounded-2xl p-10 text-center text-sm text-zinc-500">
+            {search ? 'এই খোঁজে কোনো পণ্য নেই।' : 'এই মুহূর্তে কোনো পণ্য যোগ করা নেই।'}
+            <div className="mt-4">
+              <Link to={`/chat/${business.id}`} className="inline-flex items-center gap-1.5 font-bold text-orange-600">
+                <MessageCircle className="w-4 h-4" /> চ্যাটে জিজ্ঞাসা করুন
+              </Link>
+            </div>
+          </div>
+        ) : (
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3 sm:gap-4">
+            {visible.map(product => (
+              <ShopProductCard key={product.id} business={business} product={product} />
+            ))}
+          </div>
+        )}
+      </section>
     </div>
   );
 }

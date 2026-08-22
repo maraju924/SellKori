@@ -3,6 +3,7 @@ import { Link, useNavigate, useOutletContext, useParams } from 'react-router-dom
 import { ChevronLeft, MessageCircle, ShoppingBag, Zap } from 'lucide-react';
 import { toast } from 'sonner';
 import {
+  categoryPath,
   findShopProduct,
   maxBuyableQuantity,
   productPath,
@@ -99,7 +100,7 @@ export function ShopProduct() {
           faqs,
           crumbs: [
             { name: business.name, url: absoluteUrl(origin, shopPath(business)) },
-            ...(product.category ? [{ name: product.category, url: absoluteUrl(origin, `${shopPath(business)}#products`) }] : []),
+            ...(product.category ? [{ name: product.category, url: absoluteUrl(origin, categoryPath(business, product.category)) }] : []),
             { name: product.name, url: canonicalUrl },
           ],
         })

@@ -16,6 +16,9 @@ import {
   suggestedProductSlug,
   uniqueProductSlug,
   youtubeVideoId,
+  categoryJsonLd,
+  categorySeoDescription,
+  categorySeoTitle,
 } from './productSeo.ts';
 import { sanitizeProduct } from './productCatalog.ts';
 
@@ -115,5 +118,19 @@ testSlugify();
 testUniqueSlug();
 testSpecsAndHighlights();
 testYoutubeAndJsonLd();
+function testCategorySeo() {
+  assert.equal(categorySeoTitle('পোশাক', 'রোজ শপ'), 'পোশাক | রোজ শপ');
+  assert.match(categorySeoDescription('পোশাক', 4, 'রোজ শপ'), /4টি পণ্য/);
+  const graph = categoryJsonLd({
+    category: 'পোশাক',
+    shopName: 'রোজ',
+    url: 'https://example.com/roj/c/%E0%A6%AA%E0%A7%8B%E0%A6%B6%E0%A6%BE%E0%A6%95',
+    products: [{ name: 'শার্ট', url: 'https://example.com/roj/p/shirt' }],
+    crumbs: [{ name: 'রোজ', url: 'https://example.com/roj' }],
+  });
+  assert.equal(graph.length, 3);
+}
+
 testEmptySeoOmitted();
+testCategorySeo();
 console.log('productSeo tests passed');
