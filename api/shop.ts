@@ -32,6 +32,14 @@ import {
   suggestedShopSlug,
 } from './shopSlug.js';
 import { parseShopRequest, readJsonBody } from './shopRoute.js';
+import { omitUndefined } from '../src/lib/productList.js';
+import {
+  buildStoreCheckoutOrder,
+  decrementShopStock,
+  isRepeatWebsiteCheckout,
+  sanitizeCart,
+  sanitizePublicOrder,
+} from '../src/lib/storefront.js';
 
 export const maxDuration = 60;
 
@@ -380,10 +388,10 @@ async function queryOrdersByField(bizId: string, field: string, value: string) {
 }
 
 async function saveOrderDoc(order: any) {
-  const payload = {
+  const payload = omitUndefined({
     ...order,
     createdAtMs: order.createdAtMs || Date.now(),
-  };
+  });
   if (adminDb) {
     try {
       await adminDb.collection('orders').doc(order.id).set({
@@ -530,14 +538,6 @@ async function handleCheckout(req: any, res: any, businessId: string) {
     return sendJson(res, 404, { code: 'STORE_NOT_FOUND', error: 'স্টোরটি পাওয়া যায়নি।' });
   }
 
-  const {
-    buildStoreCheckoutOrder,
-    decrementShopStock,
-    isRepeatWebsiteCheckout,
-    sanitizeCart,
-    sanitizePublicOrder,
-  } = await import('../src/lib/storefront.js');
-
   const body = readJsonBody(req);
   const catalog = asProductList(business.data?.products);
   const built = buildStoreCheckoutOrder({
@@ -636,7 +636,6 @@ async function handleTrack(res: any, businessId: string, phoneRaw: string, order
   if (!business || business.data?.status === 'suspended') {
     return sendJson(res, 404, { error: 'Store not found' });
   }
-  const { sanitizePublicOrder } = await import('../src/lib/storefront.js');
   const rows = await queryOrdersByField(business.id, 'phone', phone);
   const filtered = rows
     .filter((row: any) => !orderId || String(row.id) === orderId || String(row.id).toLowerCase() === orderId.toLowerCase())

@@ -43,6 +43,14 @@ import {
   publicShopSlug,
   suggestedShopSlug,
 } from './shopSlug.js';
+import { omitUndefined } from '../src/lib/productList.js';
+import {
+  buildStoreCheckoutOrder,
+  decrementShopStock,
+  isRepeatWebsiteCheckout,
+  sanitizeCart,
+  sanitizePublicOrder,
+} from '../src/lib/storefront.js';
 
 export const maxDuration = 60;
 
@@ -1640,10 +1648,10 @@ async function bookSteadfastParcel(order: any, businessData: any) {
 }
 
 async function saveOrderDoc(order: any) {
-  const payload = {
+  const payload = omitUndefined({
     ...order,
     createdAtMs: order.createdAtMs || Date.now(),
-  };
+  });
   // Admin SDK first, but NEVER lose an order: if the admin write fails
   // (e.g. missing service-account credentials on the host), fall back to
   // the client SDK before giving up.
@@ -2452,13 +2460,6 @@ app.post('/api/shop/:businessId/checkout', async (req, res) => {
       return res.status(404).json({ code: 'STORE_NOT_FOUND', error: 'স্টোরটি পাওয়া যায়নি।' });
     }
 
-    const {
-      buildStoreCheckoutOrder,
-      decrementShopStock,
-      isRepeatWebsiteCheckout,
-      sanitizeCart,
-      sanitizePublicOrder,
-    } = await import('../src/lib/storefront.js');
     const catalog = asProductList(business.data?.products);
     const built = buildStoreCheckoutOrder({
       business: {
@@ -2574,7 +2575,6 @@ app.get('/api/shop/:businessId/orders', async (req, res) => {
     if (!business || business.data?.status === 'suspended') {
       return res.status(404).json({ error: 'Store not found' });
     }
-    const { sanitizePublicOrder } = await import('../src/lib/storefront.js');
     const rows = await queryOrdersByField(business.id, 'phone', phone);
     const filtered = rows
       .filter((row: any) => !orderId || String(row.id) === orderId || String(row.id).toLowerCase() === orderId.toLowerCase())

@@ -1,23 +1,8 @@
 import { Product, ProductTier } from '../types';
-import { cleanFirestoreData, finiteNumber } from './utils';
+import { cleanFirestoreData } from './utils';
+import { asProductList, finiteNumber, sameProductId } from './productList';
 
-export function sameProductId(a?: string | number | null, b?: string | number | null): boolean {
-  if (a == null || b == null) return false;
-  const left = String(a).trim();
-  const right = String(b).trim();
-  return left.length > 0 && left === right;
-}
-
-/** Firestore sometimes stores `products` as a map instead of an array. */
-export function asProductList(raw: unknown): Product[] {
-  if (Array.isArray(raw)) {
-    return raw.filter(Boolean) as Product[];
-  }
-  if (raw && typeof raw === 'object') {
-    return Object.values(raw as Record<string, Product>).filter(Boolean);
-  }
-  return [];
-}
+export { asProductList, sameProductId } from './productList';
 
 export function normalizeTier(tier: Partial<ProductTier> | null | undefined, fallbackPrice = 0): ProductTier {
   const price = finiteNumber(tier?.price, fallbackPrice);

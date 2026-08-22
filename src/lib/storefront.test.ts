@@ -3,6 +3,7 @@ import type { BusinessConfig, Product } from '../types';
 import {
   addCartLine,
   addressLooksInsideDhaka,
+  isInsideDhakaDelivery,
   bestPricingTier,
   buildStoreCheckoutOrder,
   cartItemCount,
@@ -165,6 +166,31 @@ function testBuildOrder() {
   ]);
 }
 
+function testDeliveryZoneIgnoresClientToggle() {
+  assert.equal(isInsideDhakaDelivery({ district: 'ঢাকা', address: 'মিরপুর ১০' }), true);
+  assert.equal(isInsideDhakaDelivery({ district: 'বগুড়া', address: 'সদর' }), false);
+  assert.equal(isInsideDhakaDelivery({ address: 'মিরপুর, ঢাকা' }), true);
+
+  const forced = buildStoreCheckoutOrder({
+    business,
+    lines: [{ productId: 'p1', quantity: 1 }],
+    customer: {
+      name: 'করিম আহমেদ',
+      phone: '01712345678',
+      address: 'বাড়ি ১২, রোড ৫, বগুড়া সদর',
+      district: 'বগুড়া',
+      insideDhaka: true,
+    },
+    now: 2,
+    orderId: 'ORD-ZONE',
+  });
+  assert.equal(forced.ok, true);
+  if (!forced.ok) return;
+  assert.equal(forced.value.order.insideDhaka, false);
+  assert.equal(forced.value.order.deliveryFee, 130);
+  assert.equal(JSON.stringify(forced.value.order).includes('undefined'), false);
+}
+
 function testIgnoreClientPrices() {
   const cheap: Product = { ...shirt, price: 500 };
   const result = buildStoreCheckoutOrder({
@@ -236,6 +262,7 @@ testResolveCart();
 testFilter();
 testCheckoutValidation();
 testBuildOrder();
+testDeliveryZoneIgnoresClientToggle();
 testIgnoreClientPrices();
 testDuplicateWindow();
 testStockAndLabels();
