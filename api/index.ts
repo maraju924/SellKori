@@ -87,8 +87,38 @@ function initializeAdminApp(projectId: string) {
 
 // Load firebase config for server-side use
 let db: any;
+let defaultClientDb: any;
 let firebaseApp: any;
 let adminDb: any;
+let defaultAdminDb: any;
+
+function clientFirestoreDbs(): any[] {
+  const out: any[] = [];
+  if (db) out.push(db);
+  if (defaultClientDb && defaultClientDb !== db) out.push(defaultClientDb);
+  return out;
+}
+
+function adminFirestoreDbs(): any[] {
+  const out: any[] = [];
+  if (adminDb) out.push(adminDb);
+  if (defaultAdminDb && defaultAdminDb !== adminDb) out.push(defaultAdminDb);
+  return out;
+}
+
+function attachDefaultStores(firebaseAppInstance: any, adminApp: any, dbId: string | undefined) {
+  defaultClientDb = getFirestore(firebaseAppInstance);
+  if (dbId && dbId !== '(default)' && adminApp) {
+    try {
+      defaultAdminDb = getAdminFirestore(adminApp);
+    } catch (err) {
+      console.warn('[Firebase] Could not open (default) Admin Firestore:', err);
+      defaultAdminDb = null;
+    }
+  } else {
+    defaultAdminDb = adminDb;
+  }
+}
 
 try {
   const firebaseConfigPath = path.join(process.cwd(), 'firebase-applet-config.json');
@@ -98,6 +128,7 @@ try {
     db = firebaseConfig.firestoreDatabaseId 
       ? getFirestore(firebaseApp, firebaseConfig.firestoreDatabaseId) 
       : getFirestore(firebaseApp);
+    defaultClientDb = getFirestore(firebaseApp);
     
     // Initialize Admin SDK
     try {
@@ -106,6 +137,7 @@ try {
       
       // Try to get Admin Firestore for the specific database ID
       adminDb = getAdminFirestore(adminApp, dbId && dbId !== '(default)' ? dbId : undefined);
+      attachDefaultStores(firebaseApp, adminApp, dbId);
       
       // Verification test — IMPORTANT: this must NOT block module load with a
       // top-level `await`. On a Vercel serverless cold start, the exported
@@ -142,6 +174,7 @@ try {
        db = firebaseConfig.firestoreDatabaseId 
          ? getFirestore(firebaseApp, firebaseConfig.firestoreDatabaseId) 
          : getFirestore(firebaseApp);
+       defaultClientDb = getFirestore(firebaseApp);
 
     // Initialize Admin SDK (fallback)
     try {
@@ -153,6 +186,7 @@ try {
       } else {
         adminDb = getAdminFirestore(adminApp);
       }
+      attachDefaultStores(firebaseApp, adminApp, dbId);
       console.log(`[Firebase] Admin Firestore ready (fallback)`);
     } catch (e) {
       console.error('[Firebase] Fallback Admin Error:', e);
@@ -603,16 +637,21 @@ async function loadBusinessCustomers(businessId: string): Promise<any[]> {
 
 async function loadBusinessById(businessId: string): Promise<{ id: string; data: any } | null> {
   if (!businessId) return null;
-  try {
-    if (adminDb) {
-      const snap = await adminDb.collection('businesses').doc(businessId).get();
+  for (const store of adminFirestoreDbs()) {
+    try {
+      const snap = await store.collection('businesses').doc(businessId).get();
       if (snap.exists) return { id: snap.id, data: snap.data() };
-    } else if (db) {
-      const snap = await getDoc(doc(db, 'businesses', businessId));
-      if (snap.exists()) return { id: snap.id, data: snap.data() };
+    } catch (err) {
+      console.warn('[loadBusinessById] admin', err);
     }
-  } catch (err) {
-    console.warn('[loadBusinessById]', err);
+  }
+  for (const client of clientFirestoreDbs()) {
+    try {
+      const snap = await getDoc(doc(client, 'businesses', businessId));
+      if (snap.exists()) return { id: snap.id, data: snap.data() };
+    } catch (err) {
+      console.warn('[loadBusinessById] client', err);
+    }
   }
   return null;
 }
@@ -620,16 +659,21 @@ async function loadBusinessById(businessId: string): Promise<{ id: string; data:
 async function queryBusinessBySlug(slug: string): Promise<{ id: string; data: any } | null> {
   const clean = normalizeShopSlug(slug);
   if (!clean) return null;
-  try {
-    if (adminDb) {
-      const snap = await adminDb.collection('businesses').where('slug', '==', clean).limit(1).get();
+  for (const store of adminFirestoreDbs()) {
+    try {
+      const snap = await store.collection('businesses').where('slug', '==', clean).limit(1).get();
       if (!snap.empty) return { id: snap.docs[0].id, data: snap.docs[0].data() };
-    } else if (db) {
-      const snap = await getDocs(query(collection(db, 'businesses'), where('slug', '==', clean), limit(1)));
-      if (!snap.empty) return { id: snap.docs[0].id, data: snap.docs[0].data() };
+    } catch (err) {
+      console.warn('[queryBusinessBySlug] admin', err);
     }
-  } catch (err) {
-    console.warn('[queryBusinessBySlug]', err);
+  }
+  for (const client of clientFirestoreDbs()) {
+    try {
+      const snap = await getDocs(query(collection(client, 'businesses'), where('slug', '==', clean), limit(1)));
+      if (!snap.empty) return { id: snap.docs[0].id, data: snap.docs[0].data() };
+    } catch (err) {
+      console.warn('[queryBusinessBySlug] client', err);
+    }
   }
   return null;
 }
@@ -644,10 +688,11 @@ async function persistBusinessSlug(business: { id: string; data: any }, slug: st
   const current = normalizeShopSlug(business.data?.slug);
   if (current === slug) return;
   try {
-    if (adminDb) {
-      await adminDb.collection('businesses').doc(business.id).set({ slug }, { merge: true });
-    } else if (db) {
-      await setDoc(doc(db, 'businesses', business.id), { slug }, { merge: true });
+    const stores = adminFirestoreDbs();
+    if (stores.length > 0) {
+      await Promise.all(stores.map((store) => store.collection('businesses').doc(business.id).set({ slug }, { merge: true }).catch(() => {})));
+    } else {
+      await Promise.all(clientFirestoreDbs().map((client) => setDoc(doc(client, 'businesses', business.id), { slug }, { merge: true }).catch(() => {})));
     }
     business.data = { ...business.data, slug };
   } catch (err) {
@@ -680,19 +725,30 @@ async function ensureBusinessSlug(business: { id: string; data: any }): Promise<
 }
 
 async function listBusinessDocs(max = 400): Promise<Array<{ id: string; data: any }>> {
-  try {
-    if (adminDb) {
-      const snap = await adminDb.collection('businesses').limit(max).get();
-      return snap.docs.map((d: any) => ({ id: d.id, data: d.data() }));
+  const merged = new Map<string, { id: string; data: any }>();
+  for (const store of adminFirestoreDbs()) {
+    try {
+      const snap = await store.collection('businesses').limit(max).get();
+      for (const d of snap.docs) {
+        if (!merged.has(d.id)) merged.set(d.id, { id: d.id, data: d.data() });
+      }
+    } catch (err) {
+      console.warn('[listBusinessDocs] admin', err);
     }
-    if (db) {
-      const snap = await getDocs(query(collection(db, 'businesses'), limit(max)));
-      return snap.docs.map(d => ({ id: d.id, data: d.data() }));
-    }
-  } catch (err) {
-    console.warn('[listBusinessDocs]', err);
   }
-  return [];
+  if (merged.size === 0) {
+    for (const client of clientFirestoreDbs()) {
+      try {
+        const snap = await getDocs(query(collection(client, 'businesses'), limit(max)));
+        for (const d of snap.docs) {
+          if (!merged.has(d.id)) merged.set(d.id, { id: d.id, data: d.data() });
+        }
+      } catch (err) {
+        console.warn('[listBusinessDocs] client', err);
+      }
+    }
+  }
+  return Array.from(merged.values());
 }
 
 async function loadBusinessBySlugOrId(slugOrId: string): Promise<{ id: string; data: any } | null> {

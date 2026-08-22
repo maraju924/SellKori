@@ -18,7 +18,8 @@ import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 import { Badge } from '../ui/badge';
 import { db } from '../../lib/firebase';
-import { doc, getDoc, setDoc } from 'firebase/firestore';
+import { getDocAcrossPanelDbs } from '../../lib/panelDb';
+import { doc, setDoc } from 'firebase/firestore';
 import { toast } from 'sonner';
 import { parseJsonResponse } from '../../lib/safeJson';
 import { buildAiPoolPersistPayload } from '../../lib/aiPool';
@@ -64,9 +65,9 @@ export function AdminAiEngine() {
   useEffect(() => {
     (async () => {
       try {
-        const snap = await getDoc(doc(db, 'system', 'settings'));
-        if (snap.exists()) {
-          const d = snap.data();
+        const snap = await getDocAcrossPanelDbs('system', 'settings');
+        if (snap?.exists()) {
+          const d = snap.data() || {};
           if (Array.isArray(d.geminiKeys)) {
             setGeminiKeys(d.geminiKeys.map((k: any) => ({
               key: String(k?.key || ''),

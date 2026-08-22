@@ -48,7 +48,9 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 let db: any;
+let defaultClientDb: any;
 let adminDb: any;
+let defaultAdminDb: any;
 let bootError = '';
 
 function parseFirebaseServiceAccount(raw: string | undefined | null): Record<string, string> | null {
@@ -116,13 +118,16 @@ try {
     db = firebaseConfig.firestoreDatabaseId
       ? getFirestore(firebaseApp, firebaseConfig.firestoreDatabaseId)
       : getFirestore(firebaseApp);
+    defaultClientDb = getFirestore(firebaseApp);
     try {
       const adminApp = initializeAdminApp(firebaseConfig.projectId);
       const dbId = firebaseConfig.firestoreDatabaseId;
       adminDb = getAdminFirestore(adminApp, dbId && dbId !== '(default)' ? dbId : undefined);
+      defaultAdminDb = dbId && dbId !== '(default)' ? getAdminFirestore(adminApp) : adminDb;
     } catch (adminErr: any) {
       console.error('[shop] Admin setup failed:', adminErr?.message || adminErr);
       adminDb = null;
+      defaultAdminDb = null;
     }
   }
 } catch (error: any) {
@@ -188,18 +193,37 @@ function sendJson(res: any, status: number, body: Record<string, unknown>, cache
   return res.send(payload);
 }
 
+function shopAdminDbs(): any[] {
+  const out: any[] = [];
+  if (adminDb) out.push(adminDb);
+  if (defaultAdminDb && defaultAdminDb !== adminDb) out.push(defaultAdminDb);
+  return out;
+}
+
+function shopClientDbs(): any[] {
+  const out: any[] = [];
+  if (db) out.push(db);
+  if (defaultClientDb && defaultClientDb !== db) out.push(defaultClientDb);
+  return out;
+}
+
 async function loadBusinessById(businessId: string): Promise<{ id: string; data: any } | null> {
   if (!businessId) return null;
-  try {
-    if (adminDb) {
-      const snap = await adminDb.collection('businesses').doc(businessId).get();
+  for (const store of shopAdminDbs()) {
+    try {
+      const snap = await store.collection('businesses').doc(businessId).get();
       if (snap.exists) return { id: snap.id, data: snap.data() };
-    } else if (db) {
-      const snap = await getDoc(doc(db, 'businesses', businessId));
-      if (snap.exists()) return { id: snap.id, data: snap.data() };
+    } catch (err) {
+      console.warn('[shop] loadBusinessById admin', err);
     }
-  } catch (err) {
-    console.warn('[shop] loadBusinessById', err);
+  }
+  for (const client of shopClientDbs()) {
+    try {
+      const snap = await getDoc(doc(client, 'businesses', businessId));
+      if (snap.exists()) return { id: snap.id, data: snap.data() };
+    } catch (err) {
+      console.warn('[shop] loadBusinessById client', err);
+    }
   }
   return null;
 }
@@ -207,34 +231,50 @@ async function loadBusinessById(businessId: string): Promise<{ id: string; data:
 async function queryBusinessBySlug(slug: string): Promise<{ id: string; data: any } | null> {
   const clean = normalizeShopSlug(slug);
   if (!clean) return null;
-  try {
-    if (adminDb) {
-      const snap = await adminDb.collection('businesses').where('slug', '==', clean).limit(1).get();
+  for (const store of shopAdminDbs()) {
+    try {
+      const snap = await store.collection('businesses').where('slug', '==', clean).limit(1).get();
       if (!snap.empty) return { id: snap.docs[0].id, data: snap.docs[0].data() };
-    } else if (db) {
-      const snap = await getDocs(query(collection(db, 'businesses'), where('slug', '==', clean), limit(1)));
-      if (!snap.empty) return { id: snap.docs[0].id, data: snap.docs[0].data() };
+    } catch (err) {
+      console.warn('[shop] queryBusinessBySlug admin', err);
     }
-  } catch (err) {
-    console.warn('[shop] queryBusinessBySlug', err);
+  }
+  for (const client of shopClientDbs()) {
+    try {
+      const snap = await getDocs(query(collection(client, 'businesses'), where('slug', '==', clean), limit(1)));
+      if (!snap.empty) return { id: snap.docs[0].id, data: snap.docs[0].data() };
+    } catch (err) {
+      console.warn('[shop] queryBusinessBySlug client', err);
+    }
   }
   return null;
 }
 
 async function listBusinessDocs(max = 400): Promise<Array<{ id: string; data: any }>> {
-  try {
-    if (adminDb) {
-      const snap = await adminDb.collection('businesses').limit(max).get();
-      return snap.docs.map((d: any) => ({ id: d.id, data: d.data() }));
+  const merged = new Map<string, { id: string; data: any }>();
+  for (const store of shopAdminDbs()) {
+    try {
+      const snap = await store.collection('businesses').limit(max).get();
+      for (const d of snap.docs) {
+        if (!merged.has(d.id)) merged.set(d.id, { id: d.id, data: d.data() });
+      }
+    } catch (err) {
+      console.warn('[shop] listBusinessDocs admin', err);
     }
-    if (db) {
-      const snap = await getDocs(query(collection(db, 'businesses'), limit(max)));
-      return snap.docs.map(d => ({ id: d.id, data: d.data() }));
-    }
-  } catch (err) {
-    console.warn('[shop] listBusinessDocs', err);
   }
-  return [];
+  if (merged.size === 0) {
+    for (const client of shopClientDbs()) {
+      try {
+        const snap = await getDocs(query(collection(client, 'businesses'), limit(max)));
+        for (const d of snap.docs) {
+          if (!merged.has(d.id)) merged.set(d.id, { id: d.id, data: d.data() });
+        }
+      } catch (err) {
+        console.warn('[shop] listBusinessDocs client', err);
+      }
+    }
+  }
+  return Array.from(merged.values());
 }
 
 async function isShopSlugTaken(slug: string, exceptBusinessId = ''): Promise<boolean> {
@@ -247,10 +287,11 @@ async function persistBusinessSlug(business: { id: string; data: any }, slug: st
   const current = normalizeShopSlug(business.data?.slug);
   if (current === slug) return;
   try {
-    if (adminDb) {
-      await adminDb.collection('businesses').doc(business.id).set({ slug }, { merge: true });
-    } else if (db) {
-      await setDoc(doc(db, 'businesses', business.id), { slug }, { merge: true });
+    const stores = shopAdminDbs();
+    if (stores.length > 0) {
+      await Promise.all(stores.map((store) => store.collection('businesses').doc(business.id).set({ slug }, { merge: true }).catch(() => {})));
+    } else {
+      await Promise.all(shopClientDbs().map((client) => setDoc(doc(client, 'businesses', business.id), { slug }, { merge: true }).catch(() => {})));
     }
     business.data = { ...business.data, slug };
   } catch (err) {

@@ -29,7 +29,8 @@ import { Input } from '../ui/input';
 import { Badge } from '../ui/badge';
 import { BusinessConfig, MessengerPage, AdProductMapping } from '../../types';
 import { db } from '../../lib/firebase';
-import { doc, updateDoc, collection, query, where, orderBy, limit, onSnapshot, getDocs } from 'firebase/firestore';
+import { listenQueryAcrossPanelDbs } from '../../lib/panelDb';
+import { doc, updateDoc, collection, query, where, orderBy, limit } from 'firebase/firestore';
 import { toast } from 'sonner';
 import { cleanFirestoreData } from '../../lib/utils';
 import { parseJsonResponse } from '../../lib/safeJson';
@@ -188,35 +189,23 @@ export function MerchantMessengerLive({ business }: MerchantMessengerLiveProps) 
   // client-side sorting if the composite index is missing).
   useEffect(() => {
     if (!business.id) return;
-
-    const applyLogs = (snap: { docs: { id: string; data: () => any }[] }) => {
-      const list = snap.docs.map(d => ({ id: d.id, ...d.data() } as any));
-      list.sort((a: any, b: any) => (b.timestamp?.seconds || 0) - (a.timestamp?.seconds || 0));
-      setLiveLogs(list.slice(0, 35));
-    };
-
-    const withOrder = query(
-      collection(db, 'messenger_logs'),
-      where('businessId', '==', business.id),
-      orderBy('timestamp', 'desc'),
-      limit(35)
-    );
-    let unsubFallback: (() => void) | null = null;
-    const unsubscribe = onSnapshot(withOrder, applyLogs, () => {
-      const withoutOrder = query(
-        collection(db, 'messenger_logs'),
+    return listenQueryAcrossPanelDbs<any>(
+      (database) => query(
+        collection(database, 'messenger_logs'),
+        where('businessId', '==', business.id),
+        orderBy('timestamp', 'desc'),
+        limit(35)
+      ),
+      (list) => {
+        const sorted = [...list].sort((a: any, b: any) => (b.timestamp?.seconds || 0) - (a.timestamp?.seconds || 0));
+        setLiveLogs(sorted.slice(0, 35));
+      },
+      (database) => query(
+        collection(database, 'messenger_logs'),
         where('businessId', '==', business.id),
         limit(100)
-      );
-      unsubFallback = onSnapshot(withoutOrder, applyLogs, (err) => {
-        console.warn('Messenger logs snapshot error:', err);
-      });
-    });
-
-    return () => {
-      unsubscribe();
-      unsubFallback?.();
-    };
+      ),
+    );
   }, [business.id]);
 
   const copyToClipboard = (text: string, type: 'token' | 'webhook' | 'specific_webhook') => {
