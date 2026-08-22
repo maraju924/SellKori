@@ -10,12 +10,14 @@ import {
   cartSignatureOf,
   decrementShopStock,
   filterShopProducts,
+  findShopProduct,
   isRepeatWebsiteCheckout,
   isShopProductBuyable,
   maxBuyableQuantity,
   orderItemsOf,
   orderProductLabel,
   parseStoredCart,
+  productPath,
   removeCartLine,
   resolveCart,
   sanitizeCart,
@@ -254,6 +256,18 @@ function testHelpers() {
   assert.equal(shopPath({ slug: 'myshop', id: 'biz-1' }, 'checkout'), '/myshop/checkout');
   assert.equal(addressLooksInsideDhaka('গুলশান ২'), true);
   assert.equal(addressLooksInsideDhaka('সিলেট সদর'), false);
+  assert.equal(productPath({ slug: 'myshop' }, { ...shirt, slug: 'premium-shirt' }), '/myshop/p/premium-shirt');
+  assert.equal(productPath({ slug: 'myshop' }, shirt), '/myshop/p/p1');
+  assert.equal(findShopProduct([shirt], 'p1')?.name, shirt.name);
+  assert.equal(findShopProduct([{ ...shirt, slug: 'premium-shirt' }], 'premium-shirt')?.id, 'p1');
+}
+
+function testVariantCart() {
+  const cart = addCartLine(addCartLine([], 'p1', 1, 'XL'), 'p1', 1, 'M');
+  assert.equal(cart.length, 2);
+  const merged = addCartLine(cart, 'p1', 1, 'XL');
+  assert.equal(merged.find(line => line.variant === 'XL')?.quantity, 2);
+  assert.equal(merged.find(line => line.variant === 'M')?.quantity, 1);
 }
 
 testCartMerge();
@@ -267,4 +281,5 @@ testIgnoreClientPrices();
 testDuplicateWindow();
 testStockAndLabels();
 testHelpers();
+testVariantCart();
 console.log('storefront tests passed');

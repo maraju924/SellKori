@@ -61,17 +61,23 @@ export function isInsideDhakaDelivery(input: { address?: string; district?: stri
   return addressLooksInsideDhaka(input.address || '');
 }
 
-export function sanitizeCart(lines: Array<{ productId?: string; quantity?: number }> | null | undefined) {
-  const merged = new Map<string, number>();
+export function sanitizeCart(lines: Array<{ productId?: string; quantity?: number; variant?: string }> | null | undefined) {
+  const merged = new Map<string, { productId: string; quantity: number; variant?: string }>();
   for (const line of lines || []) {
     const productId = String(line?.productId || '').trim();
+    const variant = String(line?.variant || '').trim();
     const quantity = Math.max(0, Math.round(finiteNumber(line?.quantity, 0)));
     if (!productId || quantity < 1) continue;
-    merged.set(productId, Math.min(MAX_LINE_QUANTITY, (merged.get(productId) || 0) + quantity));
+    const key = variant ? `${productId}::${variant}` : productId;
+    const previous = merged.get(key);
+    const nextQty = Math.min(MAX_LINE_QUANTITY, (previous?.quantity || 0) + quantity);
+    merged.set(key, omitUndefined({
+      productId,
+      quantity: nextQty,
+      variant: variant || undefined,
+    }));
   }
-  return [...merged.entries()]
-    .slice(0, MAX_CART_LINES)
-    .map(([productId, quantity]) => ({ productId, quantity }));
+  return [...merged.values()].slice(0, MAX_CART_LINES);
 }
 
 function findProduct(products: any[], productId?: string) {
@@ -106,7 +112,7 @@ function unitPriceForQuantity(product: any, quantity: number): number {
 
 export function resolveCart(
   products: unknown,
-  lines: Array<{ productId?: string; quantity?: number }>,
+  lines: Array<{ productId?: string; quantity?: number; variant?: string }>,
   options?: { address?: string; district?: string; business?: { courierConfig?: any } }
 ) {
   const catalog = asProductList(products);
@@ -122,6 +128,7 @@ export function resolveCart(
       quantity: qty,
       unitPrice,
       lineTotal: Math.round(unitPrice * qty),
+      variant: String(line.variant || '').trim() || undefined,
     });
   }
   const subtotal = resolved.reduce((sum, line) => sum + line.lineTotal, 0);
@@ -145,7 +152,7 @@ export function resolveCart(
 
 export function validateShopCheckout(
   products: unknown,
-  lines: Array<{ productId?: string; quantity?: number }>,
+  lines: Array<{ productId?: string; quantity?: number; variant?: string }>,
   customer: { name?: string; phone?: string; address?: string }
 ) {
   const issues: Array<{ field: string; message: string }> = [];
@@ -179,9 +186,14 @@ export function validateShopCheckout(
   return issues;
 }
 
-export function cartSignatureOf(lines: Array<{ productId?: string; quantity?: number }>): string {
+export function cartSignatureOf(lines: Array<{ productId?: string; quantity?: number; variant?: string }>): string {
   return [...lines]
-    .map(line => `${String(line.productId || '').trim()}:${Math.max(1, Math.round(finiteNumber(line.quantity, 1)))}`)
+    .map(line => {
+      const id = String(line.productId || '').trim();
+      const qty = Math.max(1, Math.round(finiteNumber(line.quantity, 1)));
+      const variant = String(line.variant || '').trim();
+      return variant ? `${id}:${qty}:${variant}` : `${id}:${qty}`;
+    })
     .filter(part => !part.startsWith(':'))
     .sort()
     .join('|');
@@ -203,7 +215,7 @@ export function isRepeatWebsiteCheckout(
 
 export function buildStoreCheckoutOrder(input: {
   business: { id: string; ownerId?: string; courierConfig?: any; products?: unknown };
-  lines: Array<{ productId?: string; quantity?: number }>;
+  lines: Array<{ productId?: string; quantity?: number; variant?: string }>;
   customer: { name?: string; phone?: string; address?: string; district?: string; notes?: string; insideDhaka?: boolean };
   sessionId?: string;
   clientIp?: string;
@@ -227,7 +239,9 @@ export function buildStoreCheckoutOrder(input: {
 
   const items = totals.lines.map(line => ({
     productId: String(line.product.id || ''),
-    productName: String(line.product.name || ''),
+    productName: line.variant
+      ? `${String(line.product.name || '')} (${line.variant})`
+      : String(line.product.name || ''),
     quantity: line.quantity,
     unitPrice: Math.round(line.unitPrice),
     lineTotal: line.lineTotal,

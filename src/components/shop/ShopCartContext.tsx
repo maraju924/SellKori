@@ -16,9 +16,9 @@ interface ShopCartContextValue {
   sessionId: string;
   items: CartLine[];
   itemCount: number;
-  addItem: (productId: string, quantity?: number) => void;
-  setQuantity: (productId: string, quantity: number) => void;
-  removeItem: (productId: string) => void;
+  addItem: (productId: string, quantity?: number, variant?: string) => void;
+  setQuantity: (productId: string, quantity: number, variant?: string) => void;
+  removeItem: (productId: string, variant?: string) => void;
   clear: () => void;
   quantityOf: (productId: string) => number;
 }
@@ -46,16 +46,16 @@ export function ShopCartProvider({
     localStorage.setItem(shopCartStorageKey(businessId), JSON.stringify(items));
   }, [businessId, items]);
 
-  const addItem = useCallback((productId: string, quantity = 1) => {
-    setItems(current => addCartLine(current, productId, quantity));
+  const addItem = useCallback((productId: string, quantity = 1, variant?: string) => {
+    setItems(current => addCartLine(current, productId, quantity, variant));
   }, []);
 
-  const setQuantity = useCallback((productId: string, quantity: number) => {
-    setItems(current => setCartLineQuantity(current, productId, quantity));
+  const setQuantity = useCallback((productId: string, quantity: number, variant?: string) => {
+    setItems(current => setCartLineQuantity(current, productId, quantity, variant));
   }, []);
 
-  const removeItem = useCallback((productId: string) => {
-    setItems(current => removeCartLine(current, productId));
+  const removeItem = useCallback((productId: string, variant?: string) => {
+    setItems(current => removeCartLine(current, productId, variant));
   }, []);
 
   const clear = useCallback(() => setItems([]), []);

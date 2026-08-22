@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { parseShopRequest, readJsonBody, requestPathname } from './shopRoute.js';
 import { maxDuration } from './health.js';
 import { buildStoreCheckoutOrder, isInsideDhakaDelivery } from './shopCheckout.js';
+import { sanitizePublicProduct } from './shopPublicProduct.js';
 
 function testHealthExport() {
   assert.equal(maxDuration, 10);
@@ -131,4 +132,25 @@ function testCheckoutValidationAndZone() {
 }
 
 testCheckoutValidationAndZone();
+
+function testPublicProductKeepsSeoFields() {
+  const product = sanitizePublicProduct({
+    id: 'p1',
+    name: 'পাঞ্জাবি',
+    price: 1490,
+    description: 'কটন পাঞ্জাবি '.repeat(80),
+    slug: 'cotton-panjabi',
+    seoTitle: 'কটন পাঞ্জাবি',
+    highlights: ['কটন', ''],
+    reviews: [{ author: 'করিম', rating: 5, text: 'ভালো' }],
+    faqItems: [{ question: 'COD?', answer: 'হ্যাঁ' }],
+  });
+  assert.equal(product.slug, 'cotton-panjabi');
+  assert.equal(product.highlights[0], 'কটন');
+  assert.equal(product.reviews.length, 1);
+  assert.equal(product.faqItems[0].answer, 'হ্যাঁ');
+  assert.ok(product.description.length > 1000);
+}
+
+testPublicProductKeepsSeoFields();
 console.log('api/shop tests passed');

@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { ShoppingBag } from 'lucide-react';
 import type { BusinessConfig, Product } from '../../types';
 import { productPath } from '../../lib/storefront';
+import { imageAltFor } from '../../lib/productSeo';
 import { Button } from '../ui/button';
 import { ShopImage, ShopMoney, StockHint, productThumb } from './ShopPrimitives';
 import { useShopCart } from './ShopCartContext';
@@ -17,7 +18,7 @@ export function ShopProductCard({
   key?: React.Key;
 }) {
   const cart = useShopCart();
-  const href = productPath(business, product.id);
+  const href = productPath(business, product);
 
   const add = (event: React.MouseEvent) => {
     event.preventDefault();
@@ -31,7 +32,7 @@ export function ShopProductCard({
         <div className="relative aspect-square overflow-hidden">
           <ShopImage
             src={productThumb(product)}
-            alt={product.name}
+            alt={imageAltFor(product, 0)}
             className="w-full h-full group-hover:scale-[1.03] transition-transform duration-300"
           />
           {product.category ? (

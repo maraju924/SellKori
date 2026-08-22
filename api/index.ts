@@ -51,6 +51,7 @@ import {
   sanitizeCart,
   sanitizePublicOrder,
 } from './shopCheckout.js';
+import { sanitizePublicProduct } from './shopPublicProduct.js';
 
 export const maxDuration = 60;
 
@@ -2334,25 +2335,7 @@ function sanitizePublicBusiness(id: string, data: any) {
     products: products
       .filter((product: any) => product?.isAvailable !== false)
       .slice(0, 100)
-      .map((product: any) => ({
-        id: String(product.id || ''),
-        name: String(product.name || '').slice(0, 200),
-        price: Number(product.price) || 0,
-        pricingTiers: Array.isArray(product.pricingTiers)
-          ? product.pricingTiers.slice(0, 10).map((tier: any) => ({
-              quantity: Math.max(1, Number(tier.quantity) || 1),
-              price: Number(tier.price) || 0,
-              label: String(tier.label || '').slice(0, 100),
-            }))
-          : [],
-        description: String(product.description || '').slice(0, 1_000),
-        specs: String(product.specs || '').slice(0, 500),
-        stock: Math.max(0, Number(product.stock) || 0),
-        category: String(product.category || '').slice(0, 100),
-        images: Array.isArray(product.images) ? product.images.slice(0, 8) : [],
-        reviewImages: Array.isArray(product.reviewImages) ? product.reviewImages.slice(0, 8) : [],
-        isAvailable: product.isAvailable !== false,
-      })),
+      .map((product: any) => sanitizePublicProduct(product)),
     faqs: faqs
       .filter((faq: any) => faq?.isActive !== false)
       .slice(0, 100)

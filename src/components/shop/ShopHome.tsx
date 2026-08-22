@@ -1,7 +1,9 @@
 import React, { useMemo, useState } from 'react';
 import { useOutletContext } from 'react-router-dom';
 import { BadgeCheck, MessageCircle, Shield, Truck } from 'lucide-react';
-import { filterShopProducts, shopCategories } from '../../lib/storefront';
+import { filterShopProducts, shopCategories, shopPath } from '../../lib/storefront';
+import { absoluteUrl, shopSeoDescription, shopSeoTitle } from '../../lib/productSeo';
+import { useDocumentMeta } from '../../lib/useDocumentMeta';
 import { ShopProductCard } from './ShopProductCard';
 import type { ShopOutletContext } from './ShopLayout';
 import { Link } from 'react-router-dom';
@@ -17,6 +19,14 @@ export function ShopHome() {
   );
   const inside = business.courierConfig?.deliveryChargeInsideDhaka || 70;
   const outside = business.courierConfig?.deliveryChargeOutsideDhaka || 130;
+  const origin = typeof window !== 'undefined' ? window.location.origin : '';
+  useDocumentMeta({
+    title: shopSeoTitle(business),
+    description: shopSeoDescription(business),
+    url: absoluteUrl(origin, shopPath(business)),
+    image: business.logoUrl,
+    type: 'website',
+  });
 
   return (
     <div className="space-y-8">
