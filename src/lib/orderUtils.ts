@@ -2,6 +2,7 @@ import * as XLSX from 'xlsx';
 import { BusinessConfig, Order, OrderPriority, OrderStatus, PaymentMethod, PaymentStatus } from '../types';
 import { normalizePhone } from './chatOrder';
 import { orderIdentityKey, passengerIdOf } from './orderIdentity';
+import { orderProductLabel } from './storefront';
 
 export const ORDER_STATUSES: { id: OrderStatus; label: string; short: string }[] = [
   { id: 'pending', label: 'পেন্ডিং', short: 'পেন্ডিং' },
@@ -159,7 +160,7 @@ export function whatsappTemplate(
 ): string {
   const shop = business.name || 'আমাদের শপ';
   const id = shortOrderId(order.id);
-  const product = `${order.productName} × ${order.quantity}`;
+  const product = orderProductLabel(order);
   const total = formatMoney(order.totalPrice);
   switch (kind) {
     case 'confirm':
@@ -238,6 +239,8 @@ export function orderMatchesQuery(order: Order, raw: string): boolean {
     order.phone,
     order.address,
     order.productName,
+    orderProductLabel(order),
+    ...(order.items || []).map(item => item.productName),
     order.courierTrackingId,
     order.courierConsignmentId,
     order.notes,

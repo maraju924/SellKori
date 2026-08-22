@@ -99,6 +99,7 @@ import {
   whatsappTemplate,
   WhatsAppTemplate,
 } from '../../lib/orderUtils';
+import { orderProductLabel } from '../../lib/storefront';
 
 interface MerchantOrdersProps {
   business: BusinessConfig;
@@ -624,14 +625,9 @@ export function MerchantOrders({ business, orders }: MerchantOrdersProps) {
 
   return (
     <div className="space-y-5">
-      <div className="bg-white dark:bg-zinc-900 border border-zinc-200/80 dark:border-zinc-800 rounded-3xl p-5 md:p-6 shadow-xs space-y-5">
+      <div className="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl p-4 md:p-5 space-y-4">
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-          <div>
-            <h2 className="text-xl md:text-2xl font-black text-zinc-900 dark:text-white">অর্ডার কমান্ড সেন্টার</h2>
-            <p className="text-xs text-zinc-500 mt-0.5">
-              সার্চ, ফিল্টার, বাল্ক অ্যাকশন, ইনভয়েস, কুরিয়ার বুকিং ও রিয়েল-টাইম স্ট্যাটাস — পুরো অর্ডার লাইফসাইকেল এক জায়গায়। একই মোবাইল, প্যাসেঞ্জার আইডি বা আইপি হলে নতুন ডুপ্লিকেট অর্ডার জমা হয় না।
-            </p>
-          </div>
+          <h2 className="text-lg font-semibold text-zinc-900 dark:text-white">অর্ডার</h2>
           <div className="flex flex-wrap items-center gap-2">
             <Button
               type="button"
@@ -673,7 +669,7 @@ export function MerchantOrders({ business, orders }: MerchantOrdersProps) {
             </Button>
             <Button
               onClick={() => openCreate()}
-              className="bg-orange-600 hover:bg-orange-700 text-white rounded-xl text-xs font-black h-10"
+              className="bg-zinc-900 hover:bg-zinc-800 dark:bg-zinc-100 dark:hover:bg-white dark:text-zinc-900 text-white rounded-lg text-xs font-medium h-10"
             >
               <Plus className="w-4 h-4 mr-1" />
               নতুন অর্ডার
@@ -872,11 +868,10 @@ export function MerchantOrders({ business, orders }: MerchantOrdersProps) {
       {filteredOrders.length === 0 ? (
         <div className="bg-white dark:bg-zinc-900 border border-zinc-200/80 dark:border-zinc-800 rounded-3xl p-12 text-center space-y-3">
           <Package className="w-12 h-12 text-zinc-300 dark:text-zinc-700 mx-auto" />
-          <h3 className="font-black text-sm text-zinc-800 dark:text-zinc-200">কোনো অর্ডার পাওয়া যায়নি</h3>
-          <p className="text-xs text-zinc-500 max-w-sm mx-auto">ফিল্টার বদলান, সার্চ ক্লিয়ার করুন, অথবা ম্যানুয়ালি নতুন অর্ডার তৈরি করুন।</p>
+          <p className="text-sm text-zinc-400">কোনো অর্ডার নেই</p>
           <div className="flex justify-center gap-2">
-            <Button variant="outline" onClick={resetFilters} className="rounded-xl text-xs font-bold">ফিল্টার ক্লিয়ার</Button>
-            <Button onClick={() => openCreate()} className="bg-orange-600 text-white rounded-xl text-xs font-bold">নতুন অর্ডার</Button>
+            <Button variant="outline" onClick={resetFilters} className="rounded-lg text-xs">ফিল্টার ক্লিয়ার</Button>
+            <Button onClick={() => openCreate()} className="bg-zinc-900 dark:bg-zinc-100 dark:text-zinc-900 text-white rounded-lg text-xs">নতুন অর্ডার</Button>
           </div>
         </div>
       ) : viewMode === 'kanban' ? (
@@ -1219,8 +1214,7 @@ function OrdersTable({
                   <RiskChips order={ord} allOrders={allOrders} />
                 </td>
                 <td className="p-3">
-                  <div className="font-bold line-clamp-1">{ord.productName}</div>
-                  <div className="text-zinc-500">×{ord.quantity}</div>
+                  <div className="font-bold line-clamp-2">{orderProductLabel(ord)}</div>
                 </td>
                 <td className="p-3 text-right font-black text-orange-600">{formatMoney(ord.totalPrice)}</td>
                 <td className="p-3" onClick={e => e.stopPropagation()}>
@@ -1329,7 +1323,7 @@ function OrderCard({
         </div>
         <div className="space-y-1.5 bg-zinc-50 dark:bg-zinc-800/40 p-3.5 rounded-2xl">
           <p className="font-bold text-zinc-400 text-[10px] uppercase">পণ্য ও মূল্য</p>
-          <p className="font-black text-sm">{order.productName} <span className="text-orange-600">(x{order.quantity})</span></p>
+          <p className="font-black text-sm">{orderProductLabel(order)}</p>
           <div className="flex justify-between"><span className="text-zinc-500">একক</span><span className="font-bold">{formatMoney(order.unitPrice)}</span></div>
           <div className="flex justify-between border-t border-zinc-200 dark:border-zinc-700 pt-1">
             <span className="font-bold">মোট</span>
@@ -1403,7 +1397,7 @@ function KanbanBoard({
                     <span className="text-[10px] font-black text-orange-600">{formatMoney(o.totalPrice)}</span>
                   </div>
                   <p className="font-black text-xs line-clamp-1">{o.customerName}</p>
-                  <p className="text-[11px] text-zinc-500 line-clamp-1">{o.productName} ×{o.quantity}</p>
+                  <p className="text-[11px] text-zinc-500 line-clamp-1">{orderProductLabel(o)}</p>
                   <RiskChips order={o} allOrders={allOrders} />
                   <select
                     value={o.status}
@@ -1577,7 +1571,7 @@ function OrderDrawer({
 
           <section className="rounded-2xl bg-zinc-50 dark:bg-zinc-900 border border-zinc-100 dark:border-zinc-800 p-4 space-y-2 text-xs">
             <p className="text-[10px] font-black uppercase text-zinc-400">পণ্য ও বিল</p>
-            <p className="font-black text-sm">{order.productName} × {order.quantity}</p>
+            <p className="font-black text-sm">{orderProductLabel(order)}</p>
             <div className="space-y-1">
               <Row k="একক মূল্য" v={formatMoney(order.unitPrice)} />
               <Row k="ডেলিভারি" v={formatMoney(order.deliveryFee)} />
