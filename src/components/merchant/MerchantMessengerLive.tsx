@@ -11,21 +11,13 @@ import {
   User,
   Bot,
   Globe,
-  HelpCircle,
-  Sparkles,
   CheckCircle2,
   AlertCircle,
-  Terminal,
-  Zap,
   Activity,
-  CheckCheck,
   ChevronRight,
-  ShieldAlert,
   Play,
   Cpu,
   Clock,
-  Flame,
-  Info,
   Plus,
   Trash2,
   Layers,
@@ -479,62 +471,40 @@ export function MerchantMessengerLive({ business }: MerchantMessengerLiveProps) 
 
   return (
     <div className="space-y-6">
-      {/* Header Banner */}
-      <div className="bg-white dark:bg-zinc-900 border border-zinc-200/80 dark:border-zinc-800 rounded-3xl p-6 shadow-xs flex flex-col lg:flex-row lg:items-center justify-between gap-5">
-        <div>
-          <div className="flex flex-wrap items-center gap-2.5">
-            <h2 className="text-xl md:text-2xl font-black text-zinc-900 dark:text-white tracking-tight">
-              ফেসবুক মেসেঞ্জার অটোমেশন ও এআই সেলসম্যান
-            </h2>
-            {tokenReady ? (
-              <Badge className="bg-emerald-50 dark:bg-emerald-950/80 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 font-bold text-xs">
-                <span className="w-2 h-2 rounded-full bg-emerald-500 mr-1.5 animate-pulse" />
-                Meta Graph API সংযুক্ত
-              </Badge>
-            ) : (
-              <Badge className="bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-300 border border-zinc-200 dark:border-zinc-700 font-bold text-xs">
-                Meta Graph API অপেক্ষমাণ
-              </Badge>
-            )}
-            {webhookReady ? (
-              <Badge className="bg-blue-50 dark:bg-blue-950/80 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800 font-bold text-xs">
-                <CheckCheck className="w-3.5 h-3.5 mr-1" />
-                ওয়েবহুক ভেরিফাইড
-              </Badge>
-            ) : isConfigComplete ? (
-              <Badge className="bg-amber-50 dark:bg-amber-950/80 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-800 font-bold text-xs">
-                <AlertCircle className="w-3.5 h-3.5 mr-1" />
-                টোকেন আছে — ওয়েবহুক টেস্ট করুন
-              </Badge>
-            ) : (
-              <Badge className="bg-amber-50 dark:bg-amber-950/80 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-800 font-bold text-xs">
-                <AlertCircle className="w-3.5 h-3.5 mr-1" />
-                টোকেন ও পেইজ আইডি দিন
-              </Badge>
-            )}
-          </div>
-          <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1.5 leading-relaxed">
-            পেইজে আসা মেসেজের স্বয়ংক্রিয় এআই উত্তর, প্রোডাক্ট কার্ড এবং অর্ডার গ্রহণ। মেটা Configure Webhooks-এ নিচের Callback URL ও Verify Token হুবহু পেস্ট করুন — ভেরিফাই ব্যর্থ হলে মেসেজ আসবেও না, যাবেও না।
-          </p>
+      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <h2 className="text-lg font-semibold text-zinc-900 dark:text-white">মেসেঞ্জার</h2>
+          {tokenReady ? (
+            <span className="text-xs text-emerald-600">সংযুক্ত</span>
+          ) : (
+            <span className="text-xs text-zinc-400">অসংযুক্ত</span>
+          )}
+          {webhookReady ? (
+            <span className="text-xs text-zinc-500">ওয়েবহুক ঠিক</span>
+          ) : isConfigComplete ? (
+            <span className="text-xs text-amber-600">ওয়েবহুক টেস্ট করুন</span>
+          ) : (
+            <span className="text-xs text-zinc-400">টোকেন দিন</span>
+          )}
         </div>
 
-        <div className="flex flex-wrap items-center gap-2.5">
+        <div className="flex flex-wrap items-center gap-2">
           <Button
             type="button"
             variant="outline"
             onClick={handleTestWebhookHandshake}
             disabled={isTestingWebhook}
-            className="rounded-2xl text-xs font-bold h-11 px-4 border-zinc-200 dark:border-zinc-700 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors"
+            className="rounded-lg text-xs h-9 px-3"
           >
             {isTestingWebhook ? (
               <>
-                <RefreshCw className="w-3.5 h-3.5 mr-1.5 animate-spin text-orange-500" />
-                টেস্ট হচ্ছে...
+                <RefreshCw className="w-3.5 h-3.5 mr-1.5 animate-spin" />
+                টেস্ট...
               </>
             ) : (
               <>
-                <Globe className="w-3.5 h-3.5 mr-1.5 text-emerald-500" />
-                সার্ভার ওয়েবহুক টেস্ট
+                <Globe className="w-3.5 h-3.5 mr-1.5" />
+                ওয়েবহুক টেস্ট
               </>
             )}
           </Button>
@@ -542,9 +512,9 @@ export function MerchantMessengerLive({ business }: MerchantMessengerLiveProps) 
           <Button
             onClick={handleSaveMessengerConfig}
             disabled={isSaving}
-            className="bg-linear-to-r from-orange-600 to-amber-500 hover:from-orange-700 text-white font-black text-xs rounded-2xl h-11 px-6 shadow-md shadow-orange-600/20 active:scale-95 transition-transform shrink-0"
+            className="bg-zinc-900 hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-900 text-white text-xs rounded-lg h-9 px-4 shrink-0"
           >
-            {isSaving ? 'সংরক্ষণ হচ্ছে...' : 'সেটিংস সেভ করুন'}
+            {isSaving ? 'সেভ হচ্ছে...' : 'সেভ'}
           </Button>
         </div>
       </div>
@@ -674,9 +644,8 @@ export function MerchantMessengerLive({ business }: MerchantMessengerLiveProps) 
 
       {/* TAB 1: Setup & Meta Configuration */}
       {activeTab === 'setup' && (
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-          {/* Left Column: Webhook URLs & Tokens */}
-          <div className="lg:col-span-7 space-y-6">
+        <div className="space-y-6">
+          <div className="space-y-6">
             {/* Meta Webhook Card */}
             <div className="bg-white dark:bg-zinc-900 border border-zinc-200/80 dark:border-zinc-800 rounded-3xl p-6 shadow-xs space-y-4">
               <div className="flex items-center gap-2 pb-2 border-b border-zinc-100 dark:border-zinc-800">
@@ -684,8 +653,7 @@ export function MerchantMessengerLive({ business }: MerchantMessengerLiveProps) 
                   <MessageCircle className="w-4 h-4" />
                 </div>
                 <div>
-                  <h3 className="font-black text-sm text-zinc-900 dark:text-white">মেটা ডেভেলপার ড্যাশবোর্ড কানেকশন</h3>
-                  <p className="text-[11px] text-zinc-500">developers.facebook.com এর Messenger Webhooks সেকশনে নিচের তথ্যগুলো দিন</p>
+                  <h3 className="font-semibold text-sm text-zinc-900 dark:text-white">ওয়েবহুক</h3>
                 </div>
               </div>
 
@@ -693,11 +661,9 @@ export function MerchantMessengerLive({ business }: MerchantMessengerLiveProps) 
                 {/* Specific Store Webhook URL */}
                 <div className="space-y-1.5 p-3.5 bg-orange-50/50 dark:bg-orange-950/20 border border-orange-200/60 dark:border-orange-900/40 rounded-2xl">
                   <div className="flex items-center justify-between">
-                    <label className="font-black text-orange-900 dark:text-orange-200 flex items-center gap-1.5">
-                      <Flame className="w-3.5 h-3.5 text-orange-500" />
-                      আপনার স্টোর-নির্দিষ্ট Callback URL (সর্বাধিক সুপারিশকৃত)
+                    <label className="font-medium text-zinc-800 dark:text-zinc-200">
+                      Callback URL
                     </label>
-                    <span className="text-[10px] text-emerald-600 dark:text-emerald-400 font-bold">100% আইসোলেটেড</span>
                   </div>
                   <div className="flex items-center gap-2 pt-1">
                     <Input
@@ -714,18 +680,14 @@ export function MerchantMessengerLive({ business }: MerchantMessengerLiveProps) 
                       {copiedSpecificWebhook ? <Check className="w-4 h-4 text-emerald-600" /> : <Copy className="w-4 h-4 text-orange-600" />}
                     </Button>
                   </div>
-                  <p className="text-[10px] text-zinc-500 dark:text-zinc-400">
-                    * এই লিঙ্কটি ব্যবহার করলে মেটা থেকে আসা মেসেজ সরাসরি এই স্টোরের ডাটাবেজেই প্রসেস হবে।
-                  </p>
                 </div>
 
                 {/* Standard Global Webhook URL */}
                 <div className="space-y-1.5">
                   <div className="flex items-center justify-between">
-                    <label className="font-bold text-zinc-700 dark:text-zinc-300">
-                      অথবা গ্লোবাল Callback URL
+                    <label className="font-medium text-zinc-700 dark:text-zinc-300">
+                      গ্লোবাল URL
                     </label>
-                    <span className="text-[10px] text-zinc-500 font-medium">মাল্টি-টেন্যান্ট</span>
                   </div>
                   <div className="flex items-center gap-2">
                     <Input
@@ -746,8 +708,8 @@ export function MerchantMessengerLive({ business }: MerchantMessengerLiveProps) 
 
                 {/* Verify Token */}
                 <div className="space-y-1.5">
-                  <label className="font-bold text-zinc-700 dark:text-zinc-300">
-                    Verify Token (যাচাইকরণ টোকেন) — হুবহু এইটাই মেটায় দিন
+                  <label className="font-medium text-zinc-700 dark:text-zinc-300">
+                    Verify Token
                   </label>
                   <div className="flex items-center gap-2">
                     <Input
@@ -764,9 +726,6 @@ export function MerchantMessengerLive({ business }: MerchantMessengerLiveProps) 
                       {copiedToken ? <Check className="w-4 h-4 text-emerald-600" /> : <Copy className="w-4 h-4" />}
                     </Button>
                   </div>
-                  <p className="text-[10px] text-zinc-500 dark:text-zinc-400">
-                    Meta ➔ Messenger ➔ Webhooks ➔ Edit Callback URL-এ <code className="bg-zinc-100 dark:bg-zinc-800 px-1 py-0.5 rounded font-mono font-bold text-orange-600">{verifyToken || '…'}</code> পেস্ট করুন। আগে সার্ভার শুধু কয়েকটা ফিক্সড টোকেন মানত বলে Configure webhooks ৪০৩ দিত — এখন আপনার স্টোর টোকেন এবং challenge দুটোই গ্রহণ করে।
-                  </p>
                 </div>
               </div>
 
@@ -798,8 +757,7 @@ export function MerchantMessengerLive({ business }: MerchantMessengerLiveProps) 
                     <Key className="w-4 h-4" />
                   </div>
                   <div>
-                    <h3 className="font-black text-sm text-zinc-900 dark:text-white">ফেসবুক পেইজ অথেনটিকেশন</h3>
-                    <p className="text-[11px] text-zinc-500">মেসেঞ্জার এআই স্বয়ংক্রিয় রিপ্লাই পাঠানোর জন্য পেইজ এক্সেস টোকেন</p>
+                    <h3 className="font-semibold text-sm text-zinc-900 dark:text-white">পেজ</h3>
                   </div>
                 </div>
 
@@ -847,8 +805,7 @@ export function MerchantMessengerLive({ business }: MerchantMessengerLiveProps) 
               <div className="space-y-4 text-xs">
                 <div className="space-y-1.5">
                   <label className="font-bold text-zinc-700 dark:text-zinc-300 flex items-center justify-between">
-                    <span>Facebook Page Access Token (পেইজ টোকেন)</span>
-                    <span className="text-[10px] text-zinc-400 font-normal">Never expires টোকেন সুপারিশকৃত</span>
+                    <span>Page Access Token</span>
                   </label>
                   <Input
                     type="password"
@@ -857,114 +814,19 @@ export function MerchantMessengerLive({ business }: MerchantMessengerLiveProps) 
                     placeholder="EAAG..."
                     className="font-mono text-xs h-10 rounded-xl"
                   />
-                  <p className="text-[10px] text-zinc-500">
-                    Facebook Graph API Explorer বা App Dashboard থেকে <strong>pages_messaging</strong> পারমিশনসহ টোকেন জেনারেট করুন।
-                  </p>
                 </div>
 
                 <div className="space-y-1.5">
-                  <label className="font-bold text-zinc-700 dark:text-zinc-300">
-                    Facebook Page ID (পেইজ আইডি)
+                  <label className="font-medium text-zinc-700 dark:text-zinc-300">
+                    Page ID
                   </label>
                   <Input
                     value={pageId}
                     onChange={e => setPageId(e.target.value)}
-                    placeholder="যেমন: 104928374829102"
+                    placeholder="104928374829102"
                     className="font-mono text-xs h-10 rounded-xl"
                   />
-                  <p className="text-[10px] text-zinc-500">
-                    আপনার ফেসবুক পেইজের About ➔ Page transparency থেকে Page ID কপি করে পেস্ট করুন।
-                  </p>
                 </div>
-              </div>
-            </div>
-          </div>
-
-          {/* Right Column: Step-by-Step Instructions & Checklist */}
-          <div className="lg:col-span-5 space-y-6">
-            <div className="bg-white dark:bg-zinc-900 border border-zinc-200/80 dark:border-zinc-800 rounded-3xl p-6 shadow-xs space-y-4">
-              <div className="flex items-center gap-2 pb-2 border-b border-zinc-100 dark:border-zinc-800">
-                <div className="w-8 h-8 rounded-xl bg-amber-50 dark:bg-amber-950/60 text-amber-600 flex items-center justify-center">
-                  <Sparkles className="w-4 h-4" />
-                </div>
-                <div>
-                  <h3 className="font-black text-sm text-zinc-900 dark:text-white">মেটা ডেভেলপার সেটআপ গাইডলাইন</h3>
-                  <p className="text-[11px] text-zinc-500">৩ মিনিটে ফেসবুক মেসেঞ্জার অটোমেশন চালু করুন</p>
-                </div>
-              </div>
-
-              <div className="space-y-3 text-xs">
-                <div className="p-3 bg-zinc-50 dark:bg-zinc-800/40 rounded-2xl border border-zinc-100 dark:border-zinc-800/60 space-y-1">
-                  <div className="flex items-center gap-2 font-bold text-zinc-900 dark:text-white">
-                    <span className="w-5 h-5 rounded-full bg-orange-500 text-white flex items-center justify-center text-[10px]">১</span>
-                    <span>মেটা ডেভেলপারে প্রবেশ করুন</span>
-                  </div>
-                  <p className="text-[11px] text-zinc-500 pl-7">
-                    <a 
-                      href="https://developers.facebook.com/apps" 
-                      target="_blank" 
-                      rel="noopener noreferrer" 
-                      className="text-orange-600 hover:underline font-bold inline-flex items-center gap-1"
-                    >
-                      developers.facebook.com/apps
-                      <ExternalLink className="w-3 h-3" />
-                    </a>
-                    &nbsp;এ গিয়ে আপনার বিজনেস অ্যাপটি ওপেন করুন।
-                  </p>
-                </div>
-
-                <div className="p-3 bg-zinc-50 dark:bg-zinc-800/40 rounded-2xl border border-zinc-100 dark:border-zinc-800/60 space-y-1">
-                  <div className="flex items-center gap-2 font-bold text-zinc-900 dark:text-white">
-                    <span className="w-5 h-5 rounded-full bg-orange-500 text-white flex items-center justify-center text-[10px]">২</span>
-                    <span>ওয়েবহুক ভেরিফাই করুন</span>
-                  </div>
-                  <p className="text-[11px] text-zinc-500 pl-7">
-                    <strong>Messenger</strong> ➔ <strong>Webhooks</strong> ➔ <strong>Edit Callback URL</strong>। Callback URL হিসেবে বামের <strong>স্টোর-নির্দিষ্ট URL</strong> পেস্ট করুন (HTTPS লাগবে)। Verify Token বক্সে উপরের টোকেনটি হুবহু পেস্ট করে <strong>Verify and Save</strong> চাপুন। সার্ভার <code className="font-mono">hub.challenge</code> প্লেইন টেক্সটে ফেরত দেয় — HTML/JSON নয়।
-                  </p>
-                </div>
-
-                <div className="p-3 bg-zinc-50 dark:bg-zinc-800/40 rounded-2xl border border-zinc-100 dark:border-zinc-800/60 space-y-1">
-                  <div className="flex items-center gap-2 font-bold text-zinc-900 dark:text-white">
-                    <span className="w-5 h-5 rounded-full bg-orange-500 text-white flex items-center justify-center text-[10px]">৩</span>
-                    <span>ইভেন্ট সাবস্ক্রাইব করুন</span>
-                  </div>
-                  <p className="text-[11px] text-zinc-500 pl-7">
-                    Webhooks ফিল্ডে <code className="bg-zinc-200 dark:bg-zinc-700 px-1 py-0.5 rounded font-mono text-[10px]">messages</code>, <code className="bg-zinc-200 dark:bg-zinc-700 px-1 py-0.5 rounded font-mono text-[10px]">messaging_postbacks</code> এবং কমেন্ট-টু-ইনবক্সের জন্য <code className="bg-zinc-200 dark:bg-zinc-700 px-1 py-0.5 rounded font-mono text-[10px]">feed</code> এ টিক দিয়ে সাবস্ক্রাইব করুন। তারপর বামে <strong>টোকেন টেস্ট করুন</strong> চাপলে সার্ভার পেজটিকে অ্যাপে সাবস্ক্রাইব করার চেষ্টা করবে — না হলে মেসেজ রিসিভ হবে না।
-                  </p>
-                </div>
-
-                <div className="p-3 bg-zinc-50 dark:bg-zinc-800/40 rounded-2xl border border-zinc-100 dark:border-zinc-800/60 space-y-1">
-                  <div className="flex items-center gap-2 font-bold text-zinc-900 dark:text-white">
-                    <span className="w-5 h-5 rounded-full bg-orange-500 text-white flex items-center justify-center text-[10px]">৪</span>
-                    <span>পেজ সাবস্ক্রিপশন সম্পন্ন করুন</span>
-                  </div>
-                  <p className="text-[11px] text-zinc-500 pl-7">
-                    Messenger ➔ <strong>App Settings</strong> ➔ <strong>Generate Tokens</strong> থেকে আপনার পেজটি সিলেক্ট করে <strong>Subscribe</strong> বাটনে চাপুন।
-                  </p>
-                </div>
-              </div>
-
-              <div className="p-3.5 rounded-2xl border border-amber-200/80 dark:border-amber-900/50 bg-amber-50/70 dark:bg-amber-950/20 space-y-2 text-[11px] text-zinc-600 dark:text-zinc-300">
-                <p className="font-black text-amber-800 dark:text-amber-200 flex items-center gap-1.5">
-                  <Info className="w-3.5 h-3.5" />
-                  মেসেজ আসছে না / যাচ্ছে না — কেন?
-                </p>
-                <ul className="list-disc pl-4 space-y-1 leading-relaxed">
-                  <li>Configure webhooks ভেরিফাই না হলে মেটা ইভেন্ট পাঠায় না — আগে <strong>সার্ভার ওয়েবহুক টেস্ট</strong> সবুজ করুন।</li>
-                  <li>পেজ Access Token-এ <code className="font-mono">pages_messaging</code> না থাকলে উত্তর পাঠানো যায় না।</li>
-                  <li>পেজটি অ্যাপে Subscribe না থাকলে রিসিভ হয় না — <strong>টোকেন টেস্ট করুন</strong> অটো-সাবস্ক্রাইব করে।</li>
-                  <li>Page ID স্টোর সেটিংসের সাথে না মিললে বট অন্য দোকানে খুঁজে পায় না।</li>
-                </ul>
-              </div>
-
-              <div className="pt-2">
-                <Button
-                  onClick={handleSaveMessengerConfig}
-                  disabled={isSaving}
-                  className="w-full bg-zinc-900 dark:bg-white text-white dark:text-zinc-900 font-black text-xs rounded-2xl h-11"
-                >
-                  {isSaving ? 'সংরক্ষণ হচ্ছে...' : 'সেটিংস সেভ করুন'}
-                </Button>
               </div>
             </div>
           </div>
@@ -979,15 +841,12 @@ export function MerchantMessengerLive({ business }: MerchantMessengerLiveProps) 
               <Layers className="w-5 h-5" />
             </div>
             <div>
-              <h3 className="font-black text-sm text-zinc-900 dark:text-white">কানেক্টেড পেজসমূহ (মাল্টি-পেজ)</h3>
-              <p className="text-[11px] text-zinc-500">একই প্যানেল থেকে একাধিক ফেসবুক পেজের বট চালান — প্রতিটি পেজের আলাদা টোকেন এখানে যোগ করুন</p>
+              <h3 className="font-semibold text-sm text-zinc-900 dark:text-white">পেজসমূহ</h3>
             </div>
           </div>
 
           {connectedPages.length === 0 ? (
-            <p className="text-[11px] text-zinc-500 bg-zinc-50 dark:bg-zinc-800/40 rounded-2xl p-3 border border-zinc-100 dark:border-zinc-800/60">
-              এখনো কোনো অতিরিক্ত পেজ যুক্ত হয়নি। উপরের মূল টোকেনটি ডিফল্ট পেজ হিসেবে কাজ করবে। নিচে নতুন পেজের টোকেন দিলে সেই পেজের মেসেজও এই প্যানেলেই আসবে।
-            </p>
+            <p className="text-sm text-zinc-400">অতিরিক্ত পেজ নেই</p>
           ) : (
             <div className="space-y-2">
               {connectedPages.map((p) => (
