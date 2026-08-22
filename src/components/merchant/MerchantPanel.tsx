@@ -23,8 +23,13 @@ import {
   Sliders, 
   Users
 } from 'lucide-react';
-import { db } from '../../lib/firebase';
+import { db, firestoreDatabaseLabel, getPanelFirestoreDbs, setPanelWriteDb } from '../../lib/firebase';
 import { BusinessConfig, Order, UserProfile } from '../../types';
+import {
+  firestoreErrorMessage,
+  reconcileMultiDbSnapshots,
+  type DatabaseSnapshotState,
+} from '../../lib/panelFirestore';
 
 import { MerchantHeader } from './MerchantHeader';
 import { MerchantSidebar } from './MerchantSidebar';
@@ -60,6 +65,7 @@ export function MerchantPanel({ user, profile }: MerchantPanelProps) {
   const [searchQuery, setSearchQuery] = useState('');
   const [orders, setOrders] = useState<Order[]>([]);
   const [isDark, setIsDark] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const navigate = useNavigate();
 
   // Returning from ZiniPay: billing tab is not mounted by default, so verify
@@ -127,94 +133,145 @@ export function MerchantPanel({ user, profile }: MerchantPanelProps) {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
-  // Load business config for current user
+  // Load business config for current user from the named AI Studio DB and
+  // the project "(default)" DB. Server writes used to land in default, so a
+  // named-only listener looked like an empty shop and auto-created a blank one.
   useEffect(() => {
     if (!user) return;
-    const q = query(collection(db, 'businesses'), where('ownerId', '==', user.uid));
-    return onSnapshot(q, (snapshot) => {
-      if (!snapshot.empty) {
-        const docSnap = snapshot.docs[0];
-        const data = docSnap.data() as BusinessConfig;
-        // Always use the Firestore document ID for writes. Using `data.id`
-        // when it differs from the doc path makes updateDoc a no-op / not-found
-        // — product edits look like they save but never persist.
-        const resolved = { ...data, id: docSnap.id };
+    const dbs = getPanelFirestoreDbs();
+    const states: DatabaseSnapshotState<BusinessConfig>[] = dbs.map(() => ({ status: 'pending' }));
+    let cancelled = false;
+    let created = false;
+
+    const applyBusiness = () => {
+      if (cancelled) return;
+      const result = reconcileMultiDbSnapshots(states);
+      if (!result.ready) return;
+
+      if (result.docs.length > 0) {
+        const found = result.docs[0];
+        const sourceIndex = states.findIndex(
+          (state) => state.status === 'ready' && state.docs.some((row) => row.id === found.id),
+        );
+        if (sourceIndex >= 0) setPanelWriteDb(dbs[sourceIndex]);
+
+        const resolved = { ...found.data, id: found.id };
         if (!resolved.slug) {
           const slug = suggestedShopSlug(resolved);
           resolved.slug = slug;
-          setDoc(doc(db, 'businesses', docSnap.id), { slug }, { merge: true }).catch(() => {});
+          setDoc(doc(db, 'businesses', found.id), { slug }, { merge: true }).catch(() => {});
         }
         setBusiness(resolved);
-      } else {
-        const newId = `biz-${Date.now()}`;
-        const initialConfig: BusinessConfig = {
-          id: newId,
-          ownerId: user.uid,
-          name: "আমার অনলাইন শপ",
-          slug: suggestedShopSlug({ name: 'আমার অনলাইন শপ', id: newId }),
-          description: "একটি বিশ্বস্ত ও আধুনিক অনলাইন শপ।",
-          walletBalance: 0,
-          tokenBalance: 100000,
-          totalTokensUsed: 0,
-          products: [],
-          faqs: [],
-          facebookConfig: { pixelId: '', accessToken: '', testEventCode: '' },
-          courierConfig: {
-            deliveryChargeInsideDhaka: 70,
-            deliveryChargeOutsideDhaka: 130,
-            autoBooking: true
-          },
-          features: {
-            aiEnabled: true,
-            orderTrackingEnabled: true,
-            proactiveNotificationsEnabled: true,
-            chatSummaryEnabled: true,
-            negotiationEnabled: true,
-            imageDisplayEnabled: true,
-            inventoryEnabled: true,
-            analyticsEnabled: true,
-            invoicingEnabled: true,
-            broadcastingEnabled: true,
-            commentToInboxEnabled: true,
-            messengerRepliesEnabled: true,
-            photoReplyEnabled: true,
-            voiceReplyEnabled: true,
-            upsellEnabled: true,
-            autoOrderEnabled: true,
-            reviewImagesEnabled: true,
-            faqEnabled: true,
-            autoCourierBookingEnabled: true,
-            humanHandoverEnabled: true,
-            quietHoursEnabled: false
-          },
-          aiPersona: 'friendly',
-          aiLanguage: 'bangla',
-          bargainingSensitivity: 60,
-          customSystemPrompt: '',
-          messengerVerifyToken: `sk_${newId}`,
-          verifyToken: `sk_${newId}`,
-          status: 'active',
-          plan: 'free',
-          verificationStatus: 'pending',
-          createdAt: serverTimestamp()
-        };
-        // Show the new store immediately; surface create failures instead of
-        // leaving a permanent blank screen.
-        setBusiness(initialConfig);
-        setDoc(doc(db, 'businesses', newId), initialConfig).catch((err) => {
-          console.error('[MerchantPanel] Failed to create initial business:', err);
-        });
+        setLoadError(null);
+        setLoading(false);
+        return;
       }
+
+      if (result.allFailed) {
+        setLoadError(result.error);
+        setLoading(false);
+        return;
+      }
+
+      if (created) return;
+      created = true;
+      const newId = `biz-${Date.now()}`;
+      const initialConfig: BusinessConfig = {
+        id: newId,
+        ownerId: user.uid,
+        name: "আমার অনলাইন শপ",
+        slug: suggestedShopSlug({ name: 'আমার অনলাইন শপ', id: newId }),
+        description: "একটি বিশ্বস্ত ও আধুনিক অনলাইন শপ।",
+        walletBalance: 0,
+        tokenBalance: 100000,
+        totalTokensUsed: 0,
+        products: [],
+        faqs: [],
+        facebookConfig: { pixelId: '', accessToken: '', testEventCode: '' },
+        courierConfig: {
+          deliveryChargeInsideDhaka: 70,
+          deliveryChargeOutsideDhaka: 130,
+          autoBooking: true
+        },
+        features: {
+          aiEnabled: true,
+          orderTrackingEnabled: true,
+          proactiveNotificationsEnabled: true,
+          chatSummaryEnabled: true,
+          negotiationEnabled: true,
+          imageDisplayEnabled: true,
+          inventoryEnabled: true,
+          analyticsEnabled: true,
+          invoicingEnabled: true,
+          broadcastingEnabled: true,
+          commentToInboxEnabled: true,
+          messengerRepliesEnabled: true,
+          photoReplyEnabled: true,
+          voiceReplyEnabled: true,
+          upsellEnabled: true,
+          autoOrderEnabled: true,
+          reviewImagesEnabled: true,
+          faqEnabled: true,
+          autoCourierBookingEnabled: true,
+          humanHandoverEnabled: true,
+          quietHoursEnabled: false
+        },
+        aiPersona: 'friendly',
+        aiLanguage: 'bangla',
+        bargainingSensitivity: 60,
+        customSystemPrompt: '',
+        messengerVerifyToken: `sk_${newId}`,
+        verifyToken: `sk_${newId}`,
+        status: 'active',
+        plan: 'free',
+        verificationStatus: 'pending',
+        createdAt: serverTimestamp()
+      };
+      setBusiness(initialConfig);
+      setLoadError(null);
       setLoading(false);
+      setDoc(doc(db, 'businesses', newId), initialConfig).catch((err) => {
+        console.error('[MerchantPanel] Failed to create initial business:', err);
+        setLoadError(firestoreErrorMessage(err));
+      });
+    };
+
+    const unsubs = dbs.map((database, index) => {
+      const q = query(collection(database, 'businesses'), where('ownerId', '==', user.uid));
+      return onSnapshot(q, (snapshot) => {
+        states[index] = {
+          status: 'ready',
+          docs: snapshot.docs.map((d) => ({
+            id: d.id,
+            data: { ...d.data(), id: d.id } as BusinessConfig,
+            databaseId: firestoreDatabaseLabel(database),
+          })),
+        };
+        applyBusiness();
+      }, (err) => {
+        console.error('[MerchantPanel] businesses snapshot failed:', err);
+        states[index] = { status: 'error', error: firestoreErrorMessage(err) };
+        applyBusiness();
+      });
     });
+
+    return () => {
+      cancelled = true;
+      unsubs.forEach((unsub) => unsub());
+    };
   }, [user]);
 
-  // Load orders (fallback without orderBy if composite index is missing)
+  // Load orders from both Firestore databases (fallback without orderBy if
+  // the composite index is missing).
   useEffect(() => {
     if (!business?.id) return;
 
-    const applySnap = (snap: { docs: { id: string; data: () => any }[] }) => {
-      const list = snap.docs.map(d => ({ id: d.id, ...d.data() } as Order));
+    const applyMerged = (
+      states: DatabaseSnapshotState<Order>[],
+    ) => {
+      const result = reconcileMultiDbSnapshots(states);
+      if (!result.ready) return;
+      const list = result.docs.map((row) => row.data);
       list.sort((a: any, b: any) => {
         const ta = a.createdAtMs || a.createdAt?.toMillis?.() || Date.parse(a.createdAt || '') || 0;
         const tb = b.createdAtMs || b.createdAt?.toMillis?.() || Date.parse(b.createdAt || '') || 0;
@@ -223,25 +280,48 @@ export function MerchantPanel({ user, profile }: MerchantPanelProps) {
       setOrders(list);
     };
 
-    const withOrder = query(
-      collection(db, 'orders'),
-      where('businessId', '==', business.id),
-      orderBy('createdAt', 'desc')
-    );
-    let unsubFallback: (() => void) | null = null;
-    const unsub = onSnapshot(withOrder, applySnap, () => {
-      const withoutOrder = query(
-        collection(db, 'orders'),
-        where('businessId', '==', business.id)
+    const dbs = getPanelFirestoreDbs();
+    const states: DatabaseSnapshotState<Order>[] = dbs.map(() => ({ status: 'pending' }));
+    const unsubs: Array<() => void> = [];
+
+    dbs.forEach((database, index) => {
+      const toDocs = (snap: { docs: { id: string; data: () => any }[] }) =>
+        snap.docs.map((d) => ({
+          id: d.id,
+          data: { id: d.id, ...d.data() } as Order,
+          databaseId: firestoreDatabaseLabel(database),
+        }));
+
+      const withOrder = query(
+        collection(database, 'orders'),
+        where('businessId', '==', business.id),
+        orderBy('createdAt', 'desc')
       );
-      unsubFallback = onSnapshot(withoutOrder, applySnap, (err) => {
-        console.error('[Orders load failed]', err);
+      let unsubFallback: (() => void) | null = null;
+      const unsub = onSnapshot(withOrder, (snap) => {
+        states[index] = { status: 'ready', docs: toDocs(snap) };
+        applyMerged(states);
+      }, () => {
+        const withoutOrder = query(
+          collection(database, 'orders'),
+          where('businessId', '==', business.id)
+        );
+        unsubFallback = onSnapshot(withoutOrder, (snap) => {
+          states[index] = { status: 'ready', docs: toDocs(snap) };
+          applyMerged(states);
+        }, (err) => {
+          console.error('[Orders load failed]', err);
+          states[index] = { status: 'error', error: firestoreErrorMessage(err) };
+          applyMerged(states);
+        });
+      });
+      unsubs.push(() => {
+        unsub();
+        unsubFallback?.();
       });
     });
-    return () => {
-      unsub();
-      unsubFallback?.();
-    };
+
+    return () => unsubs.forEach((unsub) => unsub());
   }, [business?.id]);
 
   const isAdmin = profile?.role === 'admin' || profile?.email === 'maraju924@gmail.com' || user?.email === 'maraju924@gmail.com';
@@ -274,6 +354,16 @@ export function MerchantPanel({ user, profile }: MerchantPanelProps) {
     return (
       <div className="min-h-[80vh] flex items-center justify-center">
         <div className="h-8 w-8 animate-spin rounded-full border-2 border-zinc-200 border-t-zinc-700 dark:border-zinc-800 dark:border-t-zinc-300" />
+      </div>
+    );
+  }
+
+  if (loadError && !business) {
+    return (
+      <div className="min-h-[80vh] flex items-center justify-center p-6">
+        <div className="max-w-md rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+          ড্যাশবোর্ডের ডাটা আসছে না: {loadError}
+        </div>
       </div>
     );
   }
@@ -340,6 +430,11 @@ export function MerchantPanel({ user, profile }: MerchantPanelProps) {
 
         {/* Center Content Workspace */}
         <main className="flex-1 p-3.5 sm:p-6 md:p-8 min-w-0">
+          {loadError && (
+            <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-200">
+              ডাটাবেস থেকে কিছু ডাটা আসছে না: {loadError}
+            </div>
+          )}
           {/* Prepaid token wallet alerts */}
           {!business.useOwnApiKey && (business.tokenBalance || 0) <= 0 && activeTab !== 'billing' && (
             <button

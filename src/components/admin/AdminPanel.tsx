@@ -1,8 +1,17 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { UserProfile, BusinessConfig } from '../../types';
-import { collection, onSnapshot } from 'firebase/firestore';
-import { db } from '../../lib/firebase';
+import { collection, onSnapshot, type Firestore } from 'firebase/firestore';
+import {
+  firestoreDatabaseLabel,
+  getPanelFirestoreDbs,
+  setPanelWriteDb,
+} from '../../lib/firebase';
+import {
+  firestoreErrorMessage,
+  reconcileMultiDbSnapshots,
+  type DatabaseSnapshotState,
+} from '../../lib/panelFirestore';
 
 import { AdminHeader } from './AdminHeader';
 import { AdminSidebar } from './AdminSidebar';
@@ -23,13 +32,36 @@ export function AdminPanel({ profile }: AdminPanelProps) {
   const [activeTab, setActiveTab] = useState('overview');
   const [merchants, setMerchants] = useState<BusinessConfig[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
   useEffect(() => {
-    return onSnapshot(collection(db, 'businesses'), (snap) => {
-      setMerchants(snap.docs.map(d => ({ ...d.data(), id: d.id } as BusinessConfig)));
-      setLoading(false);
-    });
+    const dbs = getPanelFirestoreDbs();
+    const states: DatabaseSnapshotState<BusinessConfig>[] = dbs.map(() => ({ status: 'pending' }));
+
+    const unsubs = dbs.map((database, index) =>
+      onSnapshot(
+        collection(database, 'businesses'),
+        (snap) => {
+          states[index] = {
+            status: 'ready',
+            docs: snap.docs.map((d) => ({
+              id: d.id,
+              data: { ...d.data(), id: d.id } as BusinessConfig,
+              databaseId: firestoreDatabaseLabel(database),
+            })),
+          };
+          applyAdminSnapshots(dbs, states, setMerchants, setLoadError, setLoading);
+        },
+        (err) => {
+          console.error('[AdminPanel] businesses snapshot failed:', err);
+          states[index] = { status: 'error', error: firestoreErrorMessage(err) };
+          applyAdminSnapshots(dbs, states, setMerchants, setLoadError, setLoading);
+        },
+      ),
+    );
+
+    return () => unsubs.forEach((unsub) => unsub());
   }, []);
 
   const pendingMerchantsCount = merchants.filter(m => m.verificationStatus === 'pending' || m.status === 'suspended').length;
@@ -86,6 +118,14 @@ export function AdminPanel({ profile }: AdminPanelProps) {
 
         {/* Admin Content Screen */}
         <main className="flex-1 p-3.5 sm:p-6 md:p-8 min-w-0">
+          {loadError && (
+            <div className="mb-4 rounded-xl border border-amber-800 bg-amber-950/40 p-3 text-xs text-amber-200">
+              ডাটাবেস থেকে মার্চেন্ট লিস্ট আসছে না: {loadError}
+            </div>
+          )}
+          {loading && merchants.length === 0 && !loadError && (
+            <p className="mb-4 text-xs text-zinc-500">ডাটাবেস থেকে মার্চেন্ট লোড হচ্ছে...</p>
+          )}
           {activeTab === 'overview' && (
             <AdminOverview merchants={merchants} />
           )}
@@ -124,4 +164,25 @@ export function AdminPanel({ profile }: AdminPanelProps) {
       />
     </div>
   );
+}
+
+function applyAdminSnapshots(
+  dbs: Firestore[],
+  states: DatabaseSnapshotState<BusinessConfig>[],
+  setMerchants: (rows: BusinessConfig[]) => void,
+  setLoadError: (error: string | null) => void,
+  setLoading: (loading: boolean) => void,
+) {
+  const result = reconcileMultiDbSnapshots(states);
+  if (!result.ready) return;
+
+  const counts = states.map((state) => (state.status === 'ready' ? state.docs.length : 0));
+  const richest = counts.reduce((best, count, index) => (count > counts[best] ? index : best), 0);
+  if (states[richest]?.status === 'ready' && counts[richest] > 0) {
+    setPanelWriteDb(dbs[richest]);
+  }
+
+  setMerchants(result.docs.map((row) => row.data));
+  setLoadError(result.allFailed ? result.error : null);
+  setLoading(false);
 }

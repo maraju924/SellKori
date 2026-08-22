@@ -120,22 +120,12 @@ try {
           console.log(`[Firebase] Admin SDK Verified on Database: ${dbId || '(default)'}`);
         })
         .catch((testErr: any) => {
-          if (dbId && dbId !== '(default)') {
-            console.log(`[Firebase] Admin DB "${dbId}" access denied. Falling back to (default) database...`);
-            const fallbackDb = getAdminFirestore(adminApp);
-            fallbackDb.collection('businesses').limit(1).get()
-              .then(() => {
-                adminDb = fallbackDb;
-                console.log('[Firebase] Admin SDK switched to (default) database.');
-              })
-              .catch(() => {
-                console.warn('[Firebase] Admin SDK unusable on any database. Falling back to Client SDK only.');
-                adminDb = null;
-              });
-          } else {
-            console.warn('[Firebase] Admin SDK permission denied on (default) DB. Falling back to Client SDK.');
-            adminDb = null;
-          }
+          // Do NOT switch to a different Firestore database. The web panels
+          // read the configured named DB; writing here to "(default)" made
+          // admin/merchant screens look empty even though data existed.
+          console.warn(
+            `[Firebase] Admin SDK check failed on "${dbId || '(default)'}": ${testErr?.message || testErr}. Keeping this database; client SDK will be used if Admin writes fail.`,
+          );
         });
     } catch (adminErr: any) {
       console.error('[Firebase] Admin Setup Error:', adminErr?.message);
