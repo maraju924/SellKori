@@ -8,7 +8,11 @@ import type {
 } from '../types';
 import { normalizePhone } from './orderIdentity';
 import { asProductList, sameProductId } from './productCatalog';
+import { shopPublicPath, type ShopRef } from './storeSlug';
 import { finiteNumber } from './utils';
+
+export type { ShopRef } from './storeSlug';
+export { publicShopSlug, shopPublicPath, shopPublicUrl } from './storeSlug';
 
 const DHAKA_RE =
   /ঢাকা|dhaka|মোহাম্মদপুর|ধানমন্ডি|গুলশান|বনানী|উত্তরা|মিরপুর|মতিঝিল|বাড্ডা|রামপুরা|মগবাজার|খিলগাঁও|যাত্রাবাড়ী|কেরানীগঞ্জ|সাভার|dhanmondi|gulshan|uttara|mirpur|banani|mohammadpur/i;
@@ -85,14 +89,12 @@ export function shopPassengerStorageKey(businessId: string): string {
   return `${SHOP_PASSENGER_STORAGE_PREFIX}${String(businessId || '').trim()}`;
 }
 
-export function shopPath(businessId: string, suffix = ''): string {
-  const id = encodeURIComponent(String(businessId || '').trim());
-  const extra = suffix.startsWith('/') ? suffix : suffix ? `/${suffix}` : '';
-  return `/shop/${id}${extra}`;
+export function shopPath(shop: ShopRef, suffix = ''): string {
+  return shopPublicPath(shop, suffix);
 }
 
-export function productPath(businessId: string, productId: string): string {
-  return shopPath(businessId, `p/${encodeURIComponent(String(productId || '').trim())}`);
+export function productPath(shop: ShopRef, productId: string): string {
+  return shopPath(shop, `p/${encodeURIComponent(String(productId || '').trim())}`);
 }
 
 export function publicProductImage(product?: Product | null): string {

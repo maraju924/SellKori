@@ -32,7 +32,7 @@ export function ShopProduct() {
     return (
       <div className="bg-white rounded-2xl border border-zinc-200 p-10 text-center">
         <p className="font-bold">পণ্যটি পাওয়া যায়নি</p>
-        <Link to={shopPath(business.id)} className="mt-3 inline-block text-sm text-orange-600 font-bold">দোকানে ফিরুন</Link>
+        <Link to={shopPath(business)} className="mt-3 inline-block text-sm text-orange-600 font-bold">দোকানে ফিরুন</Link>
       </div>
     );
   }
@@ -40,12 +40,12 @@ export function ShopProduct() {
   const add = (buyNow = false) => {
     cart.addItem(product.id, qty);
     toast.success(buyNow ? 'চেকআউটে যাচ্ছেন' : 'কার্টে যোগ হয়েছে', { description: product.name });
-    if (buyNow) navigate(shopPath(business.id, 'checkout'));
+    if (buyNow) navigate(shopPath(business, 'checkout'));
   };
 
   return (
     <div className="space-y-8">
-      <Link to={shopPath(business.id)} className="inline-flex items-center gap-1 text-xs font-bold text-zinc-500 hover:text-orange-600">
+      <Link to={shopPath(business)} className="inline-flex items-center gap-1 text-xs font-bold text-zinc-500 hover:text-orange-600">
         <ChevronLeft className="w-4 h-4" /> সব পণ্য
       </Link>
 
@@ -164,7 +164,7 @@ export function ShopProduct() {
           <h2 className="font-black text-lg mb-3">আরও দেখুন</h2>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
             {related.map(item => (
-              <ShopProductCard key={item.id} businessId={business.id} product={item} />
+              <ShopProductCard key={item.id} business={business} product={item} />
             ))}
           </div>
         </section>

@@ -9,6 +9,20 @@ interface ApiErrorBody {
 
 export type PublicShopOrder = ReturnType<typeof sanitizePublicOrder>;
 
+export async function checkShopSlug(slug: string, exceptBusinessId = ''): Promise<{ ok: boolean; slug: string; error: string }> {
+  const params = new URLSearchParams({ slug });
+  if (exceptBusinessId) params.set('except', exceptBusinessId);
+  const response = await fetch(`/api/public/shop-slug?${params.toString()}`, {
+    headers: { Accept: 'application/json' },
+  });
+  const body = await response.json().catch(() => ({})) as { ok?: boolean; slug?: string; error?: string };
+  return {
+    ok: Boolean(body.ok),
+    slug: String(body.slug || slug),
+    error: String(body.error || (body.ok ? '' : 'লিংক নাম ব্যবহার করা যাবে না')),
+  };
+}
+
 export async function fetchShop(businessId: string): Promise<BusinessConfig | null> {
   const response = await fetch(`/api/shop/${encodeURIComponent(businessId)}`, {
     headers: { Accept: 'application/json' },

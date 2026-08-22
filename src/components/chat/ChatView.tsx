@@ -37,6 +37,7 @@ import {
 } from '../../lib/chatSession';
 import { takeRecentMessages } from '../../lib/chatRuntime';
 import { pickProductForImages, uniqueHttpUrls } from '../../lib/imageSend';
+import { shopPath } from '../../lib/storefront';
 
 const MAX_MESSAGE_LENGTH = 1_000;
 
@@ -407,7 +408,7 @@ export function ChatView() {
             </div>
             <div className="flex items-center gap-2">
               <Link
-                to={`/shop/${business.id}`}
+                to={shopPath(business)}
                 className="hidden xs:inline-flex h-10 items-center rounded-xl border border-white/10 bg-white/5 px-3 text-[11px] font-bold text-zinc-100 hover:bg-white/10"
               >
                 দোকান

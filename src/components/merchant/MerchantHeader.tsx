@@ -22,6 +22,7 @@ import { Badge } from '../ui/badge';
 import { BusinessConfig, UserProfile } from '../../types';
 import { toast } from 'sonner';
 import { Link } from 'react-router-dom';
+import { shopPath, shopPublicUrl } from '../../lib/storefront';
 
 interface MerchantHeaderProps {
   business: BusinessConfig;
@@ -46,7 +47,7 @@ export function MerchantHeader({
   const isAdmin = profile?.role === 'admin' || profile?.email === 'maraju924@gmail.com';
 
   const handleCopyChatLink = () => {
-    const url = `${window.location.origin}/shop/${business.id}`;
+    const url = shopPublicUrl(window.location.origin, business);
     navigator.clipboard.writeText(url);
     setCopied(true);
     toast.success('ওয়েবসাইট লিংক কপি হয়েছে!', {
@@ -174,7 +175,7 @@ export function MerchantHeader({
           </button>
 
           <button
-            onClick={() => window.open(`/shop/${business.id}`, '_blank')}
+            onClick={() => window.open(shopPath(business), '_blank')}
             className="sm:hidden w-9 h-9 rounded-2xl flex items-center justify-center bg-zinc-100 dark:bg-zinc-900 text-zinc-700 dark:text-zinc-300 native-ripple"
             title="ওয়েবসাইট প্রিভিউ"
           >

@@ -93,6 +93,8 @@ export interface BusinessConfig {
   id: string;
   ownerId: string;
   name: string;
+  /** Public store path: sell-kori.vercel.app/{slug} */
+  slug?: string;
   description?: string;
   phone?: string;
   address?: string;

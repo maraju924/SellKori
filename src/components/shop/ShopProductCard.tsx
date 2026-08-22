@@ -1,7 +1,7 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
 import { ShoppingBag } from 'lucide-react';
-import type { Product } from '../../types';
+import type { BusinessConfig, Product } from '../../types';
 import { productPath } from '../../lib/storefront';
 import { Button } from '../ui/button';
 import { ShopImage, ShopMoney, StockHint, productThumb } from './ShopPrimitives';
@@ -9,15 +9,15 @@ import { useShopCart } from './ShopCartContext';
 import { toast } from 'sonner';
 
 export function ShopProductCard({
-  businessId,
+  business,
   product,
 }: {
-  businessId: string;
+  business: BusinessConfig;
   product: Product;
   key?: React.Key;
 }) {
   const cart = useShopCart();
-  const href = productPath(businessId, product.id);
+  const href = productPath(business, product.id);
 
   const add = (event: React.MouseEvent) => {
     event.preventDefault();

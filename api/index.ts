@@ -42,6 +42,14 @@ import {
   sanitizeCart,
   sanitizePublicOrder,
 } from '../src/lib/storefront.js';
+import {
+  isReservedShopSlug,
+  isValidShopSlug,
+  nextShopSlugCandidate,
+  normalizeShopSlug,
+  publicShopSlug,
+  suggestedShopSlug,
+} from '../src/lib/storeSlug.js';
 
 export const maxDuration = 60;
 
@@ -613,6 +621,84 @@ async function loadBusinessById(businessId: string): Promise<{ id: string; data:
     }
   } catch (err) {
     console.warn('[loadBusinessById]', err);
+  }
+  return null;
+}
+
+async function queryBusinessBySlug(slug: string): Promise<{ id: string; data: any } | null> {
+  const clean = normalizeShopSlug(slug);
+  if (!clean) return null;
+  try {
+    if (adminDb) {
+      const snap = await adminDb.collection('businesses').where('slug', '==', clean).limit(1).get();
+      if (!snap.empty) return { id: snap.docs[0].id, data: snap.docs[0].data() };
+    } else if (db) {
+      const snap = await getDocs(query(collection(db, 'businesses'), where('slug', '==', clean), limit(1)));
+      if (!snap.empty) return { id: snap.docs[0].id, data: snap.docs[0].data() };
+    }
+  } catch (err) {
+    console.warn('[queryBusinessBySlug]', err);
+  }
+  return null;
+}
+
+async function isShopSlugTaken(slug: string, exceptBusinessId = ''): Promise<boolean> {
+  const found = await queryBusinessBySlug(slug);
+  if (!found) return false;
+  return found.id !== exceptBusinessId;
+}
+
+async function persistBusinessSlug(business: { id: string; data: any }, slug: string) {
+  const current = normalizeShopSlug(business.data?.slug);
+  if (current === slug) return;
+  try {
+    if (adminDb) {
+      await adminDb.collection('businesses').doc(business.id).set({ slug }, { merge: true });
+    } else if (db) {
+      await setDoc(doc(db, 'businesses', business.id), { slug }, { merge: true });
+    }
+    business.data = { ...business.data, slug };
+  } catch (err) {
+    console.warn('[persistBusinessSlug]', err);
+  }
+}
+
+async function ensureBusinessSlug(business: { id: string; data: any }): Promise<string> {
+  const existing = normalizeShopSlug(business.data?.slug);
+  if (isValidShopSlug(existing) && !(await isShopSlugTaken(existing, business.id))) {
+    return existing;
+  }
+  const base = suggestedShopSlug({
+    slug: business.data?.slug,
+    name: business.data?.name,
+    id: business.id,
+  });
+  let attempt = 1;
+  let candidate = nextShopSlugCandidate(base, attempt);
+  while (isReservedShopSlug(candidate) || await isShopSlugTaken(candidate, business.id)) {
+    attempt += 1;
+    candidate = nextShopSlugCandidate(base, attempt);
+    if (attempt > 40) {
+      candidate = nextShopSlugCandidate(`shop${business.id.replace(/[^a-z0-9]/gi, '').slice(-8)}`, 1);
+      break;
+    }
+  }
+  await persistBusinessSlug(business, candidate);
+  return candidate;
+}
+
+async function loadBusinessBySlugOrId(slugOrId: string): Promise<{ id: string; data: any } | null> {
+  const raw = String(slugOrId || '').trim();
+  if (!raw) return null;
+  const byId = await loadBusinessById(raw);
+  if (byId) {
+    await ensureBusinessSlug(byId);
+    return byId;
+  }
+  const bySlug = await queryBusinessBySlug(raw);
+  if (bySlug) {
+    await ensureBusinessSlug(bySlug);
+    return bySlug;
   }
   return null;
 }
@@ -2249,6 +2335,7 @@ function sanitizePublicBusiness(id: string, data: any) {
     plan: data.plan,
     verificationStatus: data.verificationStatus,
     facebookPixelId: String(data.facebookConfig?.pixelId || '').replace(/[^\w]/g, '').slice(0, 32),
+    slug: publicShopSlug({ id, slug: data.slug, name: data.name }),
   };
 }
 
@@ -2257,13 +2344,31 @@ async function handlePublicShopGet(req: any, res: any) {
   if (!businessId || businessId.length > 128 || /[\/\u0000-\u001f]/.test(businessId)) {
     return res.status(400).json({ error: 'Invalid business ID' });
   }
-  const business = await loadBusinessById(businessId);
+  const business = await loadBusinessBySlugOrId(businessId);
   if (!business || business.data?.status === 'suspended') {
     return res.status(404).json({ error: 'Store not found' });
   }
   res.setHeader('Cache-Control', 'public, max-age=60, stale-while-revalidate=300');
   return res.json(sanitizePublicBusiness(business.id, business.data));
 }
+
+app.get('/api/public/shop-slug', async (req, res) => {
+  const slug = normalizeShopSlug(String(req.query.slug || ''));
+  const except = String(req.query.except || '').trim();
+  if (!isValidShopSlug(slug)) {
+    return res.json({
+      ok: false,
+      slug,
+      error: isReservedShopSlug(slug) ? 'এই নাম ব্যবহার করা যাবে না' : 'ইংরেজি অক্ষর ও সংখ্যা দিয়ে লিংক নাম লিখুন',
+    });
+  }
+  const taken = await isShopSlugTaken(slug, except);
+  return res.json({
+    ok: !taken,
+    slug,
+    error: taken ? 'এই লিংক অন্য স্টোর ব্যবহার করছে' : '',
+  });
+});
 
 app.get('/api/chat/business/:businessId', handlePublicShopGet);
 app.get('/api/shop/:businessId', handlePublicShopGet);
@@ -2305,7 +2410,7 @@ app.post('/api/shop/:businessId/checkout', async (req, res) => {
   }
 
   try {
-    const business = await loadBusinessById(businessId);
+    const business = await loadBusinessBySlugOrId(businessId);
     if (!business || business.data?.status === 'suspended') {
       return res.status(404).json({ code: 'STORE_NOT_FOUND', error: 'স্টোরটি পাওয়া যায়নি।' });
     }
@@ -2421,7 +2526,7 @@ app.get('/api/shop/:businessId/orders', async (req, res) => {
   }
 
   try {
-    const business = await loadBusinessById(businessId);
+    const business = await loadBusinessBySlugOrId(businessId);
     if (!business || business.data?.status === 'suspended') {
       return res.status(404).json({ error: 'Store not found' });
     }

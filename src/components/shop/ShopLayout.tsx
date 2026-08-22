@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Link, NavLink, Outlet, useParams } from 'react-router-dom';
+import { Link, NavLink, Outlet, useLocation, useNavigate, useParams } from 'react-router-dom';
 import {
   Home,
   LayoutGrid,
@@ -17,6 +17,7 @@ import type { BusinessConfig } from '../../types';
 import { fetchShop } from '../../lib/shopApi';
 import { asProductList } from '../../lib/productCatalog';
 import { shopPath } from '../../lib/storefront';
+import { isReservedShopSlug, publicShopSlug } from '../../lib/storeSlug';
 import { ShopCartProvider, useShopCart } from './ShopCartContext';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
@@ -57,7 +58,7 @@ function ShopHeader({ business, search, setSearch }: {
   setSearch: (value: string) => void;
 }) {
   const { itemCount } = useShopCart();
-  const base = shopPath(business.id);
+  const base = shopPath(business);
 
   return (
     <header className="sticky top-0 z-40 bg-white/95 backdrop-blur-md border-b border-zinc-200">
@@ -96,7 +97,7 @@ function ShopHeader({ business, search, setSearch }: {
             </div>
           </form>
 
-          <Link to={shopPath(business.id, 'track')} className="hidden sm:flex">
+          <Link to={shopPath(business, 'track')} className="hidden sm:flex">
             <Button variant="ghost" className="h-10 rounded-xl text-xs font-bold">
               <PackageSearch className="w-4 h-4 mr-1.5" />
               ট্র্যাক
@@ -108,7 +109,7 @@ function ShopHeader({ business, search, setSearch }: {
               চ্যাট
             </Button>
           </Link>
-          <Link to={shopPath(business.id, 'cart')} className="relative">
+          <Link to={shopPath(business, 'cart')} className="relative">
             <Button className="h-10 rounded-xl bg-orange-600 hover:bg-orange-700 text-white text-xs font-bold px-3">
               <ShoppingBag className="w-4 h-4 sm:mr-1.5" />
               <span className="hidden sm:inline">কার্ট</span>
@@ -153,7 +154,7 @@ function ShopFooter({ business }: { business: BusinessConfig }) {
           </p>
         </div>
         <div className="space-y-2">
-          <Link to={shopPath(business.id, 'track')} className="block font-bold text-zinc-800 hover:text-orange-600">অর্ডার ট্র্যাক করুন</Link>
+          <Link to={shopPath(business, 'track')} className="block font-bold text-zinc-800 hover:text-orange-600">অর্ডার ট্র্যাক করুন</Link>
           <Link to={`/chat/${business.id}`} className="block font-bold text-zinc-800 hover:text-orange-600">এআই সেলস চ্যাট</Link>
           <p className="text-xs text-zinc-400 pt-2">পেমেন্ট: ক্যাশ অন ডেলিভারি</p>
         </div>
@@ -162,14 +163,14 @@ function ShopFooter({ business }: { business: BusinessConfig }) {
   );
 }
 
-function ShopMobileNav({ businessId }: { businessId: string }) {
+function ShopMobileNav({ business }: { business: BusinessConfig }) {
   const { itemCount } = useShopCart();
   const items = [
-    { to: shopPath(businessId), label: 'হোম', icon: Home, end: true },
-    { to: `${shopPath(businessId)}#products`, label: 'পণ্য', icon: LayoutGrid },
-    { to: shopPath(businessId, 'cart'), label: 'কার্ট', icon: ShoppingBag, badge: itemCount },
-    { to: shopPath(businessId, 'track'), label: 'ট্র্যাক', icon: PackageSearch },
-    { to: `/chat/${businessId}`, label: 'চ্যাট', icon: MessageCircle },
+    { to: shopPath(business), label: 'হোম', icon: Home, end: true },
+    { to: `${shopPath(business)}#products`, label: 'পণ্য', icon: LayoutGrid },
+    { to: shopPath(business, 'cart'), label: 'কার্ট', icon: ShoppingBag, badge: itemCount },
+    { to: shopPath(business, 'track'), label: 'ট্র্যাক', icon: PackageSearch },
+    { to: `/chat/${business.id}`, label: 'চ্যাট', icon: MessageCircle },
   ];
   return (
     <nav className="md:hidden fixed bottom-0 inset-x-0 z-40 bg-white/95 backdrop-blur-md border-t border-zinc-200 pb-safe">
@@ -213,35 +214,45 @@ function ShopFrame({ business }: { business: BusinessConfig }) {
         <Outlet context={ctx} />
       </main>
       <ShopFooter business={business} />
-      <ShopMobileNav businessId={business.id} />
+      <ShopMobileNav business={business} />
     </div>
   );
 }
 
 export function ShopLayout() {
-  const { businessId } = useParams<{ businessId: string }>();
+  const { storeSlug } = useParams<{ storeSlug: string }>();
+  const location = useLocation();
+  const navigate = useNavigate();
   const [business, setBusiness] = useState<BusinessConfig | null>(null);
   const [loading, setLoading] = useState(true);
   const [missing, setMissing] = useState(false);
 
   useEffect(() => {
-    if (!businessId) {
+    if (!storeSlug || isReservedShopSlug(storeSlug)) {
       setMissing(true);
       setLoading(false);
       return;
     }
     let cancelled = false;
-    fetchShop(businessId)
+    setLoading(true);
+    setMissing(false);
+    fetchShop(storeSlug)
       .then((shop) => {
         if (cancelled) return;
         if (!shop) {
           setMissing(true);
           return;
         }
-        setBusiness({ ...shop, products: asProductList(shop.products) });
+        const resolved = { ...shop, products: asProductList(shop.products) };
+        setBusiness(resolved);
         document.title = `${shop.name} — অনলাইন শপ`;
         const pixelId = String(shop.facebookPixelId || shop.facebookConfig?.pixelId || '');
         if (pixelId) injectPixel(pixelId);
+        const canonical = publicShopSlug(resolved);
+        if (canonical && storeSlug !== canonical) {
+          const rest = location.pathname.replace(/^\/[^/]+/, '') || '';
+          navigate(`${shopPath(resolved)}${rest}${location.search}`, { replace: true });
+        }
       })
       .catch(() => {
         if (!cancelled) {
@@ -255,7 +266,7 @@ export function ShopLayout() {
     return () => {
       cancelled = true;
     };
-  }, [businessId]);
+  }, [storeSlug]);
 
   if (loading) {
     return (
@@ -268,7 +279,7 @@ export function ShopLayout() {
     );
   }
 
-  if (missing || !business || !businessId) {
+  if (missing || !business || !storeSlug) {
     return (
       <div className="min-h-screen bg-[#f7f5f2] flex flex-col items-center justify-center px-6 text-center">
         <Store className="w-10 h-10 text-zinc-400" />
@@ -280,7 +291,7 @@ export function ShopLayout() {
   }
 
   return (
-    <ShopCartProvider businessId={businessId}>
+    <ShopCartProvider businessId={business.id}>
       <ShopFrame business={business} />
     </ShopCartProvider>
   );

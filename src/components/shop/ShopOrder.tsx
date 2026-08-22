@@ -38,12 +38,12 @@ export function ShopOrder() {
         )}
       </div>
       <div className="flex flex-col sm:flex-row gap-2">
-        <Link to={shopPath(business.id, 'track')} className="flex-1">
+        <Link to={shopPath(business, 'track')} className="flex-1">
           <Button className="w-full h-11 rounded-xl bg-zinc-900 text-white font-bold">
             <PackageSearch className="w-4 h-4 mr-1.5" /> অর্ডার ট্র্যাক
           </Button>
         </Link>
-        <Link to={shopPath(business.id)} className="flex-1">
+        <Link to={shopPath(business)} className="flex-1">
           <Button variant="outline" className="w-full h-11 rounded-xl font-bold">আরও কিনুন</Button>
         </Link>
       </div>

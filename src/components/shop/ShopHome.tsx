@@ -70,7 +70,7 @@ export function ShopHome() {
       ) : (
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3 sm:gap-4">
           {visible.map(product => (
-            <ShopProductCard key={product.id} businessId={business.id} product={product} />
+            <ShopProductCard key={product.id} business={business} product={product} />
           ))}
         </div>
       )}

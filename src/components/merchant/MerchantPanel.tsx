@@ -47,6 +47,7 @@ import { MerchantFeatures } from './MerchantFeatures';
 import { MerchantInfo } from './MerchantInfo';
 import { toast } from 'sonner';
 import { parseJsonResponse } from '../../lib/safeJson';
+import { suggestedShopSlug } from '../../lib/storeSlug';
 
 interface MerchantPanelProps {
   user: FirebaseUser | null;
@@ -140,13 +141,20 @@ export function MerchantPanel({ user, profile }: MerchantPanelProps) {
         // Always use the Firestore document ID for writes. Using `data.id`
         // when it differs from the doc path makes updateDoc a no-op / not-found
         // — product edits look like they save but never persist.
-        setBusiness({ ...data, id: docSnap.id });
+        const resolved = { ...data, id: docSnap.id };
+        if (!resolved.slug) {
+          const slug = suggestedShopSlug(resolved);
+          resolved.slug = slug;
+          setDoc(doc(db, 'businesses', docSnap.id), { slug }, { merge: true }).catch(() => {});
+        }
+        setBusiness(resolved);
       } else {
         const newId = `biz-${Date.now()}`;
         const initialConfig: BusinessConfig = {
           id: newId,
           ownerId: user.uid,
           name: "আমার অনলাইন শপ",
+          slug: suggestedShopSlug({ name: 'আমার অনলাইন শপ', id: newId }),
           description: "একটি বিশ্বস্ত ও আধুনিক অনলাইন শপ।",
           walletBalance: 0,
           tokenBalance: 100000,

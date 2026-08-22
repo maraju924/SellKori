@@ -37,7 +37,7 @@ export function ShopCheckout() {
     return (
       <div className="bg-white border border-zinc-200 rounded-3xl p-10 text-center">
         <p className="font-black">চেকআউটের আগে কার্টে পণ্য রাখুন</p>
-        <Link to={shopPath(business.id)} className="mt-3 inline-block text-sm font-bold text-orange-600">দোকানে যান</Link>
+        <Link to={shopPath(business)} className="mt-3 inline-block text-sm font-bold text-orange-600">দোকানে যান</Link>
       </div>
     );
   }
@@ -60,7 +60,7 @@ export function ShopCheckout() {
       });
       cart.clear();
       toast.success('অর্ডার কনফার্ম হয়েছে');
-      navigate(shopPath(business.id, `order/${encodeURIComponent(result.order.id)}`), {
+      navigate(shopPath(business, `order/${encodeURIComponent(result.order.id)}`), {
         state: { order: result.order },
       });
     } catch (error: any) {

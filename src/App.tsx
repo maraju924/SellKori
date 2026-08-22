@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { BrowserRouter as Router, Routes, Route, Link, useNavigate, Navigate, useSearchParams, useLocation } from 'react-router-dom';
+import { BrowserRouter as Router, Routes, Route, Link, useNavigate, Navigate, useSearchParams, useLocation, useParams } from 'react-router-dom';
 import { User as FirebaseUser, onAuthStateChanged, signOut, GoogleAuthProvider, signInWithPopup } from 'firebase/auth';
 import { doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore';
 import { Zap, ShieldCheck, LayoutDashboard, LogOut } from 'lucide-react';
@@ -24,13 +24,56 @@ import { ShopCart } from './components/shop/ShopCart';
 import { ShopCheckout } from './components/shop/ShopCheckout';
 import { ShopOrder } from './components/shop/ShopOrder';
 import { ShopTrack } from './components/shop/ShopTrack';
+import { fetchShop } from './lib/shopApi';
+import { shopPath } from './lib/storefront';
+
+function isPlatformPath(pathname: string) {
+  return (
+    pathname.startsWith('/dashboard')
+    || pathname.startsWith('/admin')
+    || pathname.startsWith('/login')
+  );
+}
+
+function ShopLegacyRedirect() {
+  const { storeSlug } = useParams<{ storeSlug: string }>();
+  const location = useLocation();
+  const [target, setTarget] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!storeSlug) {
+      setTarget('/');
+      return;
+    }
+    let cancelled = false;
+    fetchShop(storeSlug)
+      .then((shop) => {
+        if (cancelled) return;
+        if (!shop) {
+          setTarget('/');
+          return;
+        }
+        const rest = location.pathname.replace(/^\/shop\/[^/]+/, '') || '';
+        setTarget(`${shopPath(shop)}${rest}${location.search}`);
+      })
+      .catch(() => {
+        if (!cancelled) setTarget('/');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [storeSlug, location.pathname, location.search]);
+
+  if (!target) return null;
+  return <Navigate to={target} replace />;
+}
 
 function GlobalBanner() {
   const location = useLocation();
   const [announcement, setAnnouncement] = useState<string | null>(null);
 
   useEffect(() => {
-    if (location.pathname === '/' || location.pathname.startsWith('/shop') || location.pathname.startsWith('/chat')) return;
+    if (!isPlatformPath(location.pathname)) return;
     const controller = new AbortController();
     fetch('/api/public/config', { signal: controller.signal })
       .then((response) => (response.ok ? response.json() : null))
@@ -41,7 +84,7 @@ function GlobalBanner() {
     return () => controller.abort();
   }, [location.pathname]);
 
-  if (location.pathname === '/' || location.pathname.startsWith('/shop') || location.pathname.startsWith('/chat') || !announcement) return null;
+  if (!isPlatformPath(location.pathname) || !announcement) return null;
 
   return (
     <div className="bg-slate-900 text-white py-2 px-4 text-center text-xs tracking-wide sticky top-0 z-[1000]">
@@ -257,15 +300,7 @@ export default function App() {
           {/* Public Customer Chat Room */}
           <Route path="/chat/:businessId" element={<ChatView />} />
 
-          {/* Public merchant storefront */}
-          <Route path="/shop/:businessId" element={<ShopLayout />}>
-            <Route index element={<ShopHome />} />
-            <Route path="p/:productId" element={<ShopProduct />} />
-            <Route path="cart" element={<ShopCart />} />
-            <Route path="checkout" element={<ShopCheckout />} />
-            <Route path="order/:orderId" element={<ShopOrder />} />
-            <Route path="track" element={<ShopTrack />} />
-          </Route>
+          <Route path="/shop/:storeSlug/*" element={<ShopLegacyRedirect />} />
 
           {/* Merchant Control Center */}
           <Route
@@ -284,6 +319,16 @@ export default function App() {
               )
             }
           />
+
+          {/* Public merchant storefront: sell-kori.vercel.app/myshop */}
+          <Route path="/:storeSlug" element={<ShopLayout />}>
+            <Route index element={<ShopHome />} />
+            <Route path="p/:productId" element={<ShopProduct />} />
+            <Route path="cart" element={<ShopCart />} />
+            <Route path="checkout" element={<ShopCheckout />} />
+            <Route path="order/:orderId" element={<ShopOrder />} />
+            <Route path="track" element={<ShopTrack />} />
+          </Route>
 
           {/* Catch-all Fallback */}
           <Route path="*" element={<Navigate to="/" replace />} />

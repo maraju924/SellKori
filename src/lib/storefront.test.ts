@@ -224,7 +224,8 @@ function testStockAndLabels() {
 }
 
 function testHelpers() {
-  assert.equal(shopPath('abc', 'cart'), '/shop/abc/cart');
+  assert.equal(shopPath('myshop', 'cart'), '/myshop/cart');
+  assert.equal(shopPath({ slug: 'myshop', id: 'biz-1' }, 'checkout'), '/myshop/checkout');
   assert.equal(addressLooksInsideDhaka('গুলশান ২'), true);
   assert.equal(addressLooksInsideDhaka('সিলেট সদর'), false);
 }

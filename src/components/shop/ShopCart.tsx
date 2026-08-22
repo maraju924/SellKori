@@ -18,7 +18,7 @@ export function ShopCart() {
       <div className="bg-white border border-zinc-200 rounded-3xl p-10 text-center space-y-3">
         <p className="text-lg font-black">কার্ট খালি</p>
         <p className="text-sm text-zinc-500">পণ্য দেখে কার্টে রাখুন, তারপর ক্যাশ অন ডেলিভারিতে অর্ডার করুন।</p>
-        <Link to={shopPath(business.id)}>
+        <Link to={shopPath(business)}>
           <Button className="bg-orange-600 hover:bg-orange-700 text-white rounded-xl font-bold">কেনাকাটা শুরু করুন</Button>
         </Link>
       </div>
@@ -33,7 +33,7 @@ export function ShopCart() {
           <div key={line.product.id} className="bg-white border border-zinc-200 rounded-2xl p-3.5 flex gap-3">
             <ShopImage src={line.product.images?.[0]} alt={line.product.name} className="w-20 h-20 rounded-xl shrink-0" />
             <div className="min-w-0 flex-1">
-              <Link to={shopPath(business.id, `p/${line.product.id}`)} className="font-bold text-sm line-clamp-2 hover:text-orange-600">
+              <Link to={shopPath(business, `p/${line.product.id}`)} className="font-bold text-sm line-clamp-2 hover:text-orange-600">
                 {line.product.name}
               </Link>
               <ShopMoney amount={line.unitPrice} className="block text-xs text-orange-600 font-bold mt-1" />
@@ -65,7 +65,7 @@ export function ShopCart() {
         </div>
         <p className="text-[11px] text-zinc-400">ঠিকানা অনুযায়ী চার্জ চেকআউটে চূড়ান্ত হবে। ঢাকার বাইরে ৳{business.courierConfig?.deliveryChargeOutsideDhaka || 130}।</p>
         <Button
-          onClick={() => navigate(shopPath(business.id, 'checkout'))}
+          onClick={() => navigate(shopPath(business, 'checkout'))}
           className="w-full h-12 rounded-xl bg-orange-600 hover:bg-orange-700 text-white font-black"
         >
           চেকআউটে যান
