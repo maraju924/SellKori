@@ -194,17 +194,11 @@ function sendJson(res: any, status: number, body: Record<string, unknown>, cache
 }
 
 function shopAdminDbs(): any[] {
-  const out: any[] = [];
-  if (adminDb) out.push(adminDb);
-  if (defaultAdminDb && defaultAdminDb !== adminDb) out.push(defaultAdminDb);
-  return out;
+  return adminDb ? [adminDb] : [];
 }
 
 function shopClientDbs(): any[] {
-  const out: any[] = [];
-  if (db) out.push(db);
-  if (defaultClientDb && defaultClientDb !== db) out.push(defaultClientDb);
-  return out;
+  return db ? [db] : [];
 }
 
 async function loadBusinessById(businessId: string): Promise<{ id: string; data: any } | null> {

@@ -65,7 +65,7 @@ export function listenQueryAcrossPanelDbs<T extends { id?: string }>(
       setPanelWriteDb(dbs[richest]);
     }
     onChange(result.docs.map((row) => row.data), {
-      error: result.allFailed ? result.error : null,
+      error: result.error,
       allFailed: result.allFailed,
     });
   };

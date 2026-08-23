@@ -39,17 +39,16 @@ export const namedDb = firestoreDatabaseId !== '(default)'
   ? getFirestore(app, firestoreDatabaseId)
   : null;
 
-// Primary client DB stays the configured named database (AI Studio).
-// This is a live binding so panels can point writes at "(default)" when
-// that's where the real documents actually live.
+// This project’s data lives on the configured AI Studio database.
+// "(default)" is not created here — opening it made admin/merchant
+// listeners fail or look empty even when the named DB still had quota.
 export let db = namedDb || defaultDb;
 export const auth = getAuth(app);
 export const storage = getStorage(app);
 
-/** Panels must read both DBs: server writes used to fall back to "(default)". */
+/** Only the configured database. Do not also attach a missing "(default)". */
 export function getPanelFirestoreDbs(): Firestore[] {
-  if (namedDb) return [namedDb, defaultDb];
-  return [defaultDb];
+  return [db];
 }
 
 export function firestoreDatabaseLabel(instance: Firestore): string {

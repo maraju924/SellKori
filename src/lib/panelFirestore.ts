@@ -25,6 +25,13 @@ export function firestoreErrorMessage(err: unknown): string {
   if (code.includes('unavailable') || message.includes('unavailable')) {
     return 'Firestore unavailable: ডাটাবেসের সাথে সংযোগ হচ্ছে না।';
   }
+  if (
+    code.includes('resource-exhausted')
+    || message.includes('RESOURCE_EXHAUSTED')
+    || message.toLowerCase().includes('quota')
+  ) {
+    return 'Firestore quota: নামড ডাটাবেসের ফ্রি রিড শেষ বা ব্লক। কনসোলের প্রজেক্ট ওভারভিউ কার্ড নয়, এই ডাটাবেসের Usage দেখুন।';
+  }
   return message;
 }
 
@@ -88,12 +95,13 @@ export function reconcileMultiDbSnapshots<T>(
     return { ready: false, docs: [], error: null, allFailed: false };
   }
 
+  const firstError = errorStates[0]?.status === 'error' ? errorStates[0].error : null;
   return {
     ready: true,
     docs,
-    error: errorStates.length === states.length && errorStates[0]?.status === 'error'
-      ? errorStates[0].error
-      : null,
+    // A missing "(default)" error used to hide behind an empty successful
+    // snapshot, so admin showed zeros with no banner.
+    error: docs.length === 0 ? firstError : null,
     allFailed: errorStates.length === states.length && states.length > 0,
   };
 }

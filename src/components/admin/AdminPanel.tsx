@@ -183,6 +183,6 @@ function applyAdminSnapshots(
   }
 
   setMerchants(result.docs.map((row) => row.data));
-  setLoadError(result.allFailed ? result.error : null);
+  setLoadError(result.error);
   setLoading(false);
 }
