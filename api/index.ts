@@ -2013,6 +2013,9 @@ interface CapiEventOptions {
   allowRepeat?: boolean;
   alreadySentToday?: Record<string, string>;
   includeTestEventCode?: boolean;
+  adId?: string;
+  adRef?: string;
+  adSource?: string;
 }
 
 function sleep(ms: number) {
@@ -2072,17 +2075,7 @@ async function sendCapiEvent(businessData: any, eventName: string, opts: CapiEve
             ? `CAPI Purchase ইভেন্ট পাঠানো হয়েছে (৳${opts.value || 0}) — অ্যাড অপটিমাইজেশনে যুক্ত হলো।`
             : `CAPI ${event} ইভেন্ট পিক্সেলে পাঠানো হয়েছে।`;
           logActivity(opts.bizId, 'CAPI_EVENT', detail, 'success', opts.ownerId).catch(() => {});
-          recordCapiDashboardEvent({
-            businessId: opts.bizId,
-            ownerId: opts.ownerId,
-            eventName: event,
-            eventId: built.eventId,
-            value: opts.value,
-            contentName: opts.contentName,
-            orderId: opts.orderId,
-            psid,
-            status: 'sent',
-          }).catch(() => {});
+          recordCapiDashboardEvent(dashboardEventFromOpts(opts, event, built.eventId, 'sent')).catch(() => {});
         }
         return { ok: true };
       } catch (err: any) {
@@ -2098,17 +2091,7 @@ async function sendCapiEvent(businessData: any, eventName: string, opts: CapiEve
     console.error('[CAPI Error]', lastError?.response?.data || lastError);
     if (opts.bizId) {
       logActivity(opts.bizId, 'CAPI_EVENT', `CAPI ${event} পাঠানো যায়নি: ${errMsg}`, 'error', opts.ownerId).catch(() => {});
-      recordCapiDashboardEvent({
-        businessId: opts.bizId,
-        ownerId: opts.ownerId,
-        eventName: event,
-        eventId: `${event}_failed_${Date.now()}`,
-        value: opts.value,
-        contentName: opts.contentName,
-        orderId: opts.orderId,
-        psid,
-        status: 'failed',
-      }).catch(() => {});
+      recordCapiDashboardEvent(dashboardEventFromOpts(opts, event, `${event}_failed_${Date.now()}`, 'failed')).catch(() => {});
     }
     return { ok: false, skipped: 'request_failed' };
   } catch (err: any) {
@@ -2120,6 +2103,34 @@ async function sendCapiEvent(businessData: any, eventName: string, opts: CapiEve
   }
 }
 
+function dashboardEventFromOpts(
+  opts: CapiEventOptions,
+  eventName: string,
+  eventId: string,
+  status: 'sent' | 'failed',
+) {
+  return {
+    businessId: String(opts.bizId || ''),
+    ownerId: opts.ownerId,
+    eventName,
+    eventId,
+    value: opts.value,
+    contentName: opts.contentName,
+    contentId: opts.contentIds?.[0],
+    orderId: opts.orderId,
+    psid: opts.psid,
+    pageId: opts.pageId,
+    quantity: opts.quantity,
+    hasPhone: Boolean(String(opts.phone || '').trim()),
+    hasName: Boolean(String(opts.name || '').trim()),
+    hasClid: Boolean(String(opts.ctwaClid || '').trim()),
+    adId: opts.adId,
+    adRef: opts.adRef,
+    adSource: opts.adSource,
+    status,
+  };
+}
+
 async function recordCapiDashboardEvent(input: {
   businessId: string;
   ownerId?: string;
@@ -2127,8 +2138,17 @@ async function recordCapiDashboardEvent(input: {
   eventId?: string;
   value?: number;
   contentName?: string;
+  contentId?: string;
   orderId?: string;
   psid?: string;
+  pageId?: string;
+  quantity?: number;
+  hasPhone?: boolean;
+  hasName?: boolean;
+  hasClid?: boolean;
+  adId?: string;
+  adRef?: string;
+  adSource?: string;
   status: 'sent' | 'failed';
 }) {
   const bizId = String(input.businessId || '').trim();
@@ -2141,8 +2161,17 @@ async function recordCapiDashboardEvent(input: {
     value: typeof input.value === 'number' && input.value > 0 ? input.value : 0,
     currency: 'BDT',
     contentName: String(input.contentName || '').slice(0, 120),
+    contentId: String(input.contentId || ''),
     orderId: String(input.orderId || ''),
     psidTail: String(input.psid || '').slice(-6),
+    pageId: String(input.pageId || ''),
+    quantity: Number(input.quantity || 0) || 0,
+    hasPhone: Boolean(input.hasPhone),
+    hasName: Boolean(input.hasName),
+    hasClid: Boolean(input.hasClid),
+    adId: String(input.adId || ''),
+    adRef: String(input.adRef || ''),
+    adSource: String(input.adSource || '').slice(0, 120),
     source: 'server',
     channel: 'messenger',
     status: input.status,
@@ -2287,6 +2316,9 @@ async function sendMessengerPurchaseForOrder(
     quantity: qty,
     itemPrice: Number(order.unitPrice) || 0,
     ctwaClid: match.ctwaClid,
+    adId: order.adId,
+    adRef: order.adRef,
+    adSource: order.adSource,
     bizId,
     ownerId: businessData.ownerId,
     allowRepeat: true,
@@ -3317,6 +3349,9 @@ async function handleMessengerWebhookPost(req: any, res: any) {
                 pageId: cleanPageId,
                 ctwaClid: referralInfo.ctwaClid,
                 contentName: referralProduct || referralInfo.adTitle || undefined,
+                adId: referralInfo.adId,
+                adRef: referralInfo.ref,
+                adSource: referralInfo.adTitle || referralInfo.ref || referralInfo.adId,
                 bizId: bizId!,
                 ownerId,
                 alreadySentToday: capiFunnelAt,
@@ -3810,6 +3845,9 @@ ${merchantCustomBlock}`;
                     name: nextLead.name || facebookName,
                     ctwaClid: savedAcquisition?.ctwaClid || referralInfo?.ctwaClid,
                     contentName: aiRes?.product_name || nextLead.product_name || acqProduct || undefined,
+                    adId: String(acqForPrompt?.adId || ''),
+                    adRef: String(acqForPrompt?.ref || ''),
+                    adSource: acqLabel || '',
                     bizId: bizId!,
                     ownerId,
                     alreadySentToday: capiFunnelAt,
@@ -3921,6 +3959,9 @@ ${merchantCustomBlock}`;
                       quantity: qty,
                       itemPrice: unitPrice,
                       ctwaClid: savedAcquisition?.ctwaClid || referralInfo?.ctwaClid,
+                      adId: String(acqForPrompt?.adId || ''),
+                      adRef: String(acqForPrompt?.ref || ''),
+                      adSource: acqLabel || '',
                       bizId: bizId!,
                       ownerId,
                       allowRepeat: true,
