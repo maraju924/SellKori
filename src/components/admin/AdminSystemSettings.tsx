@@ -158,6 +158,7 @@ export function AdminSystemSettings() {
         setDoc(doc(db, 'system_config', 'public'), publicPayload, { merge: true }),
         setDoc(doc(db, 'system', 'settings'), secretPayload, { merge: true }),
       ]);
+      await fetch('/api/ai/pool/reload', { method: 'POST' }).catch(() => {});
       toast.success('সিস্টেম ও জেমিনি এআই সেটিংস সফলভাবে সংরক্ষিত হয়েছে!');
     } catch (e) {
       console.error(e);
@@ -181,7 +182,7 @@ export function AdminSystemSettings() {
             </Badge>
           </div>
           <p className="text-xs text-zinc-400 mt-1">
-            প্ল্যাটফর্মের গ্লোবাল Gemini API Key পরিবর্তন, মডেল সিলেক্ট, রেসপন্স প্যারামিটার এবং রিয়েল-টাইম টেস্ট করুন।
+            প্ল্যাটফর্মের গ্লোবাল Gemini API Key, মডেল এবং রেসপন্স প্যারামিটার সেট করুন। এই কী লিমিট শেষ হলে API পুল স্বয়ংক্রিয়ভাবে চালু হয়।
           </p>
         </div>
 
@@ -204,7 +205,7 @@ export function AdminSystemSettings() {
             </div>
             <div>
               <h3 className="font-black text-base text-white">গ্লোবাল জেমিনি এআই ইঞ্জিন কনফিগারেশন</h3>
-              <p className="text-xs text-zinc-400">এই কী এবং মডেল সকল মার্চেন্টের পাবলিক চ্যাট ও মেসেঞ্জারে ডিফল্ট হিসেবে কাজ করবে</p>
+              <p className="text-xs text-zinc-400">এই কী প্রথমে ব্যবহৃত হয়; লিমিট শেষ হলে API পুল চালু হয়। নিচের মডেল পুলের সব Gemini কী-তেও একই থাকবে।</p>
             </div>
           </div>
 

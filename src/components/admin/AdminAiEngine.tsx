@@ -22,7 +22,7 @@ import { getDocAcrossPanelDbs } from '../../lib/panelDb';
 import { doc, setDoc } from 'firebase/firestore';
 import { toast } from 'sonner';
 import { parseJsonResponse } from '../../lib/safeJson';
-import { buildAiPoolPersistPayload } from '../../lib/aiPool';
+import { buildAiPoolPersistPayload, resolveSystemGeminiModel } from '../../lib/aiPool';
 
 interface PooledKey {
   key: string;
@@ -43,7 +43,17 @@ export function AdminAiEngine() {
   const [isSaving, setIsSaving] = useState(false);
   const [testingIdx, setTestingIdx] = useState<number | null>(null);
   const [testResults, setTestResults] = useState<Record<number, { success: boolean; message: string }>>({});
-  const [serverStatus, setServerStatus] = useState<{ enabledCount: number; firestoreOk: boolean; adminDbReady: boolean; labels: string[] } | null>(null);
+  const [serverStatus, setServerStatus] = useState<{
+    enabledCount: number;
+    firestoreOk: boolean;
+    adminDbReady: boolean;
+    labels: string[];
+    geminiModel?: string;
+    hasDefaultKey?: boolean;
+    defaultKeyLabel?: string;
+    poolEnabledCount?: number;
+  } | null>(null);
+  const [geminiModel, setGeminiModel] = useState('gemini-3.7-flash');
 
   const refreshServerStatus = async () => {
     try {
@@ -55,7 +65,12 @@ export function AdminAiEngine() {
           firestoreOk: Boolean(data.firestoreOk),
           adminDbReady: Boolean(data.adminDbReady),
           labels: Array.isArray(data.labels) ? data.labels.map((item: unknown) => String(item)) : [],
+          geminiModel: data.geminiModel ? String(data.geminiModel) : undefined,
+          hasDefaultKey: Boolean(data.hasDefaultKey),
+          defaultKeyLabel: data.defaultKeyLabel ? String(data.defaultKeyLabel) : undefined,
+          poolEnabledCount: Number(data.poolEnabledCount || 0),
         });
+        if (data.geminiModel) setGeminiModel(resolveSystemGeminiModel(data.geminiModel));
       }
     } catch {
       setServerStatus(null);
@@ -79,6 +94,7 @@ export function AdminAiEngine() {
           if (d.openRouterModel) setOpenRouterModel(d.openRouterModel);
           if (d.openAiKey) setOpenAiKey(d.openAiKey);
           if (d.openAiModel) setOpenAiModel(d.openAiModel);
+          if (d.defaultAiModel) setGeminiModel(resolveSystemGeminiModel(d.defaultAiModel));
         }
         await refreshServerStatus();
       } catch (e) {
@@ -150,7 +166,7 @@ export function AdminAiEngine() {
       const res = await fetch('/api/ai/test', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ apiKey: geminiKeys[idx].key })
+        body: JSON.stringify({ apiKey: geminiKeys[idx].key, model: geminiModel })
       });
       const data = await parseJsonResponse(res);
       if (res.ok && data.success) {
@@ -203,7 +219,7 @@ export function AdminAiEngine() {
             <Badge className="bg-emerald-950/60 text-emerald-300 border-none font-bold text-xs">Auto Failover</Badge>
           </div>
           <p className="text-xs text-zinc-500 mt-1">
-            একাধিক Gemini কী চেইন করুন — একটার ফ্রি লিমিট শেষ হলে পরেরটা স্বয়ংক্রিয়ভাবে চলবে। সব Gemini ব্যর্থ হলে OpenRouter, তারপর OpenAI।
+            গ্লোবাল ডিফল্ট কী আগে চলে। তার কোটা/লিমিট শেষ হলে এই পুলের কীগুলো স্বয়ংক্রিয়ভাবে চালু হয়। Gemini মডেল সবসময় গ্লোবাল ইঞ্জিনের সিলেকশন।
           </p>
           {serverStatus && (
             <p className={`text-[11px] mt-2 font-bold ${serverStatus.firestoreOk ? 'text-emerald-400' : 'text-amber-400'}`}>
@@ -225,19 +241,24 @@ export function AdminAiEngine() {
 
       {/* Gemini Key Pool */}
       <div className="bg-zinc-900 border border-zinc-800 rounded-3xl p-6 space-y-4">
-        <div className="flex items-center gap-2.5 pb-3 border-b border-zinc-800">
-          <div className="w-10 h-10 rounded-2xl bg-blue-950/60 text-blue-400 flex items-center justify-center">
-            <Layers className="w-5 h-5" />
+        <div className="flex items-start justify-between gap-3 pb-3 border-b border-zinc-800">
+          <div className="flex items-center gap-2.5">
+            <div className="w-10 h-10 rounded-2xl bg-blue-950/60 text-blue-400 flex items-center justify-center">
+              <Layers className="w-5 h-5" />
+            </div>
+            <div>
+              <h3 className="font-black text-sm text-white">Gemini ব্যাকআপ কী পুল ({geminiKeys.length} টি)</h3>
+              <p className="text-[11px] text-zinc-500">ডিফল্ট কী লিমিটে আটকে গেলে উপরের কী আগে ব্যবহৃত হয় — কোটায় ১৫ মিনিট, ভুল কী-তে ৬ ঘণ্টা কুলডাউন</p>
+            </div>
           </div>
-          <div>
-            <h3 className="font-black text-sm text-white">Gemini কী পুল ({geminiKeys.length} টি)</h3>
-            <p className="text-[11px] text-zinc-500">উপরের কী আগে ব্যবহৃত হয় — লিমিট/এররে পরেরটায় রোটেট করে (কোটা হিটে ১৫ মিনিট, ভুল কী-তে ৬ ঘণ্টা কুলডাউন)</p>
-          </div>
+          <Badge className="bg-orange-950/80 text-orange-300 border border-orange-800/60 font-mono text-[10px] font-bold shrink-0">
+            মডেল: {geminiModel}
+          </Badge>
         </div>
 
         {geminiKeys.length === 0 && (
           <p className="text-[11px] text-zinc-500 bg-zinc-800/40 rounded-2xl p-3 border border-zinc-800">
-            এখনো কোনো কী নেই। ৫-৬টি ফ্রি Gemini কী যোগ করুন — নিজের ব্যবহার সম্পূর্ণ ফ্রি রাখতে পারবেন।
+            এখনো কোনো ব্যাকআপ কী নেই। গ্লোবাল ডিফল্ট কী লিমিট শেষ হলে চালু রাখতে ৫-৬টি ফ্রি Gemini কী যোগ করুন।
           </p>
         )}
 
@@ -364,9 +385,9 @@ export function AdminAiEngine() {
 
       <div className="bg-zinc-900 border border-zinc-800 rounded-3xl p-5 text-[11px] text-zinc-400 leading-relaxed space-y-1.5">
         <p className="font-black text-zinc-200 flex items-center gap-1.5"><Cpu className="w-3.5 h-3.5 text-blue-400" /> ফেইলওভার যেভাবে কাজ করে</p>
-        <p>১. তালিকার প্রথম সক্রিয় Gemini কী দিয়ে উত্তর তৈরি হয়। কোটা (429) শেষ হলে সেই কী ১৫ মিনিটের জন্য বিশ্রামে যায়, পরের কী সাথে সাথে দায়িত্ব নেয় — কাস্টমার কিছুই টের পায় না।</p>
-        <p>২. ভুল/বাতিল কী ৬ ঘণ্টার কুলডাউনে যায়, তাই একটা মরা কী বারবার সময় নষ্ট করে না।</p>
-        <p>৩. সব Gemini কী ব্যর্থ হলে OpenRouter, তারপর OpenAI দিয়ে উত্তর যায় (ছবি/ভয়েস তখন টেক্সট-অনলি হয়)।</p>
+        <p>১. গ্লোবাল জেমিনি ইঞ্জিনের ডিফল্ট API কী দিয়ে উত্তর তৈরি হয়। সেই কীর কোটা (429) শেষ হলে ১৫ মিনিট বিশ্রামে যায়, সাথে সাথে পুলের প্রথম সক্রিয় কী দায়িত্ব নেয় — কাস্টমার কিছুই টের পায় না।</p>
+        <p>২. পুলের প্রতিটি Gemini কী একই গ্লোবাল মডেল ব্যবহার করে (সিস্টেম সেটিংসে যেটা সিলেক্ট করা আছে)। ভুল/বাতিল কী ৬ ঘণ্টার কুলডাউনে যায়।</p>
+        <p>৩. ডিফল্ট ও সব পুল কী ব্যর্থ হলে OpenRouter, তারপর OpenAI দিয়ে উত্তর যায় (ছবি/ভয়েস তখন টেক্সট-অনলি হয়)।</p>
         <p>৪. ৫-৬টি ফ্রি Gemini কী দিলে দিনে কয়েক হাজার মেসেজ সম্পূর্ণ ফ্রি-তে চালানো যায়।</p>
       </div>
     </div>

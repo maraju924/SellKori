@@ -225,8 +225,9 @@ import {
 import {
   aiPoolHasProvider,
   firstEnabledGeminiKey,
-  mergeGeminiKeyCandidates,
+  geminiFailoverCandidates,
   parseAiPoolFromSettings,
+  resolveSystemGeminiModel,
   type AiPool,
   type PooledGeminiKey,
 } from '../src/lib/aiPool.js';
@@ -1169,10 +1170,10 @@ async function handlePageFeedComments(entry: any, pathBizId?: string) {
 
 // Helper to get effective Gemini Config (Admin DB or Environment)
 async function getEffectiveGeminiConfig() {
-  let model = 'gemini-3.7-flash';
+  const pool = await getAiPool();
+  let model = pool.geminiModel;
   let temperature = 0.4;
   let maxTokens = 800;
-  const pool = await getAiPool();
 
   try {
     if (adminDb) {
@@ -1210,13 +1211,9 @@ async function getEffectiveGeminiConfig() {
     console.warn('[Gemini Config Load Notice]', e);
   }
 
-  if (model === 'gemini-1.5-flash' || model === 'gemini-2.5-flash' || model === 'gemini-1.5-pro') {
-    model = 'gemini-3.7-flash';
-  }
-
   return {
     apiKey: firstEnabledGeminiKey(pool),
-    model,
+    model: resolveSystemGeminiModel(model),
     temperature,
     maxTokens,
     hasProvider: aiPoolHasProvider(pool),
@@ -1349,56 +1346,52 @@ function withDeadline<T>(promise: Promise<T>, timeoutMs: number, label: string):
 
 async function aiGenerate(opts: AiGenerateOptions): Promise<AiGenerateResult> {
   const pool = await getAiPool();
-  const models = Array.from(new Set([opts.model, 'gemini-3.1-flash-lite'].filter(Boolean)));
-  const geminiCandidates: PooledGeminiKey[] = mergeGeminiKeyCandidates(opts.preferredKeys, pool.geminiKeys);
+  const modelName = resolveSystemGeminiModel(opts.model || pool.geminiModel);
+  const geminiCandidates: PooledGeminiKey[] = geminiFailoverCandidates(pool, opts.preferredKeys);
   const deadlineAt = Date.now() + 15_000;
   const remainingMs = () => Math.max(0, deadlineAt - Date.now());
   let lastErr: any = null;
 
-  geminiKeys:
   for (const gk of geminiCandidates) {
     if (!gk.enabled || !gk.key || !aiKeyAvailable(gk.key)) continue;
-    for (const modelName of models) {
-      if (remainingMs() < 500) break geminiKeys;
-      try {
-        const ai = new GoogleGenAI({ apiKey: gk.key });
-        const config: any = {
-          temperature: opts.temperature ?? 0.6,
-          maxOutputTokens: opts.maxTokens ?? 1024,
+    if (remainingMs() < 500) break;
+    try {
+      const ai = new GoogleGenAI({ apiKey: gk.key });
+      const config: any = {
+        temperature: opts.temperature ?? 0.6,
+        maxOutputTokens: opts.maxTokens ?? 1024,
+      };
+      if (opts.schema) {
+        config.responseMimeType = 'application/json';
+        config.responseSchema = opts.schema;
+      }
+      const r = await withDeadline(
+        ai.models.generateContent({
+          model: modelName,
+          contents: [{ role: 'user', parts: opts.parts }],
+          config,
+        }),
+        Math.min(10_000, remainingMs()),
+        `Gemini ${modelName}`
+      );
+      const text = r.text?.trim() || '';
+      if (text) {
+        const usage: any = (r as any).usageMetadata || {};
+        const tokensUsed = Number(usage.totalTokenCount) || estimateTokens(opts.textPrompt, text);
+        return {
+          text,
+          provider: 'gemini',
+          keyLabel: gk.label,
+          tokensUsed,
+          merchantKeyUsed: gk.label === 'merchant-own',
         };
-        if (opts.schema) {
-          config.responseMimeType = 'application/json';
-          config.responseSchema = opts.schema;
-        }
-        const r = await withDeadline(
-          ai.models.generateContent({
-            model: modelName,
-            contents: [{ role: 'user', parts: opts.parts }],
-            config,
-          }),
-          Math.min(10_000, remainingMs()),
-          `Gemini ${modelName}`
-        );
-        const text = r.text?.trim() || '';
-        if (text) {
-          const usage: any = (r as any).usageMetadata || {};
-          const tokensUsed = Number(usage.totalTokenCount) || estimateTokens(opts.textPrompt, text);
-          return {
-            text,
-            provider: 'gemini',
-            keyLabel: gk.label,
-            tokensUsed,
-            merchantKeyUsed: gk.label === 'merchant-own',
-          };
-        }
-      } catch (err: any) {
-        lastErr = err;
-        const kind = classifyAiError(err);
-        if (kind === 'quota' || kind === 'auth') {
-          cooldownAiKey(gk.key, kind, gk.label);
-          break; // this key is done — move to the next key
-        }
-        // 'other' (e.g. unsupported media on this model): try the next model
+      }
+    } catch (err: any) {
+      lastErr = err;
+      const kind = classifyAiError(err);
+      if (kind === 'quota' || kind === 'auth') {
+        cooldownAiKey(gk.key, kind, gk.label);
+        continue;
       }
     }
   }
@@ -2664,13 +2657,11 @@ app.post('/api/chat/respond', async (req, res) => {
       });
     }
 
-    // Try up to 3 keys from the pool so one exhausted free-tier key never
-    // takes the public chat down.
+    // Default global key first; when it hits its limit the backup pool takes over.
     const pool = await getAiPool();
-    const candidateKeys = [
-      aiConfig.apiKey,
-      ...pool.geminiKeys.filter(k => k.enabled && aiKeyAvailable(k.key)).map(k => k.key),
-    ].filter((k, i, arr) => k && arr.indexOf(k) === i).slice(0, 3);
+    const candidateKeys = geminiFailoverCandidates(pool, merchantOwnGeminiKey(business.data))
+      .filter((item) => item.enabled && item.key && aiKeyAvailable(item.key))
+      .map((item) => item.key);
 
     let response: any = null;
     for (const candidateKey of candidateKeys) {
@@ -2789,16 +2780,24 @@ app.get('/api/ai/pool/status', async (_req, res) => {
   clearAiPoolCache();
   const pool = await getAiPool();
   const enabled = pool.geminiKeys.filter((item) => item.enabled);
+  const defaultLabel = pool.defaultGeminiKey ? (pool.defaultGeminiKeyLabel || 'Default Key') : '';
   res.json({
     ok: true,
+    geminiModel: pool.geminiModel,
+    hasDefaultKey: Boolean(pool.defaultGeminiKey),
+    defaultKeyLabel: defaultLabel,
     geminiKeyCount: pool.geminiKeys.length,
-    enabledCount: enabled.length,
+    enabledCount: enabled.length + (pool.defaultGeminiKey ? 1 : 0),
+    poolEnabledCount: enabled.length,
     hasOpenRouter: Boolean(pool.openRouterKey),
     hasOpenAi: Boolean(pool.openAiKey),
     hasProvider: aiPoolHasProvider(pool),
     adminDbReady: Boolean(adminDb),
     firestoreOk: Boolean(aiPoolCache?.firestoreOk),
-    labels: enabled.map((item) => item.label),
+    labels: [
+      ...(defaultLabel ? [defaultLabel] : []),
+      ...enabled.map((item) => item.label),
+    ],
   });
 });
 
@@ -2886,11 +2885,8 @@ app.post('/api/courier/steadfast/book', async (req, res) => {
 app.post('/api/ai/test', async (req, res) => {
   const { apiKey, model } = req.body;
   const effectiveKey = (apiKey && typeof apiKey === 'string' && apiKey.trim()) || process.env.GEMINI_API_KEY || '';
-  let selectedModel = model || 'gemini-3.7-flash';
-  // Map any outdated/retired model IDs to modern active models
-  if (selectedModel === 'gemini-2.5-flash' || selectedModel === 'gemini-1.5-flash' || selectedModel === 'gemini-1.5-pro') {
-    selectedModel = 'gemini-3.7-flash';
-  }
+  const pool = await getAiPool();
+  const selectedModel = resolveSystemGeminiModel(model || pool.geminiModel);
 
   if (!effectiveKey) {
     return res.status(400).json({
