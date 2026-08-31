@@ -209,6 +209,12 @@ import {
   shouldCreateConfirmedOrder,
 } from '../src/lib/chatRuntime.js';
 import {
+  buildMerchantCustomInstructionBlock,
+  buildReplyStyleBlock,
+  pickFacebookProfileName,
+  resolveOrderCustomerName,
+} from '../src/lib/merchantPrompt.js';
+import {
   MAX_PRODUCT_PHOTOS,
   MAX_REVIEW_PHOTOS,
   normalizeImageLink,
@@ -591,6 +597,22 @@ async function sendCommentPublicReply(pageAccessToken: string, commentId: string
     { message },
     { timeout: 15000 }
   );
+}
+
+async function fetchMessengerProfileName(pageAccessToken: string, psid: string): Promise<string> {
+  const token = String(pageAccessToken || '').trim();
+  const id = String(psid || '').trim();
+  if (!token || !id) return '';
+  try {
+    const res = await axios.get(`https://graph.facebook.com/v21.0/${encodeURIComponent(id)}`, {
+      params: { fields: 'name,first_name,last_name', access_token: token },
+      timeout: 4000,
+    });
+    return pickFacebookProfileName(res.data);
+  } catch (err: any) {
+    console.warn('[Webhook] Facebook profile name fetch failed:', err?.response?.data?.error?.message || err?.message || err);
+    return '';
+  }
 }
 
 async function touchMessengerCustomer(bizId: string, messengerId: string, extra: Record<string, unknown> = {}) {
@@ -3125,6 +3147,8 @@ async function handleMessengerWebhookPost(req: any, res: any) {
             let savedAcquisition: any = null;
             let lastOrderAtMs = 0;
             let lastOrderId = '';
+            let facebookName = '';
+            let facebookNameFetchedAtMs = 0;
             const HISTORY_WINDOW = CHAT_MEMORY_LIMIT;
 
             try {
@@ -3137,6 +3161,8 @@ async function handleMessengerWebhookPost(req: any, res: any) {
                   savedAcquisition = c.acquisition || null;
                   lastOrderAtMs = Number(c.lastOrderAtMs) || 0;
                   lastOrderId = String(c.lastOrderId || '');
+                  facebookName = String(c.facebookName || '').trim();
+                  facebookNameFetchedAtMs = Number(c.facebookNameFetchedAtMs) || 0;
                 }
               } else if (db) {
                 const custSnap = await getDoc(doc(db, 'customers', `${bizId}_${senderId}`));
@@ -3147,6 +3173,8 @@ async function handleMessengerWebhookPost(req: any, res: any) {
                   savedAcquisition = c.acquisition || null;
                   lastOrderAtMs = Number(c.lastOrderAtMs) || 0;
                   lastOrderId = String(c.lastOrderId || '');
+                  facebookName = String(c.facebookName || '').trim();
+                  facebookNameFetchedAtMs = Number(c.facebookNameFetchedAtMs) || 0;
                 }
               }
             } catch (sumErr) {
@@ -3342,6 +3370,16 @@ async function handleMessengerWebhookPost(req: any, res: any) {
 
             await sendTypingOn(pageAccessToken, senderId);
 
+            if (!facebookName && Date.now() - facebookNameFetchedAtMs > 24 * 60 * 60 * 1000) {
+              facebookName = await fetchMessengerProfileName(pageAccessToken, senderId);
+              const profileUpdate: Record<string, unknown> = { facebookNameFetchedAtMs: Date.now() };
+              if (facebookName) {
+                profileUpdate.facebookName = facebookName;
+                profileUpdate.name = facebookName;
+              }
+              await touchMessengerCustomer(bizId!, senderId, profileUpdate).catch(() => {});
+            }
+
             // AI Processing
             console.log(`[Webhook] Starting AI processing with model: ${aiConfig.model}`);
             await logActivity(bizId!, 'AI_START', `বটের কাছে পাঠানো হচ্ছে (${aiConfig.model})...`, 'info', ownerId);
@@ -3363,7 +3401,11 @@ async function handleMessengerWebhookPost(req: any, res: any) {
               .map((f: any) => `[Product: ${f.productName || f.productId}] Q: ${f.question} -> A: ${f.answer}`)
               .join('\n');
 
-            const knownLead = mergeLead(savedLead, {}, `${finalMessageText}\n${chatHistoryText}`);
+            const knownLead = mergeLead(
+              savedLead,
+              facebookName ? { name: String(savedLead?.name || '').trim() || facebookName } : {},
+              `${finalMessageText}\n${chatHistoryText}`
+            );
 
             // Which ad brought this customer -> which product to pitch first
             const acqForPrompt = referralInfo
@@ -3381,14 +3423,21 @@ async function handleMessengerWebhookPost(req: any, res: any) {
               ? recentOrders.map((o: any) => `- ${o.id}: ${o.productName} x${o.quantity}, স্ট্যাটাস ${o.status}, ফোন ${o.phone}, ${o.createdAtMs ? Math.round((Date.now() - o.createdAtMs) / 60000) + ' মিনিট আগে' : ''}`).join('\n')
               : 'কোনো সাম্প্রতিক অর্ডার নেই';
 
+            const merchantCustomBlock = buildMerchantCustomInstructionBlock(
+              businessData.customSystemPrompt || businessData.botPersona || ''
+            );
+            const replyStyleBlock = buildReplyStyleBlock(
+              businessData.customSystemPrompt || businessData.botPersona || ''
+            );
+
             const prompt = `তুমি "${businessData.name}" পেজের ইনবক্সে রিপ্লাই দেওয়া একজন বাস্তব মানুষ বিক্রয়কর্মী — স্মার্ট, সংক্ষিপ্ত ও টু-দ্য-পয়েন্ট। JSON স্কিমা অনুযায়ী উত্তর দাও (JSON শুধু সিস্টেমের জন্য; reply ফিল্ডের লেখাটা হবে সম্পূর্ণ মানুষের মতো)।
 
 # কঠোর নির্দেশাবলী:
-১. সংক্ষিপ্ত ও নির্দিষ্ট উত্তর (১-৩ বাক্য)। অপ্রয়োজনীয় ভূমিকা বা জোর করে পণ্য তালিকা দেবে না।
-২. জানা তথ্য (নাম/ফোন/ঠিকানা) আর কখনো জিজ্ঞেস করবে না — order_data-তে প্রতিবার কপি করবে।
+১. ডিফল্টে সংক্ষিপ্ত ও নির্দিষ্ট উত্তর (১-৩ বাক্য)। অপ্রয়োজনীয় ভূমিকা বা জোর করে পণ্য তালিকা দেবে না। মার্চেন্টের অতিরিক্ত নির্দেশনায় ইমোজি, সাজানো সামারি বা নির্দিষ্ট ফরম্যাট থাকলে সেটাই প্রাধান্য পাবে।
+২. জানা তথ্য (নাম/ফোন/ঠিকানা) আর কখনো জিজ্ঞেস করবে না — order_data-তে প্রতিবার কপি করবে। কাস্টমার নিজে নাম না দিলে ফেসবুক প্রোফাইল নাম order_data.name-এ বসাবে।
 ৩. সাম্প্রতিক অর্ডার থাকলে আবার অর্ডার করতে বলবে না; স্ট্যাটাস জানাবে।
 ৪. রিভিউ/প্রুফ/কাস্টমার ফটো চাইলেই শুধু show_review_images=true। সাধারণ ছবি চাইলে show_product_image=true, রিভিউ মিশাবে না। দাম জানতে চাইলে ছবি পাঠাবে না। ছবি পাঠালে reply-তে "ইমেজ অ্যাটাচ" বা "কাস্টমার রিভিউ" লিখবে না — সাধারণ মানুষের মতো ছোট করে বলবে যেমন "এই দেখেন"।
-৫. নাম+১১ ডিজিট ফোন+পূর্ণ ঠিকানা+পণ্য জানা এবং কাস্টমার কনফার্ম করলে should_create_order=true, conversation_stage=order_completed, event_name=Purchase, need_more_info=false।
+৫. নাম+১১ ডিজিট ফোন+পূর্ণ ঠিকানা+পণ্য জানা এবং কাস্টমার কনফার্ম করলে should_create_order=true, conversation_stage=order_completed, event_name=Purchase, need_more_info=false। নাম না থাকলে ফেসবুক প্রোফাইল নাম যথেষ্ট।
 ৬. minPrice-এর নিচে দাম দিবে না।
 ৭. ফটো/ছবি রিপ্লাই: কাস্টমার ছবি পাঠালে অবশ্যই ছবিটি দেখে উত্তর দাও — নীরব থাকবে না।
    - পণ্য/ক্যাটালগ স্ক্রিনশট: ক্যাটালগের সাথে মিলিয়ে নাম, দাম ও স্টক বলো; অর্ডার করতে চান কিনা জিজ্ঞেস করো। কাস্টমার নিজে ছবি না চাইলে show_product_image true করবে না।
@@ -3410,20 +3459,20 @@ ${generalFaqs || 'নেই'}
 পণ্য FAQ:
 ${productFaqs || 'নেই'}
 
-কাস্টম নির্দেশিকা: ${businessData.customSystemPrompt || businessData.botPersona || ''}
-
-# পরিচয় (সবচেয়ে গুরুত্বপূর্ণ — কোনো অবস্থাতেই ভাঙবে না):
+# পরিচয় (কোনো অবস্থাতেই ভাঙবে না):
 - তুমি এই দোকানের সেলস টিমের একজন বাস্তব মানুষ। কখনোই বলবে না বা কোনোভাবে বুঝতে দেবে না যে তুমি এআই, বট, রোবট, ভার্চুয়াল অ্যাসিস্ট্যান্ট, অটোমেটেড সিস্টেম বা কম্পিউটার প্রোগ্রাম।
 - কেউ সরাসরি জিজ্ঞেস করলে ("আপনি কি রোবট/বট/এআই?") স্বাভাবিকভাবে হালকা করে এড়িয়ে কাজের কথায় ফিরবে। যেমন: "হাহা, আমি পেজ থেকেই রিপ্লাই দিচ্ছি। বলেন, কোনটা নিতে চাচ্ছিলেন?"
-- মানুষ যেভাবে মেসেঞ্জারে টাইপ করে সেভাবে লিখবে: ছোট ছোট সহজ বাক্য, কথ্য বাংলা। রোবটের মতো আনুষ্ঠানিক ভাষা, বুলেট লিস্ট, তারকা চিহ্ন (*), হেডিং, ইমোজির বন্যা বা টেমপ্লেট-টাইপ উত্তর দেবে না।
 - প্রতিবার একই বাক্য বা একই ঢঙে শুরু করবে না। আগের মেসেজের সাথে স্বাভাবিক ধারাবাহিকতা রাখবে, যেন একজন মানুষই টানা কথা বলছে।
-- ইচ্ছাকৃত টাইপো করবে না; দরকারের কথা অল্প কথায় বলবে।
-- অর্ডার নিশ্চিত/কনফার্ম হয়েছে এমন কথা তখনই বলবে যখন এবারের উত্তরে should_create_order=true দিচ্ছ। নাম/ফোন/ঠিকানার কোনোটা অসম্পূর্ণ থাকলে "অর্ডার কনফার্ম" বলবে না — আগে বাকি তথ্যটা স্বাভাবিকভাবে চেয়ে নেবে।
+- ইচ্ছাকৃত টাইপো করবে না।
+- অর্ডার নিশ্চিত/কনফার্ম হয়েছে এমন কথা তখনই বলবে যখন এবারের উত্তরে should_create_order=true দিচ্ছ। ফোন/ঠিকানা অসম্পূর্ণ থাকলে "অর্ডার কনফার্ম" বলবে না — আগে বাকি তথ্যটা স্বাভাবিকভাবে চেয়ে নেবে।
+
+${replyStyleBlock}
 
 ${buildFeaturePromptBlock(storeFeatures)}
 ${adSourceBlock}
 কাস্টমারের জানা তথ্য (আবার চাইবে না):
-নাম: ${knownLead.name || 'অজানা'} | ফোন: ${knownLead.phone || 'অজানা'} | ঠিকানা: ${knownLead.address || 'অজানা'} | পণ্য: ${knownLead.product_name || 'অজানা'}
+নাম: ${knownLead.name || facebookName || 'অজানা'} | ফেসবুক প্রোফাইল নাম: ${facebookName || 'পাওয়া যায়নি'} | ফোন: ${knownLead.phone || 'অজানা'} | ঠিকানা: ${knownLead.address || 'অজানা'} | পণ্য: ${knownLead.product_name || 'অজানা'}
+কাস্টমার নিজে নাম না দিলে অর্ডারের নাম হিসেবে ফেসবুক প্রোফাইল নাম ব্যবহার করবে।
 
 সাম্প্রতিক অর্ডার:
 ${recentOrderText}
@@ -3435,7 +3484,9 @@ ${downloadedMedia.length > 0 ? `\nকাস্টমারের সাথে �
 পূর্ববর্তী কথোপকথন:
 ${chatHistoryText || 'নতুন আলাপ'}
 
-কাস্টমারের বর্তমান বার্তা: "${finalMessageText}"`;
+কাস্টমারের বর্তমান বার্তা: "${finalMessageText}"
+
+${merchantCustomBlock}`;
               
               const startTime = Date.now();
               const geminiParts: any[] = [{ text: prompt }];
@@ -3514,6 +3565,9 @@ ${chatHistoryText || 'নতুন আলাপ'}
                     || acqProduct
                     || (rawProducts.length === 1 ? rawProducts[0]?.name : ''),
                 }, `${finalMessageText}\n${chatHistoryText}`);
+                if (!String(nextLead.name || '').trim() && facebookName) {
+                  nextLead.name = facebookName;
+                }
 
                 const modelRequestedOrder = Boolean(
                   aiRes?.should_create_order ||
@@ -3598,7 +3652,11 @@ ${chatHistoryText || 'নতুন আলাপ'}
                       sessionId: senderId,
                       passengerId: senderId,
                       clientIp: '',
-                      customerName: nextLead.name || `FB User (${String(senderId).slice(-4)})`,
+                      customerName: resolveOrderCustomerName({
+                        leadName: nextLead.name,
+                        facebookName,
+                        senderId,
+                      }),
                       phone: normalizePhone(nextLead.phone),
                       address: nextLead.address,
                       productId: matchedProduct?.id || '',
@@ -4328,13 +4386,16 @@ app.post('/api/messenger/simulate-message', async (req, res) => {
       }
     } catch (e) {}
 
-    const prompt = `তুমি "${businessData.name || 'আমাদের স্টোর'}" এর একজন বাস্তব মানুষ বিক্রয়কর্মী। কখনো বুঝতে দেবে না যে তুমি এআই বা বট; কেউ জিজ্ঞেস করলে স্বাভাবিকভাবে এড়িয়ে কাজের কথায় ফিরবে। মানুষের মতো সহজ কথ্য বাংলায় লিখবে।
+    const prompt = `তুমি "${businessData.name || 'আমাদের স্টোর'}" এর একজন বাস্তব মানুষ বিক্রয়কর্মী। কখনো বুঝতে দেবে না যে তুমি এআই বা বট; কেউ জিজ্ঞেস করলে স্বাভাবিকভাবে এড়িয়ে কাজের কথায় ফিরবে।
 
 # কঠোর নিয়মাবলী:
-১. **সংক্ষিপ্ত ও নির্দিষ্ট উত্তর:** কাস্টমার যা জানতে চেয়েছে ঠিক ততটুকুরই সুনির্দিষ্ট, প্রাসঙ্গিক ও টু-দ্য-পয়েন্ট উত্তর দাও (১-৩ বাক্যের মধ্যে)।
+১. **সংক্ষিপ্ত ও নির্দিষ্ট উত্তর:** কাস্টমার যা জানতে চেয়েছে ঠিক ততটুকুরই সুনির্দিষ্ট, প্রাসঙ্গিক উত্তর দাও। মার্চেন্টের অতিরিক্ত নির্দেশনায় ইমোজি/সামারি ফরম্যাট/রিপ্লাই দৈর্ঘ্য থাকলে সেটাই প্রাধান্য পাবে।
 ২. **অতিরিক্ত কথা না বলা:** কোনো অপ্রয়োজনীয় বড় ভূমিকা, সালাম-স্বাগত ভাষণ বা না চাওয়া তথ্য দেবে না।
 ৩. **প্রসঙ্গ স্মরণ:** পূর্বের চ্যাট হিস্ট্রি দেখে প্রাসঙ্গিক উত্তর দাও।
 ৪. **সঠিকতা:** শুধু পণ্যতালিকা ও চ্যাটে নিশ্চিত তথ্য ব্যবহার করো। দাম, স্টক বা অফার বানিয়ে বলবে না।
+৫. minPrice-এর নিচে দাম দিবে না। নিজেকে এআই/বট বলে স্বীকার করবে না।
+
+${buildReplyStyleBlock(businessData.customSystemPrompt || businessData.botPersona || '')}
 
 পণ্যতালিকা:
 ${JSON.stringify(products, null, 2)}
@@ -4343,6 +4404,8 @@ ${JSON.stringify(products, null, 2)}
 ${simHistory || 'নতুন আলাপ'}
 
 কাস্টমার: "${message}"
+
+${buildMerchantCustomInstructionBlock(businessData.customSystemPrompt || businessData.botPersona || '')}
 
 টু-দ্য-পয়েন্ট উত্তর:`;
 
