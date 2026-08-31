@@ -93,17 +93,11 @@ let adminDb: any;
 let defaultAdminDb: any;
 
 function clientFirestoreDbs(): any[] {
-  const out: any[] = [];
-  if (db) out.push(db);
-  if (defaultClientDb && defaultClientDb !== db) out.push(defaultClientDb);
-  return out;
+  return db ? [db] : [];
 }
 
 function adminFirestoreDbs(): any[] {
-  const out: any[] = [];
-  if (adminDb) out.push(adminDb);
-  if (defaultAdminDb && defaultAdminDb !== adminDb) out.push(defaultAdminDb);
-  return out;
+  return adminDb ? [adminDb] : [];
 }
 
 function attachDefaultStores(firebaseAppInstance: any, adminApp: any, dbId: string | undefined) {

@@ -16,6 +16,10 @@ assert.match(
   firestoreErrorMessage({ code: 'permission-denied', message: 'Missing or insufficient permissions.' }),
   /permission-denied/,
 );
+assert.match(
+  firestoreErrorMessage({ code: 'resource-exhausted', message: 'Quota exceeded' }),
+  /quota/i,
+);
 
 const named = [
   { id: 'biz-1', data: { id: 'biz-1', name: 'Named Shop' }, databaseId: 'named' },
@@ -69,5 +73,14 @@ const allFailed = reconcileMultiDbSnapshots([
 assert.equal(allFailed.ready, true);
 assert.equal(allFailed.allFailed, true);
 assert.match(allFailed.error || '', /permission-denied/);
+
+const emptyNamedDefaultFailed = reconcileMultiDbSnapshots([
+  { status: 'ready', docs: [] },
+  { status: 'error', error: 'The database (default) does not exist' },
+]);
+assert.equal(emptyNamedDefaultFailed.ready, true);
+assert.equal(emptyNamedDefaultFailed.docs.length, 0);
+assert.equal(emptyNamedDefaultFailed.allFailed, false);
+assert.match(emptyNamedDefaultFailed.error || '', /default/);
 
 console.log('panelFirestore tests passed');

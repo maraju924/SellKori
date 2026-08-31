@@ -133,9 +133,7 @@ export function MerchantPanel({ user, profile }: MerchantPanelProps) {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
-  // Load business config for current user from the named AI Studio DB and
-  // the project "(default)" DB. Server writes used to land in default, so a
-  // named-only listener looked like an empty shop and auto-created a blank one.
+  // Load this merchant's shop from the configured Firestore database only.
   useEffect(() => {
     if (!user) return;
     const dbs = getPanelFirestoreDbs();
@@ -167,7 +165,7 @@ export function MerchantPanel({ user, profile }: MerchantPanelProps) {
         return;
       }
 
-      if (result.allFailed) {
+      if (result.allFailed || result.error) {
         setLoadError(result.error);
         setLoading(false);
         return;
