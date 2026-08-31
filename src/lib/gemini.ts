@@ -10,6 +10,7 @@ import { doc, getDoc, collection, addDoc, serverTimestamp } from "firebase/fires
 import { buildFeaturePromptBlock, isFeatureEnabled } from "./featureFlags.js";
 import { resolveImageSendFlags } from "./imageSend.js";
 import { FALLBACK_GEMINI_MODEL, resolveSystemGeminiModel } from "./aiPool.js";
+import { buildMerchantCustomInstructionBlock, buildReplyStyleBlock } from "./merchantPrompt.js";
 
 /** Strip huge base64 payloads so the model actually sees chat history + customer memory. */
 export function sanitizeProductsForAI(products?: Product[]) {
@@ -520,8 +521,8 @@ ${chatSummary ? `Previous Conversation Summary: ${chatSummary}` : ''}
 
 ## ৩. কথা বলার ধরন ও কঠোর নিয়মাবলী (Tone, Voice & Strict Directives)
 - **মানুষ পরিচয় (কোনো অবস্থাতেই ভাঙবে না):** তুমি একজন বাস্তব মানুষ বিক্রেতা হিসেবে কথা বলবে। কখনোই বলবে না বা বুঝতে দেবে না যে তুমি এআই, বট, রোবট, ভার্চুয়াল অ্যাসিস্ট্যান্ট বা অটোমেটেড সিস্টেম। কেউ জিজ্ঞেস করলে স্বাভাবিকভাবে হালকা করে এড়িয়ে কাজের কথায় ফিরবে (যেমন: "হাহা, আমি পেজ থেকেই রিপ্লাই দিচ্ছি — বলেন কোনটা লাগবে?")।
-- **মানুষের মতো লেখা:** মেসেঞ্জারে মানুষ যেভাবে টাইপ করে সেভাবে ছোট, সহজ, কথ্য বাক্যে লিখবে। রোবটের মতো টেমপ্লেট ভাষা, বুলেট লিস্ট, তারকা চিহ্ন (*), হেডিং বা অতিরিক্ত ইমোজি ব্যবহার করবে না। প্রতিবার একই বাক্যে শুরু করবে না।
-- **সংক্ষিপ্ত ও টু-দ্য-পয়েন্ট উত্তর:** কাস্টমার যা জানতে চেয়েছে ঠিক ততটুকুরই সুনির্দিষ্ট, প্রাসঙ্গিক ও সংক্ষিপ্ত উত্তর দাও (১-৩ লাইনের মধ্যে)। অপ্রয়োজনীয় কোনো লম্বা ভূমিকা, অতিরিক্ত সালাম/ভাষণ বা না চাওয়া বড় তথ্য তালিকা দেবে না।
+${buildReplyStyleBlock(businessConfig.customSystemPrompt)}
+- **সংক্ষিপ্ত ও টু-দ্য-পয়েন্ট উত্তর:** কাস্টমার যা জানতে চেয়েছে ঠিক ততটুকুরই সুনির্দিষ্ট, প্রাসঙ্গিক উত্তর দাও। অপ্রয়োজনীয় লম্বা ভূমিকা বা না চাওয়া বড় তথ্য তালিকা দেবে না। মার্চেন্টের অতিরিক্ত নির্দেশনায় ইমোজি/সামারি ফরম্যাট/রিপ্লাই দৈর্ঘ্য থাকলে সেটাই মানবে।
 - **প্রসঙ্গ ও হিস্ট্রি স্মরণ:** পূর্বের চ্যাট হিস্ট্রি ও Customer Context দেখে কাস্টমার কোন পণ্যের কথা বলছে তা মনে রেখে সরাসরি উত্তর দাও। একই কথা বা একই তথ্য (মোবাইল/নাম/ঠিকানা) বারবার চাইবে না।
 - **অতিরিক্ত কথা বর্জন:** কাস্টমার নিজে থেকে না চাইলে জোর করে কোনো বাড়তি অফার বা অপ্রাসঙ্গিক কথা বলবে না।
 - **ভাষা:** কাস্টমার যে ভাষায় কথা বলবে (বাংলা/ইংরেজি), তুমিও সেই ভাষায় কথা বলো। তবে ডিফল্ট হিসেবে সুন্দর প্রমিত বাংলা ব্যবহার করো।
@@ -539,9 +540,9 @@ ${chatSummary ? `Previous Conversation Summary: ${chatSummary}` : ''}
 - কখনোই ফটো বা ভয়েস মেসেজে নীরব থাকবে না।
 
 ## ৪. কনফার্মেশন রুলস
-- সব তথ্য (নাম, ফোন, ঠিকানা, পরিমাণ) না পাওয়া পর্যন্ত 'need_more_info: true' রাখবে।
+- ফোন, ঠিকানা ও পণ্য না পাওয়া পর্যন্ত 'need_more_info: true' রাখবে। নাম না দিলে Customer Context বা ফেসবুক প্রোফাইল নাম ব্যবহার করবে।
 - ফোন নম্বর অবশ্যই ১১ ডিজিটের হতে হবে।
-- অর্ডার শেষ করার আগে একবার সব ডিটেইলস (পণ্যের নাম, পরিমাণ, দাম এবং ঠিকানা) সামারি আকারে জানাবে।
+- অর্ডার শেষ করার আগে একবার সব ডিটেইলস সামারি আকারে জানাবে। মার্চেন্টের অতিরিক্ত নির্দেশনায় নির্দিষ্ট সামারি ফরম্যাট থাকলে সেটাই ব্যবহার করবে।
 `;
 
   const memoryGuard = `
@@ -557,6 +558,7 @@ CRITICAL MEMORY RULES:
 - Never invent a product, price, discount, stock count, policy, delivery promise or order status.
 - If grounded business data does not contain the answer, say so briefly and offer the next safe step.
 - Write in short, natural shopkeeper language. Never admit to being an AI, bot, robot, or virtual assistant; if asked, deflect lightly and return to the sale.
+- If merchant custom instructions specify emoji, formatting, reply length or an order-summary template, follow those style rules.
 - Prefer current Products Data and FAQs over conflicting older chat content.
 `;
 
@@ -568,11 +570,14 @@ CRITICAL MEMORY RULES:
   const systemInstruction = `VOICE: ${personaInstruction}
 LANGUAGE: ${languageInstruction}
 
-${
-    businessConfig.customSystemPrompt
-      ? `${businessConfig.customSystemPrompt}\n\n${memoryGuard}\nContext:\nBusiness Name: ${businessConfig.name}\n${businessConfig.description ? `Business Info: ${businessConfig.description}\n` : ''}Products Data: ${JSON.stringify(sanitizeProductsForAI(businessConfig.products))}\nFAQs: ${JSON.stringify(isFeatureEnabled(businessConfig.features, 'faqEnabled') ? (businessConfig.faqs || []) : [])}\n${customerContext ? `Customer Context: ${customerContext}` : ''}${chatSummary && isFeatureEnabled(businessConfig.features, 'chatSummaryEnabled') ? `\nPrevious Conversation Summary: ${chatSummary}` : ''}${mediaDirective}`
-      : defaultPrompt
-  }\n\n${buildFeaturePromptBlock(businessConfig.features)}`;
+${defaultPrompt}
+
+${memoryGuard}
+${mediaDirective}
+
+${buildMerchantCustomInstructionBlock(businessConfig.customSystemPrompt)}
+
+${buildFeaturePromptBlock(businessConfig.features)}`;
 
   const startTime = Date.now();
 

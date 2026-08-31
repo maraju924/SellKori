@@ -210,6 +210,9 @@ export function MerchantAIControl({ business }: MerchantAIControlProps) {
           placeholder="যেমন: আমাদের পণ্যগুলো শতভাগ অরিজিনাল। পাইকারি অর্ডারের জন্য ০১৭XXXXXXXX নম্বরে যোগাযোগ করতে বলুন।"
           className="min-h-[100px] rounded-2xl bg-zinc-50 dark:bg-zinc-800/40 border-zinc-200 dark:border-zinc-700 text-xs leading-relaxed"
         />
+        <p className="text-[11px] leading-relaxed text-zinc-500 dark:text-zinc-400">
+          সেভের পর এই নির্দেশনা রিপ্লাইয়ের ইমোজি, ফরম্যাট, সম্বোধন ও অর্ডার সামারিতে প্রাধান্য পাবে। দাম, স্টক ও নিরাপত্তা নিয়ম অপরিবর্তিত থাকবে।
+        </p>
       </div>
     </div>
   );
