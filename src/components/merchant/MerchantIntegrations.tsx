@@ -208,7 +208,8 @@ export function MerchantIntegrations({ business }: MerchantIntegrationsProps) {
                 <Globe className="w-4 h-4" />
               </div>
               <div>
-                <h3 className="font-semibold text-sm text-zinc-900 dark:text-white">পিক্সেল</h3>
+                <h3 className="font-semibold text-sm text-zinc-900 dark:text-white">মেসেঞ্জার CAPI</h3>
+                <p className="text-[10px] text-zinc-500">শুধু ইনবক্স ইভেন্ট — ওয়েবসাইট Pixel নয়</p>
               </div>
             </div>
             {pixelId && (
@@ -246,6 +247,9 @@ export function MerchantIntegrations({ business }: MerchantIntegrationsProps) {
                 placeholder="TEST..."
                 className="font-mono text-xs h-10 rounded-xl"
               />
+              <p className="text-[11px] text-zinc-500 leading-relaxed">
+                শুধু নিচের টেস্ট বাটনে লাগে। লাইভ মেসেঞ্জার Lead/Purchase ইভেন্টে এই কোড যায় না, তাই টেস্ট কোড রেখে দিলেও অ্যাড অপটিমাইজেশন বন্ধ হবে না।
+              </p>
             </div>
 
             <Button

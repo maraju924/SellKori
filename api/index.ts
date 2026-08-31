@@ -9,8 +9,17 @@ import { getFirestore as getAdminFirestore, FieldValue } from 'firebase-admin/fi
 import { getApp, getApps, initializeApp } from 'firebase/app';
 import { getFirestore, doc, getDoc, collection, addDoc, setDoc, updateDoc, deleteDoc, serverTimestamp, query, where, getDocs, orderBy, limit, Timestamp, increment } from 'firebase/firestore';
 import fs from 'fs';
-import { createHash } from 'crypto';
 import dotenv from 'dotenv';
+import {
+  buildMessengerCapiPayload,
+  capiEventsUrl,
+  canonicalizeCapiEvent,
+  isCapiHttpSuccess,
+  isRetryableCapiError,
+  readCapiCredentials,
+  resolveMessengerFunnelEvent,
+  utcDay,
+} from './capi.js';
 import {
   buildFeaturePromptBlock,
   isFeatureEnabled,
@@ -918,8 +927,9 @@ function pageTokenForBusiness(businessData: any, pageId?: string): string {
     const exact = pages.find((p) => p.enabled && p.pageId === pid);
     if (exact) return exact.pageAccessToken;
   }
+  // facebookConfig.accessToken is the Pixel CAPI token — never a page token.
   const rootToken = String(
-    businessData?.pageAccessToken || businessData?.facebookConfig?.accessToken || businessData?.accessToken || ''
+    businessData?.pageAccessToken || businessData?.accessToken || ''
   ).trim();
   if (rootToken) return rootToken;
   const firstEnabled = pages.find((p) => p.enabled);
@@ -1977,24 +1987,9 @@ async function getSystemSettings() {
 }
 
 // ---------------------------------------------------------------------------
-// Meta Conversions API (CAPI) — Business Messaging spec.
-// Sends full-funnel chat events (Lead → ViewContent → AddToCart →
-// InitiateCheckout → Purchase) so Click-to-Messenger ads can optimize on
-// real conversations and purchases.
+// Meta Conversions API (CAPI) — Messenger / Click-to-Messenger only.
+// Website Pixel events are not sent from this path.
 // ---------------------------------------------------------------------------
-function sha256Lower(value: string): string {
-  return createHash('sha256').update(String(value).trim().toLowerCase()).digest('hex');
-}
-
-function normalizedPhoneForCapi(phone: string): string {
-  // Meta expects digits only with country code; BD numbers: 01XXXXXXXXX -> 8801XXXXXXXXX
-  let p = String(phone || '').replace(/[^0-9]/g, '');
-  if (p.startsWith('01') && p.length === 11) p = `88${p}`;
-  return p;
-}
-
-const CAPI_ALLOWED_EVENTS = new Set(['Lead', 'ViewContent', 'AddToCart', 'InitiateCheckout', 'Purchase', 'Contact', 'CompleteRegistration']);
-// In-memory dedup so one funnel stage fires once per customer per day per page.
 const capiSentCache = new Map<string, number>();
 
 interface CapiEventOptions {
@@ -2007,83 +2002,96 @@ interface CapiEventOptions {
   currency?: string;
   contentName?: string;
   contentIds?: string[];
+  quantity?: number;
+  itemPrice?: number;
   orderId?: string;
   bizId?: string;
   ownerId?: string;
   allowRepeat?: boolean;
+  alreadySentToday?: Record<string, string>;
+  includeTestEventCode?: boolean;
 }
 
-async function sendCapiEvent(businessData: any, eventName: string, opts: CapiEventOptions) {
-  try {
-    const fbCfg = businessData?.facebookConfig || {};
-    const pixelId = String(fbCfg.pixelId || '').trim();
-    const capiToken = String(fbCfg.accessToken || '').trim();
-    if (!pixelId || !capiToken || fbCfg.capiEnabled === false) return;
-    if (!CAPI_ALLOWED_EVENTS.has(eventName)) return;
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
+async function sendCapiEvent(businessData: any, eventName: string, opts: CapiEventOptions): Promise<{ ok: boolean; skipped?: string }> {
+  const event = canonicalizeCapiEvent(eventName);
+  try {
+    const creds = readCapiCredentials(businessData);
+    if (!creds.enabled) return { ok: false, skipped: 'not_configured' };
+    if (!event) return { ok: false, skipped: 'invalid_event' };
+
+    const fbCfg = businessData?.facebookConfig || {};
     const pageId = String(opts.pageId || businessData.facebookPageId || businessData.pageId || fbCfg.pageId || '').trim();
     const psid = String(opts.psid || '').trim();
-    if (!psid) return;
+    if (!psid) return { ok: false, skipped: 'missing_psid' };
 
-    // Dedup identical funnel events (Purchase always allowed via orderId-based id)
-    const dayBucket = new Date().toISOString().slice(0, 10);
-    const dedupKey = `${pixelId}:${psid}:${eventName}:${opts.orderId || dayBucket}`;
-    if (!opts.allowRepeat && eventName !== 'Purchase') {
-      if (capiSentCache.has(dedupKey)) return;
-      if (capiSentCache.size > 5000) capiSentCache.clear();
-      capiSentCache.set(dedupKey, Date.now());
+    const day = utcDay();
+    const dedupKey = `${creds.pixelId}:${psid}:${event}:${opts.orderId || day}`;
+    if (!opts.allowRepeat && event !== 'Purchase') {
+      if (opts.alreadySentToday?.[event] === day) return { ok: false, skipped: 'duplicate' };
+      if (capiSentCache.has(dedupKey)) return { ok: false, skipped: 'duplicate' };
     }
 
-    const userData: any = {
-      // Business messaging match keys
-      page_id: pageId || undefined,
-      page_scoped_user_id: psid,
-      external_id: [sha256Lower(psid)],
-    };
-    if (opts.ctwaClid) userData.ctwa_clid = String(opts.ctwaClid).trim();
-    const cleanPhone = normalizedPhoneForCapi(opts.phone || '');
-    if (cleanPhone.length >= 12) userData.ph = [sha256Lower(cleanPhone)];
-    const firstName = String(opts.name || '').trim().split(/\s+/)[0];
-    if (firstName) userData.fn = [sha256Lower(firstName)];
+    const built = buildMessengerCapiPayload({
+      eventName: event,
+      pixelId: creds.pixelId,
+      pageId,
+      psid,
+      phone: opts.phone,
+      name: opts.name,
+      ctwaClid: opts.ctwaClid,
+      value: opts.value,
+      currency: opts.currency,
+      contentName: opts.contentName,
+      contentIds: opts.contentIds,
+      quantity: opts.quantity,
+      itemPrice: opts.itemPrice,
+      orderId: opts.orderId,
+      testEventCode: opts.includeTestEventCode ? String(fbCfg.testEventCode || '').trim() : '',
+    });
 
-    const customData: any = {
-      currency: opts.currency || 'BDT',
-      ...(typeof opts.value === 'number' && opts.value > 0 ? { value: Math.round(opts.value * 100) / 100 } : {}),
-      ...(opts.contentName ? { content_name: String(opts.contentName).slice(0, 100), content_type: 'product' } : {}),
-      ...(opts.contentIds?.length ? { content_ids: opts.contentIds.slice(0, 10) } : {}),
-      ...(opts.orderId ? { order_id: opts.orderId } : {}),
-    };
-
-    const payload: any = {
-      data: [{
-        event_name: eventName,
-        event_time: Math.floor(Date.now() / 1000),
-        event_id: `${eventName}_${psid}_${opts.orderId || dayBucket}`,
-        action_source: 'business_messaging',
-        messaging_channel: 'messenger',
-        user_data: userData,
-        custom_data: customData,
-      }],
-    };
-    if (fbCfg.testEventCode) payload.test_event_code = fbCfg.testEventCode;
-
-    await axios.post(
-      `https://graph.facebook.com/v21.0/${encodeURIComponent(pixelId)}/events?access_token=${encodeURIComponent(capiToken)}`,
-      payload,
-      { timeout: 10000 }
-    );
-    console.log(`[CAPI] ${eventName} fired for psid=${psid.slice(-6)} pixel=${pixelId}`);
+    let lastError: any = null;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        const fbRes = await axios.post(capiEventsUrl(creds.pixelId, creds.accessToken), built.body, { timeout: 8000 });
+        if (!isCapiHttpSuccess(fbRes.status, fbRes.data)) {
+          lastError = fbRes.data?.error || fbRes.data;
+          break;
+        }
+        if (capiSentCache.size > 5000) capiSentCache.clear();
+        capiSentCache.set(dedupKey, Date.now());
+        console.log(`[CAPI] ${event} fired for psid=${psid.slice(-6)} pixel=${creds.pixelId} events_received=${fbRes.data?.events_received ?? 1}`);
+        if (opts.bizId) {
+          const detail = event === 'Purchase'
+            ? `CAPI Purchase ইভেন্ট পাঠানো হয়েছে (৳${opts.value || 0}) — অ্যাড অপটিমাইজেশনে যুক্ত হলো।`
+            : `CAPI ${event} ইভেন্ট পিক্সেলে পাঠানো হয়েছে।`;
+          logActivity(opts.bizId, 'CAPI_EVENT', detail, 'success', opts.ownerId).catch(() => {});
+        }
+        return { ok: true };
+      } catch (err: any) {
+        lastError = err;
+        if (attempt < 3 && isRetryableCapiError(err)) {
+          await sleep(200 * attempt);
+          continue;
+        }
+        break;
+      }
+    }
+    const errMsg = lastError?.response?.data?.error?.message || lastError?.message || String(lastError || 'unknown');
+    console.error('[CAPI Error]', lastError?.response?.data || lastError);
     if (opts.bizId) {
-      const detail = eventName === 'Purchase'
-        ? `CAPI Purchase ইভেন্ট পাঠানো হয়েছে (৳${opts.value || 0}) — অ্যাড অপ্টিমাইজেশনে যুক্ত হলো।`
-        : `CAPI ${eventName} ইভেন্ট পিক্সেলে পাঠানো হয়েছে।`;
-      logActivity(opts.bizId, 'CAPI_EVENT', detail, 'success', opts.ownerId).catch(() => {});
+      logActivity(opts.bizId, 'CAPI_EVENT', `CAPI ${event} পাঠানো যায়নি: ${errMsg}`, 'error', opts.ownerId).catch(() => {});
     }
+    return { ok: false, skipped: 'request_failed' };
   } catch (err: any) {
     console.error('[CAPI Error]', err.response?.data || err.message);
     if (opts.bizId) {
-      logActivity(opts.bizId, 'CAPI_EVENT', `CAPI ${eventName} পাঠানো যায়নি: ${err.response?.data?.error?.message || err.message}`, 'error', opts.ownerId).catch(() => {});
+      logActivity(opts.bizId, 'CAPI_EVENT', `CAPI ${event || eventName} পাঠানো যায়নি: ${err.response?.data?.error?.message || err.message}`, 'error', opts.ownerId).catch(() => {});
     }
+    return { ok: false, skipped: 'request_failed' };
   }
 }
 
@@ -3092,6 +3100,8 @@ async function handleMessengerWebhookPost(req: any, res: any) {
 
             const ownerId = businessData.ownerId;
             const shopName = businessData.name || "আমাদের স্টোর";
+            const capiDay = utcDay();
+            let capiFunnelAt: Record<string, string> = {};
 
             // Ad referral attribution: know which ad/link brought this customer
             // and which product to pitch first.
@@ -3102,14 +3112,16 @@ async function handleMessengerWebhookPost(req: any, res: any) {
               await saveCustomerAcquisition(bizId!, senderId, cleanPageId, referralInfo, referralProduct);
               const refLabel = referralInfo.adTitle || referralInfo.ref || referralInfo.adId || referralInfo.postId;
               await logActivity(bizId!, 'AD_REFERRAL', `কাস্টমার বিজ্ঞাপন/লিংক থেকে এসেছে${refLabel ? ` (${refLabel})` : ''}${referralProduct ? ` → টার্গেট পণ্য: ${referralProduct}` : ''}`, 'info', ownerId);
-              sendCapiEvent(businessData, 'Lead', {
+              const leadSent = await sendCapiEvent(businessData, 'Lead', {
                 psid: senderId,
                 pageId: cleanPageId,
                 ctwaClid: referralInfo.ctwaClid,
                 contentName: referralProduct || referralInfo.adTitle || undefined,
                 bizId: bizId!,
-                ownerId
-              }).catch(() => {});
+                ownerId,
+                alreadySentToday: capiFunnelAt,
+              });
+              if (leadSent.ok) capiFunnelAt.Lead = capiDay;
             }
 
             const incomingMedia = isPostback ? [] : extractMessengerAttachments(webhookEvent);
@@ -3163,6 +3175,7 @@ async function handleMessengerWebhookPost(req: any, res: any) {
                   lastOrderId = String(c.lastOrderId || '');
                   facebookName = String(c.facebookName || '').trim();
                   facebookNameFetchedAtMs = Number(c.facebookNameFetchedAtMs) || 0;
+                  capiFunnelAt = { ...(c.capiFunnelAt || {}), ...capiFunnelAt };
                 }
               } else if (db) {
                 const custSnap = await getDoc(doc(db, 'customers', `${bizId}_${senderId}`));
@@ -3175,6 +3188,7 @@ async function handleMessengerWebhookPost(req: any, res: any) {
                   lastOrderId = String(c.lastOrderId || '');
                   facebookName = String(c.facebookName || '').trim();
                   facebookNameFetchedAtMs = Number(c.facebookNameFetchedAtMs) || 0;
+                  capiFunnelAt = { ...(c.capiFunnelAt || {}), ...capiFunnelAt };
                 }
               }
             } catch (sumErr) {
@@ -3580,21 +3594,27 @@ ${merchantCustomBlock}`;
                   hasCompleteOrder: hasCompleteLead(nextLead),
                 });
 
-                // Full-funnel CAPI: send the AI-detected stage event so the ad
-                // account learns which conversations become real buyers.
-                // Purchase is sent separately (only when an order is created).
-                const funnelEvent = String(aiRes?.event_name || '').trim();
-                if (funnelEvent && funnelEvent !== 'Purchase') {
-                  sendCapiEvent(businessData, funnelEvent, {
+                // Messenger funnel: stage is the source of truth; AI may
+                // advance one step. Purchase is sent only after an order save.
+                const funnelEvent = resolveMessengerFunnelEvent({
+                  conversationStage: String(aiRes?.conversation_stage || ''),
+                  eventName: String(aiRes?.event_name || ''),
+                  alreadySentToday: capiFunnelAt,
+                  day: capiDay,
+                });
+                if (funnelEvent) {
+                  const funnelSent = await sendCapiEvent(businessData, funnelEvent, {
                     psid: senderId,
                     pageId: cleanPageId,
                     phone: nextLead.phone,
-                    name: nextLead.name,
+                    name: nextLead.name || facebookName,
                     ctwaClid: savedAcquisition?.ctwaClid || referralInfo?.ctwaClid,
                     contentName: aiRes?.product_name || nextLead.product_name || acqProduct || undefined,
                     bizId: bizId!,
-                    ownerId
-                  }).catch(() => {});
+                    ownerId,
+                    alreadySentToday: capiFunnelAt,
+                  });
+                  if (funnelSent.ok) capiFunnelAt[funnelEvent] = capiDay;
                 }
 
                 if (modelRequestedOrder && !hasCompleteLead(nextLead) && isFeatureEnabled(storeFeatures, 'autoOrderEnabled')) {
@@ -3689,7 +3709,7 @@ ${merchantCustomBlock}`;
 
                     // Purchase event with real value -> the ad account can
                     // optimize for actual revenue, not just conversations.
-                    sendCapiEvent(businessData, 'Purchase', {
+                    await sendCapiEvent(businessData, 'Purchase', {
                       psid: senderId,
                       pageId: cleanPageId,
                       phone: newOrder.phone,
@@ -3698,11 +3718,13 @@ ${merchantCustomBlock}`;
                       orderId,
                       contentName: newOrder.productName,
                       contentIds: newOrder.productId ? [String(newOrder.productId)] : undefined,
+                      quantity: qty,
+                      itemPrice: unitPrice,
                       ctwaClid: savedAcquisition?.ctwaClid || referralInfo?.ctwaClid,
                       bizId: bizId!,
                       ownerId,
-                      allowRepeat: true
-                    }).catch(() => {});
+                      allowRepeat: true,
+                    });
 
                     if (isFeatureEnabled(storeFeatures, 'inventoryEnabled') && matchedProduct && (matchedProduct.stock || matchedProduct.stockCount) > 0 && adminDb) {
                       const updatedProducts = (businessData.products || []).map((p: any) => {
@@ -3851,6 +3873,7 @@ ${merchantCustomBlock}`;
                 };
                 if (lastOrderId) customerPayload.lastOrderId = lastOrderId;
                 if (lastOrderAtMs) customerPayload.lastOrderAtMs = lastOrderAtMs;
+                if (Object.keys(capiFunnelAt).length) customerPayload.capiFunnelAt = capiFunnelAt;
                 if (adminDb) {
                   await adminDb.collection('customers').doc(`${bizId}_${senderId}`).set(customerPayload, { merge: true }).catch(() => {});
                 } else if (db) {
@@ -4243,7 +4266,8 @@ async function handleZinipayWebhook(req: any, res: any) {
 app.post('/api/billing/zinipay-webhook', handleZinipayWebhook);
 app.get('/api/billing/zinipay-webhook', handleZinipayWebhook);
 
-// Fire a CAPI test event so the merchant can verify Pixel + token in one click
+// Fire a CAPI test event so the merchant can verify Pixel + token in one click.
+// test_event_code is used HERE only — live Messenger inbox events never include it.
 app.post('/api/capi/test', async (req, res) => {
   const pixelId = String(req.body?.pixelId || '').trim();
   const accessToken = String(req.body?.accessToken || '').trim();
@@ -4252,26 +4276,25 @@ app.post('/api/capi/test', async (req, res) => {
     return res.status(400).json({ success: false, error: 'Pixel ID এবং Access Token প্রয়োজন' });
   }
   try {
-    const payload: any = {
-      data: [{
-        event_name: 'Lead',
-        event_time: Math.floor(Date.now() / 1000),
-        event_id: `capi_test_${Date.now()}`,
-        action_source: 'business_messaging',
-        messaging_channel: 'messenger',
-        user_data: {
-          page_scoped_user_id: `test_${Date.now()}`,
-          external_id: [sha256Lower(`test_${Date.now()}`)]
-        },
-        custom_data: { currency: 'BDT', content_name: 'SellKori CAPI Connection Test' }
-      }]
-    };
-    if (testEventCode) payload.test_event_code = testEventCode;
+    const testPsid = `test_${Date.now()}`;
+    const built = buildMessengerCapiPayload({
+      eventName: 'Lead',
+      pixelId,
+      psid: testPsid,
+      contentName: 'SellKori CAPI Connection Test',
+      testEventCode,
+    });
     const fbRes = await axios.post(
-      `https://graph.facebook.com/v21.0/${encodeURIComponent(pixelId)}/events?access_token=${encodeURIComponent(accessToken)}`,
-      payload,
+      capiEventsUrl(pixelId, accessToken),
+      built.body,
       { timeout: 10000 }
     );
+    if (!isCapiHttpSuccess(fbRes.status, fbRes.data)) {
+      return res.status(400).json({
+        success: false,
+        error: fbRes.data?.error?.message || 'ফেসবুক ইভেন্ট গ্রহণ করেনি',
+      });
+    }
     return res.json({ success: true, eventsReceived: fbRes.data?.events_received ?? 1, fbtraceId: fbRes.data?.fbtrace_id });
   } catch (err: any) {
     const fbErr = err.response?.data?.error;
