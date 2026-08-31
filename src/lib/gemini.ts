@@ -9,6 +9,7 @@ import { db } from "./firebase.js";
 import { doc, getDoc, collection, addDoc, serverTimestamp } from "firebase/firestore";
 import { buildFeaturePromptBlock, isFeatureEnabled } from "./featureFlags.js";
 import { resolveImageSendFlags } from "./imageSend.js";
+import { FALLBACK_GEMINI_MODEL, resolveSystemGeminiModel } from "./aiPool.js";
 
 /** Strip huge base64 payloads so the model actually sees chat history + customer memory. */
 export function sanitizeProductsForAI(products?: Product[]) {
@@ -161,31 +162,26 @@ export async function fetchSystemGeminiSettings(): Promise<{ apiKey: string; def
   if (cachedSystemApiKey !== null && (now - lastCacheFetchTime < 60000)) {
     return {
       apiKey: cachedSystemApiKey,
-      defaultModel: cachedSystemModel || 'gemini-3.7-flash'
+      defaultModel: resolveSystemGeminiModel(cachedSystemModel)
     };
   }
 
   try {
     if (db) {
-      const publicDoc = await getDoc(doc(db, 'system_config', 'public'));
-      if (publicDoc.exists()) {
-        const data = publicDoc.data();
-        if (data.geminiApiKey) cachedSystemApiKey = data.geminiApiKey;
-        if (data.defaultAiModel) cachedSystemModel = data.defaultAiModel;
-      }
+      const [publicDoc, settingsDoc] = await Promise.all([
+        getDoc(doc(db, 'system_config', 'public')),
+        getDoc(doc(db, 'system', 'settings')),
+      ]);
+      const publicData = publicDoc.exists() ? publicDoc.data() : {};
+      const secretData = settingsDoc.exists() ? settingsDoc.data() : {};
 
-      if (!cachedSystemApiKey) {
-        const settingsDoc = await getDoc(doc(db, 'system', 'settings'));
-        if (settingsDoc.exists()) {
-          const sData = settingsDoc.data();
-          if (sData.geminiApiKey) cachedSystemApiKey = sData.geminiApiKey;
-          if (!cachedSystemApiKey && Array.isArray(sData.geminiKeys)) {
-            const firstEnabled = sData.geminiKeys.find((item: any) => item?.enabled !== false && String(item?.key || '').trim());
-            if (firstEnabled?.key) cachedSystemApiKey = String(firstEnabled.key).trim();
-          }
-          if (sData.defaultAiModel) cachedSystemModel = sData.defaultAiModel;
-        }
+      const defaultKey = String(secretData.geminiApiKey || publicData.geminiApiKey || '').trim();
+      if (defaultKey) cachedSystemApiKey = defaultKey;
+      if (!cachedSystemApiKey && Array.isArray(secretData.geminiKeys)) {
+        const firstEnabled = secretData.geminiKeys.find((item: any) => item?.enabled !== false && String(item?.key || '').trim());
+        if (firstEnabled?.key) cachedSystemApiKey = String(firstEnabled.key).trim();
       }
+      cachedSystemModel = resolveSystemGeminiModel(secretData.defaultAiModel || publicData.defaultAiModel);
     }
   } catch (e) {
     console.warn("Failed to fetch system Gemini settings from Firestore:", e);
@@ -194,7 +190,7 @@ export async function fetchSystemGeminiSettings(): Promise<{ apiKey: string; def
   lastCacheFetchTime = now;
   return {
     apiKey: cachedSystemApiKey || process.env.GEMINI_API_KEY || '',
-    defaultModel: cachedSystemModel || 'gemini-3.7-flash'
+    defaultModel: resolveSystemGeminiModel(cachedSystemModel)
   };
 }
 
@@ -205,7 +201,7 @@ export async function testGeminiApiKeyAndModel(
   apiKey: string,
   modelName: string
 ): Promise<{ success: boolean; latencyMs: number; responseText?: string; error?: string }> {
-  const effectiveModel = modelName.trim() || 'gemini-3.7-flash';
+  const effectiveModel = resolveSystemGeminiModel(modelName);
   const cleanKey = apiKey.trim();
 
   // 1. Try server-side validation endpoint first (which has access to process.env.GEMINI_API_KEY)
@@ -318,7 +314,10 @@ export async function generateIssueFollowUp(
     ? businessConfig.customGeminiApiKey
     : (overrideApiKey || sysConfig.apiKey || process.env.GEMINI_API_KEY || '');
   
-  const model = businessConfig.selectedAiModel || sysConfig.defaultModel || "gemini-3.7-flash";
+  const usingOwnKey = Boolean(businessConfig.useOwnApiKey && businessConfig.customGeminiApiKey);
+  const model = usingOwnKey
+    ? (businessConfig.selectedAiModel || sysConfig.defaultModel || FALLBACK_GEMINI_MODEL)
+    : (sysConfig.defaultModel || FALLBACK_GEMINI_MODEL);
   const ai = new GoogleGenAI({ apiKey });
 
   const prompt = `
@@ -368,11 +367,13 @@ export async function getAIResponse(
     ? businessConfig.customGeminiApiKey.trim()
     : (overrideApiKey || sysConfig.apiKey || process.env.GEMINI_API_KEY || '');
 
-  // Dynamic Model resolution hierarchy:
-  // 1. Merchant's selected model (e.g. gemini-3.7-flash, gemini-flash-latest, etc.)
-  // 2. System Global Admin default model
-  // 3. Fallback: gemini-3.7-flash
-  const model = businessConfig.selectedAiModel?.trim() || sysConfig.defaultModel || "gemini-3.7-flash";
+  // Dynamic Model resolution:
+  // System default/pool keys always use Global Gemini Engine defaultAiModel.
+  // Merchant-owned keys may keep a per-store selectedAiModel override.
+  const usingOwnKey = Boolean(businessConfig.useOwnApiKey && businessConfig.customGeminiApiKey?.trim());
+  const model = usingOwnKey
+    ? (businessConfig.selectedAiModel?.trim() || sysConfig.defaultModel || FALLBACK_GEMINI_MODEL)
+    : (sysConfig.defaultModel || FALLBACK_GEMINI_MODEL);
   const temperature = businessConfig.aiTemperature ?? 0.4;
   const maxOutputTokens = businessConfig.aiMaxTokens ?? 1024;
 
