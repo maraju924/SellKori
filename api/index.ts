@@ -16,6 +16,9 @@ import {
   canonicalizeCapiEvent,
   isCapiHttpSuccess,
   isRetryableCapiError,
+  looksLikeMessengerPsid,
+  nationalPhoneDigits,
+  pickMessengerCapiMatch,
   readCapiCredentials,
   resolveMessengerFunnelEvent,
   utcDay,
@@ -2010,6 +2013,9 @@ interface CapiEventOptions {
   allowRepeat?: boolean;
   alreadySentToday?: Record<string, string>;
   includeTestEventCode?: boolean;
+  adId?: string;
+  adRef?: string;
+  adSource?: string;
 }
 
 function sleep(ms: number) {
@@ -2069,6 +2075,7 @@ async function sendCapiEvent(businessData: any, eventName: string, opts: CapiEve
             ? `CAPI Purchase ইভেন্ট পাঠানো হয়েছে (৳${opts.value || 0}) — অ্যাড অপটিমাইজেশনে যুক্ত হলো।`
             : `CAPI ${event} ইভেন্ট পিক্সেলে পাঠানো হয়েছে।`;
           logActivity(opts.bizId, 'CAPI_EVENT', detail, 'success', opts.ownerId).catch(() => {});
+          recordCapiDashboardEvent(dashboardEventFromOpts(opts, event, built.eventId, 'sent')).catch(() => {});
         }
         return { ok: true };
       } catch (err: any) {
@@ -2084,6 +2091,7 @@ async function sendCapiEvent(businessData: any, eventName: string, opts: CapiEve
     console.error('[CAPI Error]', lastError?.response?.data || lastError);
     if (opts.bizId) {
       logActivity(opts.bizId, 'CAPI_EVENT', `CAPI ${event} পাঠানো যায়নি: ${errMsg}`, 'error', opts.ownerId).catch(() => {});
+      recordCapiDashboardEvent(dashboardEventFromOpts(opts, event, `${event}_failed_${Date.now()}`, 'failed')).catch(() => {});
     }
     return { ok: false, skipped: 'request_failed' };
   } catch (err: any) {
@@ -2093,6 +2101,230 @@ async function sendCapiEvent(businessData: any, eventName: string, opts: CapiEve
     }
     return { ok: false, skipped: 'request_failed' };
   }
+}
+
+function dashboardEventFromOpts(
+  opts: CapiEventOptions,
+  eventName: string,
+  eventId: string,
+  status: 'sent' | 'failed',
+) {
+  return {
+    businessId: String(opts.bizId || ''),
+    ownerId: opts.ownerId,
+    eventName,
+    eventId,
+    value: opts.value,
+    contentName: opts.contentName,
+    contentId: opts.contentIds?.[0],
+    orderId: opts.orderId,
+    psid: opts.psid,
+    pageId: opts.pageId,
+    quantity: opts.quantity,
+    hasPhone: Boolean(String(opts.phone || '').trim()),
+    hasName: Boolean(String(opts.name || '').trim()),
+    hasClid: Boolean(String(opts.ctwaClid || '').trim()),
+    adId: opts.adId,
+    adRef: opts.adRef,
+    adSource: opts.adSource,
+    status,
+  };
+}
+
+async function recordCapiDashboardEvent(input: {
+  businessId: string;
+  ownerId?: string;
+  eventName: string;
+  eventId?: string;
+  value?: number;
+  contentName?: string;
+  contentId?: string;
+  orderId?: string;
+  psid?: string;
+  pageId?: string;
+  quantity?: number;
+  hasPhone?: boolean;
+  hasName?: boolean;
+  hasClid?: boolean;
+  adId?: string;
+  adRef?: string;
+  adSource?: string;
+  status: 'sent' | 'failed';
+}) {
+  const bizId = String(input.businessId || '').trim();
+  if (!bizId) return;
+  const payload = omitUndefined({
+    businessId: bizId,
+    ownerId: input.ownerId || '',
+    eventName: String(input.eventName || ''),
+    eventId: String(input.eventId || ''),
+    value: typeof input.value === 'number' && input.value > 0 ? input.value : 0,
+    currency: 'BDT',
+    contentName: String(input.contentName || '').slice(0, 120),
+    contentId: String(input.contentId || ''),
+    orderId: String(input.orderId || ''),
+    psidTail: String(input.psid || '').slice(-6),
+    pageId: String(input.pageId || ''),
+    quantity: Number(input.quantity || 0) || 0,
+    hasPhone: Boolean(input.hasPhone),
+    hasName: Boolean(input.hasName),
+    hasClid: Boolean(input.hasClid),
+    adId: String(input.adId || ''),
+    adRef: String(input.adRef || ''),
+    adSource: String(input.adSource || '').slice(0, 120),
+    source: 'server',
+    channel: 'messenger',
+    status: input.status,
+    createdAtMs: Date.now(),
+  });
+  const docId = String(input.eventId || '').replace(/[^\w.-]/g, '').slice(0, 120);
+  try {
+    if (adminDb) {
+      if (docId) {
+        await adminDb.collection('capi_events').doc(docId).set({
+          ...payload,
+          timestamp: admin.firestore.FieldValue.serverTimestamp(),
+        }, { merge: true });
+      } else {
+        await adminDb.collection('capi_events').add({
+          ...payload,
+          timestamp: admin.firestore.FieldValue.serverTimestamp(),
+        });
+      }
+      return;
+    }
+    if (db) {
+      if (docId) {
+        await setDoc(doc(db, 'capi_events', docId), { ...payload, timestamp: serverTimestamp() }, { merge: true });
+      } else {
+        await addDoc(collection(db, 'capi_events'), { ...payload, timestamp: serverTimestamp() });
+      }
+    }
+  } catch (err: any) {
+    console.warn('[CAPI] dashboard event save failed:', err?.message || err);
+  }
+}
+
+async function markOrderCapiPurchaseSent(orderId: string, psid?: string) {
+  const id = String(orderId || '').trim();
+  if (!id) return;
+  const patch: Record<string, unknown> = {
+    capiPurchaseSentAt: Date.now(),
+    updatedAtMs: Date.now(),
+  };
+  if (psid) patch.capiPurchasePsid = String(psid);
+  try {
+    if (adminDb) {
+      await adminDb.collection('orders').doc(id).set(patch, { merge: true });
+      return;
+    }
+    if (db) {
+      await setDoc(doc(db, 'orders', id), patch, { merge: true });
+    }
+  } catch (err: any) {
+    console.warn('[CAPI] mark purchase sent failed:', err?.message || err);
+  }
+}
+
+async function loadCapiMatchCustomers(businessId: string, order: any): Promise<any[]> {
+  const rows: any[] = [];
+  const seen = new Set<string>();
+  const pushRow = (id: string, data: any) => {
+    if (!id || !data || seen.has(id)) return;
+    seen.add(id);
+    rows.push({ id, ...data });
+  };
+  const phone = nationalPhoneDigits(order?.phone);
+  const psidHint = [order?.messengerId, order?.passengerId, order?.sessionId].find((value) => looksLikeMessengerPsid(value));
+  const docIds = [
+    psidHint ? `${businessId}_${psidHint}` : '',
+    phone ? `${businessId}_${phone}` : '',
+  ].filter(Boolean);
+
+  try {
+    if (adminDb) {
+      for (const id of docIds) {
+        const snap = await adminDb.collection('customers').doc(id).get();
+        if (snap.exists) pushRow(snap.id, snap.data());
+      }
+      if (phone) {
+        const variants = Array.from(new Set([phone, String(order?.phone || '').trim()].filter(Boolean)));
+        for (const variant of variants) {
+          const snap = await adminDb.collection('customers')
+            .where('businessId', '==', businessId)
+            .where('phone', '==', variant)
+            .limit(10)
+            .get();
+          for (const docSnap of snap.docs) pushRow(docSnap.id, docSnap.data());
+        }
+      }
+      return rows;
+    }
+    if (db) {
+      for (const id of docIds) {
+        const snap = await getDoc(doc(db, 'customers', id));
+        if (snap.exists()) pushRow(snap.id, snap.data());
+      }
+      if (phone) {
+        const snap = await getDocs(query(
+          collection(db, 'customers'),
+          where('businessId', '==', businessId),
+          where('phone', '==', phone),
+          limit(10),
+        ));
+        for (const docSnap of snap.docs) pushRow(docSnap.id, docSnap.data());
+      }
+    }
+  } catch (err: any) {
+    console.warn('[CAPI] customer lookup notice:', err?.message || err);
+    const fallback = await loadBusinessCustomers(businessId);
+    return fallback.filter((row) => {
+      const psid = row.messengerId || row.passengerId;
+      if (psidHint && String(psid) === String(psidHint)) return true;
+      return Boolean(phone && nationalPhoneDigits(row.phone) === phone && looksLikeMessengerPsid(psid));
+    });
+  }
+  return rows;
+}
+
+async function sendMessengerPurchaseForOrder(
+  businessData: any,
+  order: any,
+  bizId: string,
+): Promise<{ ok: boolean; skipped?: string }> {
+  if (!order?.id) return { ok: false, skipped: 'missing_order' };
+  if (order.capiPurchaseSentAt) return { ok: false, skipped: 'already_sent' };
+  const status = String(order.status || '');
+  if (status === 'cancelled' || status === 'returned') return { ok: false, skipped: 'not_a_sale' };
+  const creds = readCapiCredentials(businessData);
+  if (!creds.enabled) return { ok: false, skipped: 'not_configured' };
+
+  const customers = await loadCapiMatchCustomers(bizId, order);
+  const match = pickMessengerCapiMatch({ order, customers });
+  if (!match) return { ok: false, skipped: 'no_messenger_match' };
+
+  const qty = Math.max(1, Math.round(Number(order.quantity) || 1));
+  const sent = await sendCapiEvent(businessData, 'Purchase', {
+    psid: match.psid,
+    pageId: match.pageId || businessData.facebookPageId || businessData.pageId,
+    phone: order.phone,
+    name: match.name || order.customerName,
+    value: Number(order.totalPrice) || 0,
+    orderId: String(order.id),
+    contentName: order.productName,
+    contentIds: order.productId ? [String(order.productId)] : undefined,
+    quantity: qty,
+    itemPrice: Number(order.unitPrice) || 0,
+    ctwaClid: match.ctwaClid,
+    adId: order.adId,
+    adRef: order.adRef,
+    adSource: order.adSource,
+    bizId,
+    ownerId: businessData.ownerId,
+    allowRepeat: true,
+  });
+  if (sent.ok) await markOrderCapiPurchaseSent(String(order.id), match.psid);
+  return sent;
 }
 
 // Helper to log activity (Robust)
@@ -3117,6 +3349,9 @@ async function handleMessengerWebhookPost(req: any, res: any) {
                 pageId: cleanPageId,
                 ctwaClid: referralInfo.ctwaClid,
                 contentName: referralProduct || referralInfo.adTitle || undefined,
+                adId: referralInfo.adId,
+                adRef: referralInfo.ref,
+                adSource: referralInfo.adTitle || referralInfo.ref || referralInfo.adId,
                 bizId: bizId!,
                 ownerId,
                 alreadySentToday: capiFunnelAt,
@@ -3610,6 +3845,9 @@ ${merchantCustomBlock}`;
                     name: nextLead.name || facebookName,
                     ctwaClid: savedAcquisition?.ctwaClid || referralInfo?.ctwaClid,
                     contentName: aiRes?.product_name || nextLead.product_name || acqProduct || undefined,
+                    adId: String(acqForPrompt?.adId || ''),
+                    adRef: String(acqForPrompt?.ref || ''),
+                    adSource: acqLabel || '',
                     bizId: bizId!,
                     ownerId,
                     alreadySentToday: capiFunnelAt,
@@ -3709,7 +3947,7 @@ ${merchantCustomBlock}`;
 
                     // Purchase event with real value -> the ad account can
                     // optimize for actual revenue, not just conversations.
-                    await sendCapiEvent(businessData, 'Purchase', {
+                    const purchaseSent = await sendCapiEvent(businessData, 'Purchase', {
                       psid: senderId,
                       pageId: cleanPageId,
                       phone: newOrder.phone,
@@ -3721,10 +3959,16 @@ ${merchantCustomBlock}`;
                       quantity: qty,
                       itemPrice: unitPrice,
                       ctwaClid: savedAcquisition?.ctwaClid || referralInfo?.ctwaClid,
+                      adId: String(acqForPrompt?.adId || ''),
+                      adRef: String(acqForPrompt?.ref || ''),
+                      adSource: acqLabel || '',
                       bizId: bizId!,
                       ownerId,
                       allowRepeat: true,
                     });
+                    if (purchaseSent.ok) {
+                      await markOrderCapiPurchaseSent(orderId, senderId);
+                    }
 
                     if (isFeatureEnabled(storeFeatures, 'inventoryEnabled') && matchedProduct && (matchedProduct.stock || matchedProduct.stockCount) > 0 && adminDb) {
                       const updatedProducts = (businessData.products || []).map((p: any) => {
@@ -4302,6 +4546,41 @@ app.post('/api/capi/test', async (req, res) => {
       success: false,
       error: fbErr?.message ? `ফেসবুক এরর: ${fbErr.message}` : (err.message || 'CAPI টেস্ট ব্যর্থ')
     });
+  }
+});
+
+app.post('/api/capi/purchase', async (req, res) => {
+  const businessId = String(req.body?.businessId || '').trim();
+  const orderId = String(req.body?.orderId || '').trim();
+  if (!businessId || !orderId) {
+    return res.status(400).json({ success: false, error: 'businessId এবং orderId প্রয়োজন' });
+  }
+  try {
+    let order: any = null;
+    let businessData: any = null;
+    if (adminDb) {
+      const oSnap = await adminDb.collection('orders').doc(orderId).get();
+      if (oSnap.exists) order = { id: oSnap.id, ...oSnap.data() };
+      const bSnap = await adminDb.collection('businesses').doc(businessId).get();
+      if (bSnap.exists) businessData = { id: bSnap.id, ...bSnap.data() };
+    } else if (db) {
+      const oSnap = await getDoc(doc(db, 'orders', orderId));
+      if (oSnap.exists()) order = { id: oSnap.id, ...oSnap.data() };
+      const bSnap = await getDoc(doc(db, 'businesses', businessId));
+      if (bSnap.exists()) businessData = { id: bSnap.id, ...bSnap.data() };
+    }
+    if (!order) return res.status(404).json({ success: false, error: 'অর্ডার পাওয়া যায়নি' });
+    if (!businessData) return res.status(404).json({ success: false, error: 'দোকান পাওয়া যায়নি' });
+    if (String(order.businessId || '') !== businessId) {
+      return res.status(403).json({ success: false, error: 'এই অর্ডার এই স্টোরের নয়' });
+    }
+    const result = await sendMessengerPurchaseForOrder(businessData, order, businessId);
+    if (result.ok) return res.json({ success: true, sent: true });
+    if (result.skipped) return res.json({ success: true, skipped: result.skipped });
+    return res.status(400).json({ success: false, error: 'CAPI Purchase পাঠানো যায়নি' });
+  } catch (err: any) {
+    console.error('[CAPI purchase]', err);
+    return res.status(500).json({ success: false, error: err.message || 'CAPI Purchase ব্যর্থ' });
   }
 });
 

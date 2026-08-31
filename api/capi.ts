@@ -254,3 +254,73 @@ export function readCapiCredentials(businessData: any): { pixelId: string; acces
   const enabled = Boolean(pixelId && accessToken) && fbCfg.capiEnabled !== false;
   return { pixelId, accessToken, enabled };
 }
+
+/** Facebook page-scoped user ids are numeric. Website cart ids look like `web-…`. */
+export function looksLikeMessengerPsid(value: unknown): boolean {
+  const id = String(value || '').trim();
+  return /^\d{6,32}$/.test(id);
+}
+
+export function nationalPhoneDigits(phone: unknown): string {
+  let digits = String(phone || '').replace(/[^0-9]/g, '');
+  if (digits.startsWith('00')) digits = digits.slice(2);
+  if (digits.startsWith('880') && digits.length === 13) return digits.slice(2);
+  if (digits.startsWith('01') && digits.length === 11) return digits;
+  if (digits.startsWith('1') && digits.length === 10) return `0${digits}`;
+  return digits;
+}
+
+export interface MessengerCustomerHint {
+  messengerId?: unknown;
+  passengerId?: unknown;
+  sessionId?: unknown;
+  pageId?: unknown;
+  phone?: unknown;
+  name?: unknown;
+  facebookName?: unknown;
+  customerName?: unknown;
+  acquisition?: { ctwaClid?: unknown } | null;
+}
+
+export interface MessengerCapiMatch {
+  psid: string;
+  pageId: string;
+  ctwaClid: string;
+  name: string;
+}
+
+function firstMessengerPsid(...values: unknown[]): string {
+  for (const value of values) {
+    if (looksLikeMessengerPsid(value)) return String(value).trim();
+  }
+  return '';
+}
+
+/**
+ * Resolve the Messenger person for a CAPI Purchase: order PSID first,
+ * otherwise a CRM customer with the same BD mobile number.
+ */
+export function pickMessengerCapiMatch(input: {
+  order?: MessengerCustomerHint | null;
+  customers?: MessengerCustomerHint[] | null;
+}): MessengerCapiMatch | null {
+  const order = input.order || {};
+  const customers = Array.isArray(input.customers) ? input.customers : [];
+  const orderPhone = nationalPhoneDigits(order.phone);
+  const fromOrder = firstMessengerPsid(order.messengerId, order.passengerId, order.sessionId);
+  const phoneHit = customers.find((row) => {
+    const psid = firstMessengerPsid(row.messengerId, row.passengerId, row.sessionId);
+    if (!psid) return false;
+    if (fromOrder && psid === fromOrder) return true;
+    const rowPhone = nationalPhoneDigits(row.phone);
+    return Boolean(orderPhone && rowPhone && orderPhone === rowPhone);
+  });
+  const psid = fromOrder || firstMessengerPsid(phoneHit?.messengerId, phoneHit?.passengerId, phoneHit?.sessionId);
+  if (!psid) return null;
+  return {
+    psid,
+    pageId: String(order.pageId || phoneHit?.pageId || '').trim(),
+    ctwaClid: String(order.acquisition?.ctwaClid || phoneHit?.acquisition?.ctwaClid || '').trim(),
+    name: String(order.customerName || order.name || phoneHit?.name || phoneHit?.facebookName || '').trim(),
+  };
+}

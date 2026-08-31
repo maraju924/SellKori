@@ -74,10 +74,11 @@
       ]
     },
     {
-      "collectionGroup": "payments",
+      "collectionGroup": "capi_events",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "invoiceId", "order": "ASCENDING" }
+        { "fieldPath": "businessId", "order": "ASCENDING" },
+        { "fieldPath": "createdAtMs", "order": "DESCENDING" }
       ]
     }
   ],

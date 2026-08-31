@@ -117,6 +117,13 @@ service cloud.firestore {
       allow list: if isAdmin() || isSignedIn();
     }
 
+    match /capi_events/{eventId} {
+      allow create: if true;
+      allow get: if isAdmin() || isMerchantByBizId(resource.data.businessId);
+      allow list: if isAdmin() || isSignedIn();
+      allow update: if isAdmin() || isMerchantByBizId(resource.data.businessId);
+    }
+
     match /system/{documentId} {
       allow read, write: if isAdmin();
     }

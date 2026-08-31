@@ -374,6 +374,14 @@ export function MerchantOrders({ business, orders }: MerchantOrdersProps) {
     );
   };
 
+  const fireMessengerPurchase = (orderId: string) => {
+    void fetch('/api/capi/purchase', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ businessId: business.id, orderId }),
+    }).catch(() => {});
+  };
+
   const handleUpdateStatus = async (order: Order, newStatus: OrderStatus, note?: string, silent = false) => {
     try {
       const history = [
@@ -385,6 +393,9 @@ export function MerchantOrders({ business, orders }: MerchantOrdersProps) {
       if (newStatus === 'returned' && note) extra.returnReason = note;
       if (newStatus === 'delivered' && (order.paymentMethod || 'cod') === 'cod') extra.paymentStatus = 'paid';
       await persistOrderFields(order.id, extra);
+      if (['confirmed', 'processing', 'shipped', 'delivered'].includes(newStatus)) {
+        fireMessengerPurchase(order.id);
+      }
       if (!silent) toast.success(`স্ট্যাটাস: ${statusLabel(newStatus)}`);
     } catch {
       if (!silent) toast.error('স্ট্যাটাস আপডেট ব্যর্থ হয়েছে');
@@ -491,6 +502,7 @@ export function MerchantOrders({ business, orders }: MerchantOrdersProps) {
           })
         );
         toast.success('নতুন অর্ডার তৈরি হয়েছে');
+        fireMessengerPurchase(orderId);
       }
       setFormOpen(false);
       setEditingOrder(null);

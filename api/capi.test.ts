@@ -7,7 +7,10 @@ import {
   capiEventsUrl,
   isCapiHttpSuccess,
   isRetryableCapiError,
+  looksLikeMessengerPsid,
+  nationalPhoneDigits,
   normalizedPhoneForCapi,
+  pickMessengerCapiMatch,
   readCapiCredentials,
   resolveMessengerFunnelEvent,
   sha256Lower,
@@ -168,6 +171,34 @@ function testCredentialsGate() {
   assert.equal(readCapiCredentials({ facebookConfig: { pixelId: '1' } }).enabled, false);
 }
 
+function testMessengerMatchFromOrderAndPhone() {
+  assert.equal(looksLikeMessengerPsid('123456789012345'), true);
+  assert.equal(looksLikeMessengerPsid('web-l9k2-abc'), false);
+  assert.equal(nationalPhoneDigits('+8801712345678'), '01712345678');
+
+  const fromOrder = pickMessengerCapiMatch({
+    order: { passengerId: '555666777', pageId: 'page1', customerName: 'রাজু', phone: '01712345678' },
+  });
+  assert.equal(fromOrder?.psid, '555666777');
+  assert.equal(fromOrder?.pageId, 'page1');
+
+  const fromPhone = pickMessengerCapiMatch({
+    order: { phone: '01712345678', customerName: 'ম্যানুয়াল' },
+    customers: [
+      { phone: '8801712345678', messengerId: '999888777', pageId: 'page9', facebookName: 'রাজু খান', acquisition: { ctwaClid: 'clid_1' } },
+    ],
+  });
+  assert.equal(fromPhone?.psid, '999888777');
+  assert.equal(fromPhone?.pageId, 'page9');
+  assert.equal(fromPhone?.ctwaClid, 'clid_1');
+  assert.equal(fromPhone?.name, 'ম্যানুয়াল');
+
+  assert.equal(pickMessengerCapiMatch({
+    order: { phone: '01700000000', sessionId: 'web-abc' },
+    customers: [{ phone: '01711111111', messengerId: '1' }],
+  }), null);
+}
+
 testPhoneNormalization();
 testNameSplit();
 testFunnelResolution();
@@ -175,4 +206,5 @@ testPayloadMatchesBusinessMessagingSpec();
 testLivePayloadOmitsTestCodeUnlessAsked();
 testEventIdAndUrl();
 testCredentialsGate();
+testMessengerMatchFromOrderAndPhone();
 console.log('api/capi tests passed');
