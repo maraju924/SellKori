@@ -15,6 +15,7 @@ import {
   CreditCard,
   Store,
   X,
+  Activity,
 } from 'lucide-react';
 import { BusinessConfig, UserProfile } from '../../types';
 import { Link } from 'react-router-dom';
@@ -47,6 +48,7 @@ export function MerchantSidebar({
       group: '',
       items: [
         { id: 'analytics', label: 'ওভারভিউ', icon: BarChart3 },
+        { id: 'meta', label: 'মেটা', icon: Activity },
         { id: 'orders', label: 'অর্ডার', icon: Package },
         { id: 'products', label: 'পণ্য', icon: Tag },
         { id: 'customers', label: 'গ্রাহক', icon: Users },

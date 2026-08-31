@@ -58,6 +58,13 @@ export function MerchantOverview({
         <div className="flex items-center gap-2">
           <Button
             variant="outline"
+            onClick={() => onNavigateTab('meta')}
+            className="h-9 rounded-lg text-xs px-3"
+          >
+            মেটা অ্যানালিটিক্স
+          </Button>
+          <Button
+            variant="outline"
             onClick={() => onNavigateTab('products')}
             className="h-9 rounded-lg text-xs px-3"
           >

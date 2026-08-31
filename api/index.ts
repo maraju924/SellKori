@@ -2072,6 +2072,17 @@ async function sendCapiEvent(businessData: any, eventName: string, opts: CapiEve
             ? `CAPI Purchase ইভেন্ট পাঠানো হয়েছে (৳${opts.value || 0}) — অ্যাড অপটিমাইজেশনে যুক্ত হলো।`
             : `CAPI ${event} ইভেন্ট পিক্সেলে পাঠানো হয়েছে।`;
           logActivity(opts.bizId, 'CAPI_EVENT', detail, 'success', opts.ownerId).catch(() => {});
+          recordCapiDashboardEvent({
+            businessId: opts.bizId,
+            ownerId: opts.ownerId,
+            eventName: event,
+            eventId: built.eventId,
+            value: opts.value,
+            contentName: opts.contentName,
+            orderId: opts.orderId,
+            psid,
+            status: 'sent',
+          }).catch(() => {});
         }
         return { ok: true };
       } catch (err: any) {
@@ -2087,6 +2098,17 @@ async function sendCapiEvent(businessData: any, eventName: string, opts: CapiEve
     console.error('[CAPI Error]', lastError?.response?.data || lastError);
     if (opts.bizId) {
       logActivity(opts.bizId, 'CAPI_EVENT', `CAPI ${event} পাঠানো যায়নি: ${errMsg}`, 'error', opts.ownerId).catch(() => {});
+      recordCapiDashboardEvent({
+        businessId: opts.bizId,
+        ownerId: opts.ownerId,
+        eventName: event,
+        eventId: `${event}_failed_${Date.now()}`,
+        value: opts.value,
+        contentName: opts.contentName,
+        orderId: opts.orderId,
+        psid,
+        status: 'failed',
+      }).catch(() => {});
     }
     return { ok: false, skipped: 'request_failed' };
   } catch (err: any) {
@@ -2095,6 +2117,62 @@ async function sendCapiEvent(businessData: any, eventName: string, opts: CapiEve
       logActivity(opts.bizId, 'CAPI_EVENT', `CAPI ${event || eventName} পাঠানো যায়নি: ${err.response?.data?.error?.message || err.message}`, 'error', opts.ownerId).catch(() => {});
     }
     return { ok: false, skipped: 'request_failed' };
+  }
+}
+
+async function recordCapiDashboardEvent(input: {
+  businessId: string;
+  ownerId?: string;
+  eventName: string;
+  eventId?: string;
+  value?: number;
+  contentName?: string;
+  orderId?: string;
+  psid?: string;
+  status: 'sent' | 'failed';
+}) {
+  const bizId = String(input.businessId || '').trim();
+  if (!bizId) return;
+  const payload = omitUndefined({
+    businessId: bizId,
+    ownerId: input.ownerId || '',
+    eventName: String(input.eventName || ''),
+    eventId: String(input.eventId || ''),
+    value: typeof input.value === 'number' && input.value > 0 ? input.value : 0,
+    currency: 'BDT',
+    contentName: String(input.contentName || '').slice(0, 120),
+    orderId: String(input.orderId || ''),
+    psidTail: String(input.psid || '').slice(-6),
+    source: 'server',
+    channel: 'messenger',
+    status: input.status,
+    createdAtMs: Date.now(),
+  });
+  const docId = String(input.eventId || '').replace(/[^\w.-]/g, '').slice(0, 120);
+  try {
+    if (adminDb) {
+      if (docId) {
+        await adminDb.collection('capi_events').doc(docId).set({
+          ...payload,
+          timestamp: admin.firestore.FieldValue.serverTimestamp(),
+        }, { merge: true });
+      } else {
+        await adminDb.collection('capi_events').add({
+          ...payload,
+          timestamp: admin.firestore.FieldValue.serverTimestamp(),
+        });
+      }
+      return;
+    }
+    if (db) {
+      if (docId) {
+        await setDoc(doc(db, 'capi_events', docId), { ...payload, timestamp: serverTimestamp() }, { merge: true });
+      } else {
+        await addDoc(collection(db, 'capi_events'), { ...payload, timestamp: serverTimestamp() });
+      }
+    }
+  } catch (err: any) {
+    console.warn('[CAPI] dashboard event save failed:', err?.message || err);
   }
 }
 

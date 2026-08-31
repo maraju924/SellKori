@@ -21,7 +21,8 @@ import {
   Globe, 
   TrendingUp, 
   Sliders, 
-  Users
+  Users,
+  Activity
 } from 'lucide-react';
 import { db, firestoreDatabaseLabel, getPanelFirestoreDbs, setPanelWriteDb } from '../../lib/firebase';
 import { BusinessConfig, Order, UserProfile } from '../../types';
@@ -35,6 +36,7 @@ import { MerchantHeader } from './MerchantHeader';
 import { MerchantSidebar } from './MerchantSidebar';
 import { MerchantMobileNav } from './MerchantMobileNav';
 import { MerchantOverview } from './MerchantOverview';
+import { MerchantMetaAnalytics } from './MerchantMetaAnalytics';
 import { MerchantOrders } from './MerchantOrders';
 import { MerchantProducts } from './MerchantProducts';
 import { MerchantCRM } from './MerchantCRM';
@@ -327,6 +329,7 @@ export function MerchantPanel({ user, profile }: MerchantPanelProps) {
   const searchableItems = [
     ...(isAdmin ? [{ id: 'admin-portal', title: 'অ্যাডমিন', icon: Sliders, href: '/admin' }] : []),
     { id: 'analytics', title: 'ওভারভিউ', icon: TrendingUp },
+    { id: 'meta', title: 'মেটা', icon: Activity },
     { id: 'orders', title: 'অর্ডার', icon: Package },
     { id: 'products', title: 'পণ্য', icon: Tag },
     { id: 'customers', title: 'গ্রাহক', icon: Users },
@@ -461,6 +464,10 @@ export function MerchantPanel({ user, profile }: MerchantPanelProps) {
               orders={orders}
               onNavigateTab={(tab) => setActiveTab(tab)}
             />
+          )}
+
+          {activeTab === 'meta' && (
+            <MerchantMetaAnalytics business={business} orders={orders} />
           )}
 
           {activeTab === 'orders' && (
