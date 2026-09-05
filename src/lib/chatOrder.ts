@@ -7,6 +7,8 @@ import {
   normalizePhone,
 } from './orderIdentity';
 import { shouldCreateConfirmedOrder } from './chatRuntime';
+import { clampNegotiatedUnitPrice } from './bargaining';
+import { isFeatureEnabled } from './featureFlags';
 
 export { extractBdPhone, normalizePhone } from './orderIdentity';
 
@@ -169,7 +171,13 @@ export async function saveConfirmedOrder(params: {
 
   const matched = findMatchingProduct(business, productName);
   const qty = Math.max(1, parseInt(String(collected.quantity || '1'), 10) || 1);
-  const unitPrice = parseUnitPrice(collected.negotiated_price, matched?.price || 0);
+  const unitPrice = clampNegotiatedUnitPrice({
+    product: matched,
+    quantity: qty,
+    negotiated: collected.negotiated_price,
+    sensitivity: business.bargainingSensitivity,
+    negotiationEnabled: isFeatureEnabled(business.features, 'negotiationEnabled'),
+  });
   const deliveryFee = business.courierConfig?.deliveryChargeInsideDhaka || 70;
   const orderId = `ord-${Date.now()}`;
   const payload: any = {
