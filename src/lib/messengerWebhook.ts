@@ -146,7 +146,9 @@ export function isMetaWebhookVerification(query: Record<string, unknown> | undef
   return parsed.mode === 'subscribe' && Boolean(parsed.challenge);
 }
 
-export function isMetaPageWebhookPayload(body: unknown): boolean {
+export function isMetaPageWebhookPayload(
+  body: unknown
+): body is { object: 'page'; entry: any[] } {
   if (!body || typeof body !== 'object') return false;
   const payload = body as { object?: unknown; entry?: unknown };
   return payload.object === 'page' && Array.isArray(payload.entry);

@@ -75,7 +75,7 @@ function testBodyNormalization() {
   assert.equal(isEmptyWebhookBody({}), true);
   assert.equal(isEmptyWebhookBody(payload), false);
 
-  const req = { body: payload };
+  const req: { body?: unknown; _body?: boolean } = { body: payload };
   markExpressBodyParsed(req);
   assert.equal(req._body, true);
   assert.equal((req.body as { object: string }).object, 'page');

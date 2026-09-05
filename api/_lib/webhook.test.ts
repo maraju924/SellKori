@@ -85,6 +85,62 @@ async function testWaitsUntilExpressFinishes() {
   await pending;
 }
 
+async function testVercelPostKeepsMessageAndWaitsForReply() {
+  const payload = {
+    object: 'page',
+    entry: [{
+      id: 'PAGE1',
+      messaging: [{
+        sender: { id: 'PSID1' },
+        message: { text: 'দাম কত?', mid: 'mid.live-1' }
+      }]
+    }]
+  };
+
+  const wiped: { body?: unknown } = { body: payload };
+  wiped.body = {};
+  assert.equal(wiped.body && typeof wiped.body === 'object' && (wiped.body as any).object === 'page', false);
+
+  const req: { body?: unknown; _body?: boolean } = { body: JSON.stringify(payload) };
+  preserveParsedJsonBody(req);
+  if (!req._body) req.body = {};
+  assert.equal((req.body as any).object, 'page');
+
+  const listeners: Record<string, Array<() => void>> = {};
+  const res: any = {
+    writableEnded: false,
+    headersSent: false,
+    statusCode: 0,
+    body: '',
+    once(event: string, listener: () => void) {
+      (listeners[event] ||= []).push(listener);
+    },
+    end(text?: string) {
+      res.body = text;
+      res.writableEnded = true;
+      res.headersSent = true;
+      (listeners.finish || []).forEach((fn) => fn());
+    }
+  };
+
+  let savedMessage = '';
+  let replyText = '';
+  await waitForExpress((incoming) => {
+    const event = incoming.body.entry[0].messaging[0];
+    savedMessage = event.message.text;
+    replyText = 'জি, আমি সাহায্য করছি। কোন পণ্যের দাম জানতে চান?';
+    setTimeout(() => {
+      res.statusCode = 200;
+      res.end('EVENT_RECEIVED');
+    }, 20);
+  }, req, res);
+
+  assert.equal(savedMessage, 'দাম কত?');
+  assert.equal(Boolean(replyText), true);
+  assert.equal(res.body, 'EVENT_RECEIVED');
+  assert.equal(res.statusCode, 200);
+}
+
 async function testHandlerGetEchoesChallenge() {
   const res = mockRes();
   await handler({
@@ -110,6 +166,7 @@ testRejectsEmptyToken();
 testRejectsMissingChallenge();
 testPreservesVercelParsedBody();
 await testWaitsUntilExpressFinishes();
+await testVercelPostKeepsMessageAndWaitsForReply();
 await testHandlerGetEchoesChallenge();
 await testHandlerRejectsUnknownMethod();
 assert.equal(maxDuration, 60);
