@@ -4,15 +4,19 @@ import {
   coerceMillis,
   commentMatchesKeywords,
   extractFeedCommentEvents,
+  facebookObjectIdsMatch,
   findMentionedProductName,
   isWithinMessagingWindow,
   mapPool,
   matchesBroadcastAudience,
   MESSAGING_WINDOW_MS,
   normalizeOutreachCustomer,
+  buildCommentReplyPrompt,
+  parseCommentAiReplyJson,
   parseCommentKeywords,
   personalizeOutreachMessage,
   planBroadcastRecipients,
+  shouldReplyToComment,
   shouldPrivateReplyToComment
 } from './outreach.ts';
 
@@ -128,8 +132,19 @@ function testFeedComments() {
           comment_id: 'p_c2',
           post_id: '111_222',
           parent_id: 'p_c1',
-          message: 'দাম কত?',
+          message: 'সুন্দর',
           from: { id: '888', name: 'Nested' }
+        }
+      },
+      {
+        field: 'comments',
+        value: {
+          verb: 'add',
+          comment_id: 'p_c3',
+          post_id: '111_222',
+          parent_id: '222',
+          message: 'ভাইয়া',
+          from: { id: '777', name: 'PhotoPost' }
         }
       },
       {
@@ -138,11 +153,15 @@ function testFeedComments() {
       }
     ]
   });
-  assert.equal(events.length, 2);
+  assert.equal(events.length, 3);
   assert.equal(events[0].isTopLevel, true);
   assert.equal(events[1].isTopLevel, false);
-  assert.equal(shouldPrivateReplyToComment(events[0], ['দাম']), true);
-  assert.equal(shouldPrivateReplyToComment(events[1], ['দাম']), false);
+  assert.equal(events[2].isTopLevel, true);
+  assert.equal(shouldReplyToComment(events[0]), true);
+  assert.equal(shouldReplyToComment(events[1]), true);
+  assert.equal(shouldPrivateReplyToComment({ ...events[0], message: 'শুভ সকাল' }, ['দাম']), true);
+  assert.equal(shouldReplyToComment({ ...events[0], message: '' }), true);
+  assert.equal(shouldReplyToComment({ ...events[0], fromId: '' }), true);
 
   const pageOwn = {
     ...events[0],
@@ -150,6 +169,24 @@ function testFeedComments() {
     pageId: '111'
   };
   assert.equal(shouldPrivateReplyToComment(pageOwn, ['দাম']), false);
+  assert.equal(facebookObjectIdsMatch('111_222', '222'), true);
+  assert.equal(facebookObjectIdsMatch('111_222', '111_333'), false);
+}
+
+function testCommentAiParse() {
+  const parsed = parseCommentAiReplyJson('{"publicReply":"৳১২০০","inboxMessage":"এই প্রোডাক্টের দাম ১২০০ টাকা।"}');
+  assert.equal(parsed.publicReply, '৳১২০০');
+  assert.match(parsed.inboxMessage, /১২০০/);
+  const plain = parseCommentAiReplyJson('দাম ৫০০ টাকা ভাই');
+  assert.equal(plain.publicReply, 'দাম ৫০০ টাকা ভাই');
+  assert.equal(plain.inboxMessage, 'দাম ৫০০ টাকা ভাই');
+  const prompt = buildCommentReplyPrompt({
+    shopName: 'টেস্ট শপ',
+    comment: 'এইটা কেমন?',
+    products: [{ name: 'পাঞ্জাবি', price: 1200 }]
+  });
+  assert.match(prompt, /এইটা কেমন\?/);
+  assert.match(prompt, /পাঞ্জাবি/);
 }
 
 async function testMapPool() {
@@ -164,5 +201,6 @@ testCoerceAndNormalize();
 testWindowAndAudience();
 testPlanRecipients();
 testFeedComments();
+testCommentAiParse();
 await testMapPool();
 console.log('outreach tests passed');
