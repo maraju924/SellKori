@@ -109,7 +109,9 @@ export function extractWebhookBusinessId(
   pathname: string,
   params?: Record<string, unknown>
 ): string | undefined {
-  const fromParams = firstQueryValue(params?.businessId || params?.['0']);
+  const fromParams = firstQueryValue(
+    params?.businessId || params?.pathBizId || params?.['0']
+  );
   if (fromParams && !RESERVED_PATH_SEGMENTS.has(fromParams)) return fromParams;
 
   const parts = pathname.split('/').filter(Boolean).map((part) => part.replace(/\.(ts|js)$/i, ''));
@@ -148,6 +150,107 @@ export function isMetaPageWebhookPayload(body: unknown): boolean {
   if (!body || typeof body !== 'object') return false;
   const payload = body as { object?: unknown; entry?: unknown };
   return payload.object === 'page' && Array.isArray(payload.entry);
+}
+
+/**
+ * Vercel Node handlers often pre-parse JSON onto `req.body` as an object or
+ * string. Express `json()` then re-reads an already-consumed stream and
+ * overwrites that payload with `{}` — Meta POSTs look empty, so nothing is
+ * saved and no reply is sent.
+ */
+export function normalizeWebhookJsonBody(body: unknown): unknown {
+  if (typeof body === 'string') {
+    const trimmed = body.trim();
+    if (!trimmed) return body;
+    try {
+      return JSON.parse(trimmed);
+    } catch {
+      return body;
+    }
+  }
+  if (typeof Buffer !== 'undefined' && Buffer.isBuffer(body)) {
+    try {
+      return JSON.parse(body.toString('utf8'));
+    } catch {
+      return body;
+    }
+  }
+  return body;
+}
+
+export function markExpressBodyParsed(req: { body?: unknown; _body?: boolean }): void {
+  const normalized = normalizeWebhookJsonBody(req.body);
+  req.body = normalized;
+  if (normalized && typeof normalized === 'object' && !Buffer.isBuffer(normalized as Buffer)) {
+    req._body = true;
+  }
+}
+
+export function isEmptyWebhookBody(body: unknown): boolean {
+  if (body == null) return true;
+  if (typeof body === 'string') return body.trim().length === 0;
+  if (typeof body !== 'object') return false;
+  if (Array.isArray(body)) return body.length === 0;
+  return Object.keys(body as Record<string, unknown>).length === 0;
+}
+
+export type MessageClaim = 'fresh' | 'in_flight' | 'done';
+
+export function evaluateMessageClaim(
+  existing: { startedAt: number; completedAt?: number } | undefined,
+  now: number,
+  staleMs: number,
+  ttlMs: number
+): MessageClaim {
+  if (!existing) return 'fresh';
+  if (existing.completedAt !== undefined && now - existing.completedAt <= ttlMs) return 'done';
+  if (existing.completedAt === undefined && now - existing.startedAt <= staleMs) return 'in_flight';
+  return 'fresh';
+}
+
+export function invokeExpressApp(
+  app: (req: unknown, res: unknown) => unknown,
+  req: unknown,
+  res: {
+    writableEnded?: boolean;
+    once: (event: string, listener: (...args: any[]) => void) => void;
+  }
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (res.writableEnded) {
+      resolve();
+      return;
+    }
+
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      resolve();
+    };
+
+    res.once('finish', finish);
+    res.once('close', finish);
+    res.once('error', (err: unknown) => {
+      if (settled) return;
+      settled = true;
+      reject(err);
+    });
+
+    try {
+      const maybe = app(req, res);
+      if (maybe && typeof (maybe as Promise<unknown>).then === 'function') {
+        (maybe as Promise<unknown>).then(() => {
+          if (res.writableEnded) finish();
+        }, reject);
+      }
+    } catch (err) {
+      if (!settled) {
+        settled = true;
+        reject(err);
+      }
+    }
+  });
 }
 
 export function collectBusinessVerifyTokens(business: Record<string, unknown> | null | undefined): string[] {
