@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import handler, { maxDuration } from './messenger.js';
+import handler, { maxDuration } from '../messenger.js';
 import {
   MANUAL_SUBSCRIBE_HINT,
   PAGE_SUBSCRIBE_FIELDS,

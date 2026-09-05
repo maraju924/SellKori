@@ -30,8 +30,8 @@ import {
   normalizeShopSlug,
   publicShopSlug,
   suggestedShopSlug,
-} from './shopSlug.js';
-import { parseShopRequest, readJsonBody } from './shopRoute.js';
+} from './_lib/shopSlug.js';
+import { parseShopRequest, readJsonBody } from './_lib/shopRoute.js';
 import {
   buildStoreCheckoutOrder,
   decrementShopStock,
@@ -39,8 +39,8 @@ import {
   omitUndefined,
   sanitizeCart,
   sanitizePublicOrder,
-} from './shopCheckout.js';
-import { sanitizePublicProduct } from './shopPublicProduct.js';
+} from './_lib/shopCheckout.js';
+import { sanitizePublicProduct } from './_lib/shopPublicProduct.js';
 
 export const maxDuration = 60;
 

@@ -7,8 +7,8 @@ import {
   facebookErrorMessage,
   subscribePageToMessenger,
   tokenSuccessPayload,
-} from './messengerTokenCore.js';
-import { parseMessengerTokenRequest, readJsonBody } from './messengerTokenRoute.js';
+} from './_lib/messengerTokenCore.js';
+import { parseMessengerTokenRequest, readJsonBody } from './_lib/messengerTokenRoute.js';
 
 export const maxDuration = 30;
 
