@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { parseShopRequest, readJsonBody, requestPathname } from './shopRoute.js';
-import { maxDuration } from './health.js';
+import { maxDuration } from '../health.js';
 import { buildStoreCheckoutOrder, isInsideDhakaDelivery } from './shopCheckout.js';
 import { sanitizePublicProduct } from './shopPublicProduct.js';
 

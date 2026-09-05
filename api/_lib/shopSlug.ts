@@ -16,4 +16,4 @@ export {
   slugEditDistance,
   slugifyStoreName,
   suggestedShopSlug,
-} from '../src/lib/storeSlug.js';
+} from '../../src/lib/storeSlug.js';

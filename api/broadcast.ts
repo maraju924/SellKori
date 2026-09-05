@@ -35,8 +35,8 @@ import {
   clipBroadcastTitle,
   normalizeBroadcastAudience,
   pageTokenForBusiness,
-} from './broadcastCore.js';
-import { parseBroadcastRequest, readJsonBody } from './broadcastRoute.js';
+} from './_lib/broadcastCore.js';
+import { parseBroadcastRequest, readJsonBody } from './_lib/broadcastRoute.js';
 
 export const maxDuration = 60;
 

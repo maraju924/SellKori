@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import handler, { maxDuration } from './broadcast.js';
+import handler, { maxDuration } from '../broadcast.js';
 import {
   broadcastFeaturesAllowed,
   clipBroadcastMessage,

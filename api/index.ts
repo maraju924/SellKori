@@ -22,7 +22,7 @@ import {
   readCapiCredentials,
   resolveMessengerFunnelEvent,
   utcDay,
-} from './capi.js';
+} from './_lib/capi.js';
 import {
   buildFeaturePromptBlock,
   isFeatureEnabled,
@@ -43,7 +43,7 @@ import {
 } from '../src/lib/outreach.js';
 import broadcastHandler from './broadcast.js';
 import messengerTokenHandler from './messenger.js';
-import { PAGE_SUBSCRIBE_FIELDS } from './messengerTokenCore.js';
+import { PAGE_SUBSCRIBE_FIELDS } from './_lib/messengerTokenCore.js';
 import { parseFirebaseServiceAccount } from '../src/lib/aiPool.js';
 import {
   isReservedShopSlug,
@@ -53,7 +53,7 @@ import {
   normalizeShopSlug,
   publicShopSlug,
   suggestedShopSlug,
-} from './shopSlug.js';
+} from './_lib/shopSlug.js';
 import {
   buildStoreCheckoutOrder,
   decrementShopStock,
@@ -61,8 +61,8 @@ import {
   omitUndefined,
   sanitizeCart,
   sanitizePublicOrder,
-} from './shopCheckout.js';
-import { sanitizePublicProduct } from './shopPublicProduct.js';
+} from './_lib/shopCheckout.js';
+import { sanitizePublicProduct } from './_lib/shopPublicProduct.js';
 
 export const maxDuration = 60;
 
