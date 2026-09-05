@@ -10,7 +10,7 @@
     "preview": "vite preview",
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit",
-    "test": "tsx src/lib/panelFirestore.test.ts && tsx src/lib/featureFlags.test.ts && tsx src/lib/merchantPrompt.test.ts && tsx src/lib/outreach.test.ts && tsx src/lib/productCatalog.test.ts && tsx src/lib/productSeo.test.ts && tsx src/lib/imageSend.test.ts && tsx src/lib/aiPool.test.ts && tsx src/lib/landingContent.test.ts && tsx src/lib/messengerWebhook.test.ts && tsx src/lib/messengerFallback.test.ts && tsx src/lib/chatRuntime.test.ts && tsx src/lib/chatSession.test.ts && tsx src/lib/chatApi.test.ts && tsx src/lib/storeSlug.test.ts && tsx src/lib/storefront.test.ts && tsx src/lib/shopApi.test.ts && tsx src/lib/metaAnalytics.test.ts && tsx api/webhook.test.ts && tsx api/shop.test.ts && tsx api/capi.test.ts"
+    "test": "tsx src/lib/panelFirestore.test.ts && tsx src/lib/featureFlags.test.ts && tsx src/lib/merchantPrompt.test.ts && tsx src/lib/bargaining.test.ts && tsx src/lib/outreach.test.ts && tsx src/lib/productCatalog.test.ts && tsx src/lib/productSeo.test.ts && tsx src/lib/imageSend.test.ts && tsx src/lib/aiPool.test.ts && tsx src/lib/landingContent.test.ts && tsx src/lib/messengerWebhook.test.ts && tsx src/lib/messengerFallback.test.ts && tsx src/lib/chatRuntime.test.ts && tsx src/lib/chatSession.test.ts && tsx src/lib/chatApi.test.ts && tsx src/lib/storeSlug.test.ts && tsx src/lib/storefront.test.ts && tsx src/lib/shopApi.test.ts && tsx src/lib/metaAnalytics.test.ts && tsx api/webhook.test.ts && tsx api/shop.test.ts && tsx api/capi.test.ts"
   },
   "dependencies": {
     "@base-ui/react": "^1.4.0",

@@ -119,7 +119,7 @@ export const FEATURE_CATALOG: FeatureDefinition[] = [
   {
     key: 'negotiationEnabled',
     title: 'স্মার্ট দরদাম ইঞ্জিন',
-    desc: 'Min Price পর্যন্ত ধাপে ধাপে দরদাম করবে। বন্ধ থাকলে ফিক্সড দাম।',
+    desc: 'স্লাইডার অনুযায়ী Min Price পর্যন্ত ধাপে ধাপে দরদাম। বন্ধ থাকলে ফিক্সড দাম।',
     impact: 'প্রাইসিং পলিসি',
     group: 'sales',
     tab: 'ai-control'
@@ -374,7 +374,7 @@ export function buildFeaturePromptBlock(features: BusinessFeatures | null | unde
   if (f.negotiationEnabled === false) {
     lines.push('- দরদাম নিষিদ্ধ। ক্যাটালগে লেখা বিক্রয় মূল্যই চূড়ান্ত। minPrice পর্যন্তও নামবে না।');
   } else {
-    lines.push('- দরদাম অনুমোদিত, কিন্তু কখনোই minPrice-এর নিচে নামবে না।');
+    lines.push('- দরদাম অনুমোদিত। সার্ভার-হিসাব করা অফার ব্যান্ড ও ধাপ মেনে চলবে; ব্যান্ডের নিচে নামবে না।');
   }
 
   if (f.upsellEnabled === false) {

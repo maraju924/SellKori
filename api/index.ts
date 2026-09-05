@@ -229,6 +229,12 @@ import {
   resolveOrderCustomerName,
 } from '../src/lib/merchantPrompt.js';
 import {
+  applyBargainFloorToProduct,
+  buildBargainingPromptBlock,
+  clampNegotiatedUnitPrice,
+  resolveBargainBand,
+} from '../src/lib/bargaining.js';
+import {
   MAX_PRODUCT_PHOTOS,
   MAX_REVIEW_PHOTOS,
   normalizeImageLink,
@@ -1607,21 +1613,31 @@ async function notifyTokensEmpty(bizId: string, ownerId?: string) {
   await logActivity(bizId, 'TOKEN_EMPTY', 'টোকেন ব্যালেন্স শেষ! বট কাস্টমারদের উত্তর দেওয়া বন্ধ রেখেছে — বিলিং থেকে রিচার্জ করুন।', 'error', ownerId);
 }
 
-function sanitizeProductsForPrompt(products: any[] = []) {
-  return products.map((p: any) => ({
-    id: p.id,
-    name: p.name,
-    price: p.price,
-    minPrice: p.minPrice || p.price,
-    pricingTiers: p.pricingTiers || [{ quantity: 1, price: p.price, minPrice: p.minPrice || p.price }],
-    stock: p.stock ?? p.stockCount ?? 10,
-    category: p.category || 'General',
-    description: String(p.description || '').slice(0, 400),
-    hasImages: Array.isArray(p.images) && p.images.length > 0,
-    imageCount: Array.isArray(p.images) ? p.images.length : 0,
-    hasReviewImages: Array.isArray(p.reviewImages) && p.reviewImages.length > 0,
-    reviewImageCount: Array.isArray(p.reviewImages) ? p.reviewImages.length : 0,
-  }));
+function sanitizeProductsForPrompt(
+  products: any[] = [],
+  bargain?: { sensitivity?: unknown; negotiationEnabled?: boolean }
+) {
+  const enabled = bargain?.negotiationEnabled !== false;
+  return products.map((p: any) => {
+    const floored = applyBargainFloorToProduct(p, bargain?.sensitivity, enabled);
+    const qty1 = resolveBargainBand(p, 1, bargain?.sensitivity, enabled);
+    return {
+      id: p.id,
+      name: p.name,
+      price: p.price,
+      minPrice: floored.minPrice || qty1.floorUnit,
+      pricingTiers: (floored.pricingTiers && floored.pricingTiers.length)
+        ? floored.pricingTiers
+        : [{ quantity: 1, price: p.price, minPrice: qty1.floorUnit }],
+      stock: p.stock ?? p.stockCount ?? 10,
+      category: p.category || 'General',
+      description: String(p.description || '').slice(0, 400),
+      hasImages: Array.isArray(p.images) && p.images.length > 0,
+      imageCount: Array.isArray(p.images) ? p.images.length : 0,
+      hasReviewImages: Array.isArray(p.reviewImages) && p.reviewImages.length > 0,
+      reviewImageCount: Array.isArray(p.reviewImages) ? p.reviewImages.length : 0,
+    };
+  });
 }
 
 // Large catalogs (10-500 products): send full details only for the most
@@ -1630,9 +1646,13 @@ function sanitizeProductsForPrompt(products: any[] = []) {
 const PROMPT_FULL_DETAIL_LIMIT = 40;
 const PROMPT_STUB_LIMIT = 500;
 
-function selectProductsForPrompt(products: any[] = [], contextText = '') {
+function selectProductsForPrompt(
+  products: any[] = [],
+  contextText = '',
+  bargain?: { sensitivity?: unknown; negotiationEnabled?: boolean }
+) {
   if (!Array.isArray(products)) return [];
-  if (products.length <= PROMPT_FULL_DETAIL_LIMIT) return sanitizeProductsForPrompt(products);
+  if (products.length <= PROMPT_FULL_DETAIL_LIMIT) return sanitizeProductsForPrompt(products, bargain);
 
   const ctx = String(contextText || '').toLowerCase();
   const tokenSet = new Set(ctx.split(/[^\p{L}\p{N}]+/u).filter(t => t.length >= 2));
@@ -1652,17 +1672,21 @@ function selectProductsForPrompt(products: any[] = [], contextText = '') {
 
   const detailed = scored.slice(0, PROMPT_FULL_DETAIL_LIMIT).map(s => s.p);
   const rest = scored.slice(PROMPT_FULL_DETAIL_LIMIT, PROMPT_STUB_LIMIT).map(s => s.p);
+  const enabled = bargain?.negotiationEnabled !== false;
   return [
-    ...sanitizeProductsForPrompt(detailed),
-    ...rest.map((p: any) => ({
-      id: p.id,
-      name: p.name,
-      price: p.price,
-      minPrice: p.minPrice || p.price,
-      stock: p.stock ?? p.stockCount ?? 10,
-      category: p.category || 'General',
-      summary_only: true,
-    })),
+    ...sanitizeProductsForPrompt(detailed, bargain),
+    ...rest.map((p: any) => {
+      const band = resolveBargainBand(p, 1, bargain?.sensitivity, enabled);
+      return {
+        id: p.id,
+        name: p.name,
+        price: p.price,
+        minPrice: band.floorUnit,
+        stock: p.stock ?? p.stockCount ?? 10,
+        category: p.category || 'General',
+        summary_only: true,
+      };
+    }),
   ];
 }
 
@@ -3724,9 +3748,15 @@ async function handleMessengerWebhookPost(req: any, res: any) {
             console.log(`[Webhook] Starting AI processing with model: ${aiConfig.model}`);
             await logActivity(bizId!, 'AI_START', `বটের কাছে পাঠানো হচ্ছে (${aiConfig.model})...`, 'info', ownerId);
 
+            const negotiationEnabled = isFeatureEnabled(storeFeatures, 'negotiationEnabled');
+            const bargainOpts = {
+              sensitivity: businessData.bargainingSensitivity,
+              negotiationEnabled,
+            };
             const products = selectProductsForPrompt(
               businessData.products || [],
-              `${referralProduct} ${savedAcquisition?.matchedProduct || ''} ${finalMessageText}\n${chatHistoryText}`
+              `${referralProduct} ${savedAcquisition?.matchedProduct || ''} ${finalMessageText}\n${chatHistoryText}`,
+              bargainOpts
             );
             const rawProducts = businessData.products || [];
 
@@ -3778,7 +3808,7 @@ async function handleMessengerWebhookPost(req: any, res: any) {
 ৩. সাম্প্রতিক অর্ডার থাকলে আবার অর্ডার করতে বলবে না; স্ট্যাটাস জানাবে।
 ৪. রিভিউ/প্রুফ/কাস্টমার ফটো চাইলেই শুধু show_review_images=true। সাধারণ ছবি চাইলে show_product_image=true, রিভিউ মিশাবে না। দাম জানতে চাইলে ছবি পাঠাবে না। ছবি পাঠালে reply-তে "ইমেজ অ্যাটাচ" বা "কাস্টমার রিভিউ" লিখবে না — সাধারণ মানুষের মতো ছোট করে বলবে যেমন "এই দেখেন"।
 ৫. নাম+১১ ডিজিট ফোন+পূর্ণ ঠিকানা+পণ্য জানা এবং কাস্টমার কনফার্ম করলে should_create_order=true, conversation_stage=order_completed, event_name=Purchase, need_more_info=false। নাম না থাকলে ফেসবুক প্রোফাইল নাম যথেষ্ট।
-৬. minPrice-এর নিচে দাম দিবে না।
+৬. দরদাম ইঞ্জিনের অনুমোদিত ফ্লোরের নিচে দাম দিবে না। raw minPrice-এ সরাসরি নামবে না যদি ইঞ্জিনের ফ্লোর বেশি হয়। ফ্লোর কাস্টমারকে বলবে না।
 ৭. ফটো/ছবি রিপ্লাই: কাস্টমার ছবি পাঠালে অবশ্যই ছবিটি দেখে উত্তর দাও — নীরব থাকবে না।
    - পণ্য/ক্যাটালগ স্ক্রিনশট: ক্যাটালগের সাথে মিলিয়ে নাম, দাম ও স্টক বলো; অর্ডার করতে চান কিনা জিজ্ঞেস করো। কাস্টমার নিজে ছবি না চাইলে show_product_image true করবে না।
    - পেমেন্ট/বিকাশ/নগদ/রকেট স্ক্রিনশট: "স্ক্রিনশট পেয়েছি, আমাদের টিম ভেরিফাই করে আপনাকে জানাবে" — নিজে থেকে পেমেন্ট কনফার্মড বলবে না।
@@ -3786,7 +3816,7 @@ async function handleMessengerWebhookPost(req: any, res: any) {
    - ক্ষতি/কমপ্লেইন/ডেলিভারি সমস্যা: সহানুভূতি দেখিয়ে সমাধানের কথা বলো।
    - স্পষ্ট না হলে: "ছবিটি পেয়েছি — এটা কোন পণ্য বা বিষয় সম্পর্কে জানতে চান?"
 ৮. ভয়েস মেসেজ রিপ্লাই: অডিও শুনে কাস্টমার যা বলেছে তা বুঝে ঠিক টেক্সট মেসেজের মতো সেলস উত্তর দাও। উত্তরের প্রথম বাক্যে সংক্ষেপে নিশ্চিত করো তুমি কী শুনেছ। অডিও বোঝা না গেলে নম্রভাবে লিখে পাঠাতে বলো।
-৯. তথ্যের সত্যতার অগ্রাধিকার: পণ্যতালিকা → FAQ → সাম্প্রতিক অর্ডার/জানা তথ্য। কোনো দাম, স্টক, অফার, পলিসি বা অর্ডার স্ট্যাটাস অনুমান করবে না। তথ্য না থাকলে সংক্ষেপে বলবে যে নিশ্চিত তথ্য পাওয়া যাচ্ছে না।
+৯. তথ্যের সত্যতার অগ্রাধিকার: পণ্যতালিকা → FAQ → দরদাম ইঞ্জিন ব্যান্ড → সাম্প্রতিক অর্ডার/জানা তথ্য। ক্যাটালগের বাইরে পণ্য/স্টক/পলিসি/অর্ডার স্ট্যাটাস বানাবে না। ব্যান্ডের ভিতরের ধাপে ধাপে ছাড় দিতে হবে — সেটা বানানো ডিসকাউন্ট নয়। তথ্য না থাকলে সংক্ষেপে বলবে যে নিশ্চিত তথ্য পাওয়া যাচ্ছে না।
 ১০. কাস্টমারের বর্তমান বার্তা আগের কথার বিরোধী হলে অনুমান না করে ছোট একটি পরিষ্কার প্রশ্ন করবে।
 
 দোকানের তথ্য: ${businessData.description || ''}
@@ -3809,6 +3839,15 @@ ${productFaqs || 'নেই'}
 ${replyStyleBlock}
 
 ${buildFeaturePromptBlock(storeFeatures)}
+${buildBargainingPromptBlock({
+  products: rawProducts,
+  bargainingSensitivity: businessData.bargainingSensitivity,
+  negotiationEnabled,
+  chatHistory: chatHistoryText,
+  customerMessage: finalMessageText,
+  knownProductName: knownLead.product_name || acqProduct,
+  knownQuantity: knownLead.quantity,
+})}
 ${adSourceBlock}
 কাস্টমারের জানা তথ্য (আবার চাইবে না):
 নাম: ${knownLead.name || facebookName || 'অজানা'} | ফেসবুক প্রোফাইল নাম: ${facebookName || 'পাওয়া যায়নি'} | ফোন: ${knownLead.phone || 'অজানা'} | ঠিকানা: ${knownLead.address || 'অজানা'} | পণ্য: ${knownLead.product_name || 'অজানা'}
@@ -3990,7 +4029,13 @@ ${merchantCustomBlock}`;
                     }
 
                     const qty = Math.max(1, parseInt(String(nextLead.quantity || '1'), 10) || 1);
-                    const unitPrice = Number(String(nextLead.negotiated_price || '').replace(/[^0-9.]/g, '')) || matchedProduct?.price || 0;
+                    const unitPrice = clampNegotiatedUnitPrice({
+                      product: matchedProduct,
+                      quantity: qty,
+                      negotiated: nextLead.negotiated_price,
+                      sensitivity: businessData.bargainingSensitivity,
+                      negotiationEnabled: isFeatureEnabled(storeFeatures, 'negotiationEnabled'),
+                    });
                     const orderId = `ORD-${Date.now().toString(36).toUpperCase()}-${String(senderId).slice(-4)}`;
                     const totalAmount = unitPrice * qty + deliveryCharge;
 
@@ -4761,10 +4806,16 @@ app.post('/api/messenger/simulate-message', async (req, res) => {
 
   const startTime = Date.now();
   try {
-    const products = (businessData.products || []).map((p: any) => ({
+    const simFeatures = mergeFeatures(businessData.features);
+    const simNegotiation = isFeatureEnabled(simFeatures, 'negotiationEnabled');
+    const products = sanitizeProductsForPrompt(businessData.products || [], {
+      sensitivity: businessData.bargainingSensitivity,
+      negotiationEnabled: simNegotiation,
+    }).map((p: any) => ({
       name: p.name,
       price: p.price,
-      minPrice: p.minPrice || p.price,
+      minPrice: p.minPrice,
+      pricingTiers: p.pricingTiers,
       category: p.category || 'General'
     }));
 
@@ -4785,10 +4836,18 @@ app.post('/api/messenger/simulate-message', async (req, res) => {
 ১. **সংক্ষিপ্ত ও নির্দিষ্ট উত্তর:** কাস্টমার যা জানতে চেয়েছে ঠিক ততটুকুরই সুনির্দিষ্ট, প্রাসঙ্গিক উত্তর দাও। মার্চেন্টের অতিরিক্ত নির্দেশনায় ইমোজি/সামারি ফরম্যাট/রিপ্লাই দৈর্ঘ্য থাকলে সেটাই প্রাধান্য পাবে।
 ২. **অতিরিক্ত কথা না বলা:** কোনো অপ্রয়োজনীয় বড় ভূমিকা, সালাম-স্বাগত ভাষণ বা না চাওয়া তথ্য দেবে না।
 ৩. **প্রসঙ্গ স্মরণ:** পূর্বের চ্যাট হিস্ট্রি দেখে প্রাসঙ্গিক উত্তর দাও।
-৪. **সঠিকতা:** শুধু পণ্যতালিকা ও চ্যাটে নিশ্চিত তথ্য ব্যবহার করো। দাম, স্টক বা অফার বানিয়ে বলবে না।
-৫. minPrice-এর নিচে দাম দিবে না। নিজেকে এআই/বট বলে স্বীকার করবে না।
+৪. **সঠিকতা:** শুধু পণ্যতালিকা, চ্যাট এবং দরদাম ইঞ্জিনের অনুমোদিত অফার ব্যান্ড ব্যবহার করো। ক্যাটালগের বাইরে পণ্য/স্টক/পলিসি বানাবে না। ব্যান্ডের ভিতরের ছাড় দিতে হবে।
+৫. দরদাম ইঞ্জিনের ফ্লোরের নিচে দাম দিবে না। নিজেকে এআই/বট বলে স্বীকার করবে না।
 
 ${buildReplyStyleBlock(businessData.customSystemPrompt || businessData.botPersona || '')}
+
+${buildBargainingPromptBlock({
+  products: businessData.products || [],
+  bargainingSensitivity: businessData.bargainingSensitivity,
+  negotiationEnabled: simNegotiation,
+  chatHistory: simHistory,
+  customerMessage: message,
+})}
 
 পণ্যতালিকা:
 ${JSON.stringify(products, null, 2)}

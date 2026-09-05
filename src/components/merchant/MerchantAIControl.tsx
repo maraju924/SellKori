@@ -166,6 +166,9 @@ export function MerchantAIControl({ business }: MerchantAIControlProps) {
               <span>মাঝারি ছাড় (Min Price পর্যন্ত)</span>
               <span>সহজ ছাড় (দ্রুত অফার দেবে)</span>
             </div>
+            <p className="text-[10px] leading-relaxed text-zinc-500 dark:text-zinc-400">
+              সেভের পর এই স্লাইডার অনুযায়ী এআই ধাপে ধাপে ছাড় দেবে। Min Price-এর নিচে নামবে না।
+            </p>
           </div>
 
           {/* Delivery Charges */}
