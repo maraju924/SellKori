@@ -215,7 +215,7 @@ export const FEATURE_CATALOG: FeatureDefinition[] = [
   {
     key: 'commentToInboxEnabled',
     title: 'কমেন্ট-টু-ইনবক্স',
-    desc: 'পোস্টে দাম/ইনবক্স কমেন্ট এলে প্রাইভেট মেসেজ খুলে সেলস শুরু করবে।',
+    desc: 'যে কেউ পোস্টে কমেন্ট করলে AI সেই কমেন্টের উত্তর দিবে — পাবলিক রিপ্লাই ও ইনবক্স মেসেজ।',
     impact: 'ফিড কমেন্ট → মেসেঞ্জার',
     group: 'ops',
     tab: 'broadcasting'

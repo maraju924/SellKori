@@ -1,9 +1,8 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Send,
   Clock,
   MessageSquare,
-  Save,
   RefreshCw
 } from 'lucide-react';
 import { Button } from '../ui/button';
@@ -14,24 +13,13 @@ import { BusinessConfig, BroadcastingCampaign, BroadcastAudience } from '../../t
 import { toast } from 'sonner';
 import { isFeatureEnabled } from '../../lib/featureFlags';
 import { parseJsonResponse } from '../../lib/safeJson';
-import {
-  DEFAULT_COMMENT_INBOX_MESSAGE,
-  DEFAULT_COMMENT_KEYWORDS,
-  DEFAULT_COMMENT_PUBLIC_REPLY,
-  parseCommentKeywords
-} from '../../lib/outreach';
-import { db } from '../../lib/firebase';
 import { listenQueryAcrossPanelDbs } from '../../lib/panelDb';
 import {
   collection,
-  doc,
   query,
-  setDoc,
   where,
-  limit,
-  serverTimestamp
+  limit
 } from 'firebase/firestore';
-import { cleanFirestoreData } from '../../lib/utils';
 
 interface MerchantBroadcastingProps {
   business: BusinessConfig;
@@ -64,19 +52,6 @@ export function MerchantBroadcasting({ business }: MerchantBroadcastingProps) {
   const commentOn = isFeatureEnabled(business.features, 'commentToInboxEnabled');
   const messengerOn = isFeatureEnabled(business.features, 'messengerRepliesEnabled');
 
-  const [keywordsText, setKeywordsText] = useState(
-    Array.isArray(business.commentToInboxKeywords)
-      ? business.commentToInboxKeywords.join(', ')
-      : String(business.commentToInboxKeywords || DEFAULT_COMMENT_KEYWORDS.join(', '))
-  );
-  const [inboxMessage, setInboxMessage] = useState(
-    business.commentInboxMessage || DEFAULT_COMMENT_INBOX_MESSAGE
-  );
-  const [publicReply, setPublicReply] = useState(
-    business.commentPublicReply || DEFAULT_COMMENT_PUBLIC_REPLY
-  );
-  const [savingComment, setSavingComment] = useState(false);
-
   useEffect(() => {
     if (!business.id) return;
     return listenQueryAcrossPanelDbs<BroadcastingCampaign>(
@@ -96,8 +71,6 @@ export function MerchantBroadcasting({ business }: MerchantBroadcastingProps) {
   useEffect(() => {
     setPreview(null);
   }, [targetAudience]);
-
-  const keywordCount = useMemo(() => parseCommentKeywords(keywordsText).length, [keywordsText]);
 
   const fetchPreview = async (silent = false) => {
     if (!broadcastingOn || !messengerOn) return;
@@ -175,28 +148,6 @@ export function MerchantBroadcasting({ business }: MerchantBroadcastingProps) {
       toast.error(e.message || 'ব্রডকাস্ট ব্যর্থ হয়েছে');
     } finally {
       setIsSending(false);
-    }
-  };
-
-  const handleSaveCommentSettings = async () => {
-    if (!business.id) return;
-    setSavingComment(true);
-    try {
-      await setDoc(
-        doc(db, 'businesses', business.id),
-        cleanFirestoreData({
-          commentToInboxKeywords: parseCommentKeywords(keywordsText),
-          commentInboxMessage: inboxMessage.trim() || DEFAULT_COMMENT_INBOX_MESSAGE,
-          commentPublicReply: publicReply.trim() || DEFAULT_COMMENT_PUBLIC_REPLY,
-          updatedAt: serverTimestamp()
-        }),
-        { merge: true }
-      );
-      toast.success('কমেন্ট-টু-ইনবক্স সেটিংস সেভ হয়েছে');
-    } catch (e: any) {
-      toast.error(e.message || 'সেভ করা যায়নি');
-    } finally {
-      setSavingComment(false);
     }
   };
 
@@ -291,52 +242,22 @@ export function MerchantBroadcasting({ business }: MerchantBroadcastingProps) {
         </div>
       </div>
 
-      <div className="bg-white dark:bg-zinc-900 border border-zinc-200/80 dark:border-zinc-800 rounded-3xl p-6 shadow-xs space-y-4">
+      <div className="bg-white dark:bg-zinc-900 border border-zinc-200/80 dark:border-zinc-800 rounded-3xl p-6 shadow-xs space-y-3">
         <div className="flex flex-wrap items-center gap-2">
           <MessageSquare className="w-4 h-4 text-orange-500" />
-          <h3 className="text-sm font-semibold text-zinc-900 dark:text-white">কমেন্ট-টু-ইনবক্স</h3>
-          <span className={`text-xs ${commentOn ? 'text-emerald-600' : 'text-zinc-400'}`}>
-            {commentOn ? 'চালু' : 'বন্ধ'}
+          <h3 className="text-sm font-semibold text-zinc-900 dark:text-white">কমেন্ট এলেই AI রিপ্লাই</h3>
+          <span className={`text-xs ${commentOn && messengerOn ? 'text-emerald-600' : 'text-zinc-400'}`}>
+            {commentOn && messengerOn ? 'চালু' : 'বন্ধ'}
           </span>
         </div>
-
-        <div className="space-y-1.5">
-          <label className="text-xs font-bold text-zinc-700 dark:text-zinc-300">ট্রিগার কিওয়ার্ড ({keywordCount}টি)</label>
-          <Textarea
-            value={keywordsText}
-            onChange={e => setKeywordsText(e.target.value)}
-            className="min-h-[72px] rounded-2xl text-xs"
-            placeholder="দাম, প্রাইস, price, inbox, ইনবক্স"
-          />
-        </div>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-          <div className="space-y-1.5">
-            <label className="text-xs font-bold text-zinc-700 dark:text-zinc-300">প্রাইভেট ইনবক্স মেসেজ</label>
-            <Textarea
-              value={inboxMessage}
-              onChange={e => setInboxMessage(e.target.value)}
-              className="min-h-[96px] rounded-2xl text-xs"
-            />
-          </div>
-          <div className="space-y-1.5">
-            <label className="text-xs font-bold text-zinc-700 dark:text-zinc-300">পাবলিক কমেন্ট রিপ্লাই</label>
-            <Input
-              value={publicReply}
-              onChange={e => setPublicReply(e.target.value)}
-              className="h-10 rounded-xl text-xs"
-            />
-            <p className="text-[10px] text-zinc-400">খালি রাখলে পাবলিক রিপ্লাই যাবে না, শুধু ইনবক্স খুলবে।</p>
-          </div>
-        </div>
-        <Button
-          type="button"
-          onClick={handleSaveCommentSettings}
-          disabled={savingComment}
-          className="rounded-2xl h-10 text-xs font-black bg-orange-600 hover:bg-orange-500 text-white"
-        >
-          <Save className="w-3.5 h-3.5 mr-1.5" />
-          {savingComment ? 'সেভ হচ্ছে...' : 'কমেন্ট সেটিংস সেভ'}
-        </Button>
+        <p className="text-xs text-zinc-500 leading-relaxed">
+          যে কেউ পোস্টে কমেন্ট করলে AI সেই কমেন্ট পড়ে উত্তর বানাবে — পোস্টে পাবলিক রিপ্লাই এবং কাস্টমারের ইনবক্সে মেসেজ যাবে। কিওয়ার্ড লাগে না।
+        </p>
+        {(!commentOn || !messengerOn) && (
+          <p className="text-xs text-rose-600">
+            সুইচবোর্ডে কমেন্ট-টু-ইনবক্স ও মেসেঞ্জার আউটবাউন্ড রিপ্লাই দুটোই চালু রাখুন।
+          </p>
+        )}
       </div>
 
       <div className="bg-white dark:bg-zinc-900 border border-zinc-200/80 dark:border-zinc-800 rounded-3xl p-6 shadow-xs space-y-3">

@@ -33,16 +33,18 @@ import {
 import { buildSalesFallbackReply } from '../src/lib/messengerFallback.js';
 import {
   BROADCAST_CONCURRENCY,
-  DEFAULT_COMMENT_INBOX_MESSAGE,
+  COMMENT_INBOX_REPLY_MAX,
+  COMMENT_PUBLIC_REPLY_MAX,
   DEFAULT_COMMENT_PUBLIC_REPLY,
+  buildCommentReplyPrompt,
+  clipCommentReply,
   extractFeedCommentEvents,
-  findMentionedProductName,
   mapPool,
   normalizeOutreachCustomer,
-  parseCommentKeywords,
+  parseCommentAiReplyJson,
   personalizeOutreachMessage,
   planBroadcastRecipients,
-  shouldPrivateReplyToComment,
+  shouldReplyToComment,
   type BroadcastAudience
 } from '../src/lib/outreach.js';
 import { parseFirebaseServiceAccount } from '../src/lib/aiPool.js';
@@ -883,6 +885,7 @@ async function subscribePageToMessenger(pageAccessToken: string) {
     subscriptions = subRes.data;
   } catch (_) {}
 
+  const autoSubscribeOk = subscribed;
   // A page manually subscribed from the App Dashboard shows up here even when
   // POST /subscribed_apps is blocked (no pages_manage_metadata permission).
   if (!subscribed && Array.isArray(subscriptions?.data) && subscriptions.data.length > 0) {
@@ -890,20 +893,33 @@ async function subscribePageToMessenger(pageAccessToken: string) {
     subscribeError = '';
   }
 
+  const hasFeed = autoSubscribeOk || pageSubscriptionsIncludeField(subscriptions, 'feed');
+
   // Missing pages_manage_metadata is not a token problem: the bot can still
   // receive (after a one-time manual subscription) and send messages.
-  const needsManualSubscribe = !subscribed && /pages_manage_metadata|\(#200\)|\(#10\)|permission/i.test(subscribeError);
+  const needsManualSubscribe = (!subscribed && /pages_manage_metadata|\(#200\)|\(#10\)|permission/i.test(subscribeError))
+    || (subscribed && !hasFeed);
 
   return {
     page: pageRes.data,
     subscribed,
     subscribeError: subscribed ? '' : subscribeError,
     subscriptions,
-    needsManualSubscribe
+    needsManualSubscribe,
+    hasFeed
   };
 }
 
-const MANUAL_SUBSCRIBE_HINT = 'টোকেন বৈধ! তবে টোকেনে pages_manage_metadata পারমিশন না থাকায় অটো-সাবস্ক্রাইব করা যায়নি। একবার ম্যানুয়ালি করে দিন: developers.facebook.com → আপনার অ্যাপ → Messenger → Messenger API Settings → Webhooks অংশে আপনার পেজের পাশে "Add subscriptions" চেপে messages ও messaging_postbacks টিক দিন। আগে থেকেই করা থাকলে কিছু করার দরকার নেই — বট এমনিতেই সম্পূর্ণ কাজ করবে (মেসেজ পাঠাতে এই পারমিশন লাগে না)।';
+function pageSubscriptionsIncludeField(subscriptions: any, field: string): boolean {
+  const want = String(field || '').trim().toLowerCase();
+  const rows = Array.isArray(subscriptions?.data) ? subscriptions.data : [];
+  return rows.some((row: any) => {
+    const fields = row?.subscribed_fields || row?.subscribedFields || [];
+    return Array.isArray(fields) && fields.some((item: unknown) => String(item || '').trim().toLowerCase() === want);
+  });
+}
+
+const MANUAL_SUBSCRIBE_HINT = 'টোকেন বৈধ! তবে টোকেনে pages_manage_metadata পারমিশন না থাকায় অটো-সাবস্ক্রাইব করা যায়নি, অথবা feed সাবস্ক্রিপশন নেই। একবার ম্যানুয়ালি করে দিন: developers.facebook.com → আপনার অ্যাপ → Messenger → Messenger API Settings → Webhooks অংশে আপনার পেজের পাশে "Add subscriptions" চেপে messages, messaging_postbacks এবং feed টিক দিন। কমেন্টে রিপ্লাই ও ইনবক্স মেসেজের জন্য feed আবশ্যক।';
 
 // ---------------------------------------------------------------------------
 // Multi-page support: one merchant panel can run many Facebook pages.
@@ -1105,6 +1121,82 @@ async function resolveBusinessForWebhook(cleanPageId: string, pathBizId?: string
   return { businessData, bizId };
 }
 
+const commentReplySchema = {
+  type: Type.OBJECT,
+  properties: {
+    publicReply: { type: Type.STRING },
+    inboxMessage: { type: Type.STRING },
+  },
+  required: ['publicReply', 'inboxMessage'],
+};
+
+async function generateCommentAiReplies(input: {
+  businessData: any;
+  bizId: string;
+  comment: string;
+  customerName?: string;
+}): Promise<{ publicReply: string; inboxMessage: string; usedAi: boolean }> {
+  const fallbackInbox = clipCommentReply(
+    buildSalesFallbackReply(input.comment || 'কমেন্ট', input.businessData),
+    COMMENT_INBOX_REPLY_MAX
+  );
+  const fallbackPublic = clipCommentReply(fallbackInbox, COMMENT_PUBLIC_REPLY_MAX) || DEFAULT_COMMENT_PUBLIC_REPLY;
+  const features = mergeFeatures(input.businessData?.features);
+  const aiConfig = await getEffectiveGeminiConfig();
+  const merchantAiKeys = merchantOwnGeminiKey(input.businessData);
+  const canAi = (aiConfig.hasProvider || merchantAiKeys.length > 0)
+    && hasTokenBalance(input.businessData)
+    && isFeatureEnabled(features, 'aiEnabled');
+
+  if (!canAi) {
+    return { publicReply: fallbackPublic, inboxMessage: fallbackInbox, usedAi: false };
+  }
+
+  const faqs = isFeatureEnabled(features, 'faqEnabled') ? (input.businessData.faqs || []) : [];
+  const faqsText = faqs
+    .filter((faq: any) => faq?.isActive !== false)
+    .map((faq: any) => `Q: ${faq.question} -> A: ${faq.answer}`)
+    .join('\n');
+  const prompt = buildCommentReplyPrompt({
+    shopName: input.businessData.name,
+    shopDescription: input.businessData.description,
+    customerName: input.customerName,
+    comment: input.comment,
+    products: selectProductsForPrompt(input.businessData.products || [], input.comment),
+    faqsText,
+    merchantCustomBlock: buildMerchantCustomInstructionBlock(
+      input.businessData.customSystemPrompt || input.businessData.botPersona || ''
+    ),
+    replyStyleBlock: buildReplyStyleBlock(
+      input.businessData.customSystemPrompt || input.businessData.botPersona || ''
+    ),
+  });
+
+  try {
+    const aiResult = await aiGenerate({
+      parts: [{ text: prompt }],
+      textPrompt: prompt,
+      model: aiConfig.model,
+      schema: commentReplySchema,
+      temperature: Math.min(0.45, Math.max(0, Number(input.businessData.aiTemperature ?? aiConfig.temperature ?? 0.35))),
+      maxTokens: Math.min(500, Number(aiConfig.maxTokens) || 500),
+      preferredKeys: merchantAiKeys,
+    });
+    chargeAiUsage(input.bizId, aiResult, 'comment').catch(() => {});
+    const parsed = parseCommentAiReplyJson(aiResult.text);
+    const inboxMessage = parsed.inboxMessage || fallbackInbox;
+    const publicReply = parsed.publicReply || clipCommentReply(inboxMessage, COMMENT_PUBLIC_REPLY_MAX) || fallbackPublic;
+    return {
+      publicReply: clipCommentReply(publicReply, COMMENT_PUBLIC_REPLY_MAX) || fallbackPublic,
+      inboxMessage: clipCommentReply(inboxMessage, COMMENT_INBOX_REPLY_MAX) || fallbackInbox,
+      usedAi: true,
+    };
+  } catch (err: any) {
+    console.warn('[Webhook] Comment AI reply failed, using catalog fallback:', err?.message || err);
+    return { publicReply: fallbackPublic, inboxMessage: fallbackInbox, usedAi: false };
+  }
+}
+
 async function handlePageFeedComments(entry: any, pathBizId?: string) {
   const events = extractFeedCommentEvents(entry);
   if (events.length === 0) return;
@@ -1130,25 +1222,24 @@ async function handlePageFeedComments(entry: any, pathBizId?: string) {
     return;
   }
 
-  const keywords = parseCommentKeywords(businessData.commentToInboxKeywords);
-  const products = Array.isArray(businessData.products) ? businessData.products : [];
-
   for (const event of events) {
     const dedupKey = `comment:${event.commentId}`;
     if (isDuplicateMessage(dedupKey)) continue;
-    if (!shouldPrivateReplyToComment(event, keywords)) {
+    if (!shouldReplyToComment(event)) {
       markMessageProcessed(dedupKey);
       continue;
     }
 
-    const product = findMentionedProductName(event.message, products);
-    const inboxText = personalizeOutreachMessage(
-      businessData.commentInboxMessage || DEFAULT_COMMENT_INBOX_MESSAGE,
-      { name: event.fromName, shop: businessData.name, product }
-    );
-    const publicText = String(businessData.commentPublicReply || DEFAULT_COMMENT_PUBLIC_REPLY).trim();
-
     try {
+      const generated = await generateCommentAiReplies({
+        businessData,
+        bizId,
+        comment: event.message,
+        customerName: event.fromName,
+      });
+      const inboxText = generated.inboxMessage;
+      const publicText = generated.publicReply;
+
       await sendCommentPrivateReply(pageAccessToken, event.commentId, inboxText);
       await saveChatMessage(bizId, event.fromId || event.commentId, 'bot', `[COMMENT_INBOX] ${inboxText}`);
       await touchMessengerCustomer(bizId, event.fromId, {
@@ -1165,10 +1256,10 @@ async function handlePageFeedComments(entry: any, pathBizId?: string) {
       await logActivity(
         bizId,
         'COMMENT_INBOX',
-        `কমেন্ট-টু-ইনবক্স: "${event.message.substring(0, 60)}" → ${event.fromName || event.fromId}`,
+        `কমেন্ট AI রিপ্লাই${generated.usedAi ? '' : ' (fallback)'}: "${event.message.substring(0, 60)}" → ${event.fromName || event.fromId || 'কাস্টমার'}`,
         'success',
         businessData.ownerId,
-        { commentId: event.commentId, postId: event.postId }
+        { commentId: event.commentId, postId: event.postId, usedAi: generated.usedAi }
       );
       await saveMessengerLog(bizId, {
         senderId: event.fromId,
