@@ -32,6 +32,14 @@
       "destination": "/api/shop?op=slug"
     },
     {
+      "source": "/api/broadcast/preview",
+      "destination": "/api/broadcast?op=preview"
+    },
+    {
+      "source": "/api/broadcast",
+      "destination": "/api/broadcast"
+    },
+    {
       "source": "/api/webhook/:businessId",
       "destination": "/api/webhook"
     },

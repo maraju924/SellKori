@@ -52,12 +52,14 @@ function testCoerceAndNormalize() {
     passengerId: 'psid-9',
     leadInfo: { name: 'সাজিদ' },
     lastInteraction: { seconds: 1700000000 },
-    lastOrderId: 'ord-2'
+    lastOrderId: 'ord-2',
+    pageId: 'page-77'
   });
   assert.equal(customer.messengerId, 'psid-9');
   assert.equal(customer.name, 'সাজিদ');
   assert.equal(customer.lastIncomingAtMs, 1700000000 * 1000);
   assert.equal(customer.lastOrderId, 'ord-2');
+  assert.equal(customer.pageId, 'page-77');
 }
 
 function testWindowAndAudience() {

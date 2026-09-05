@@ -39,6 +39,7 @@ export interface OutreachCustomer {
   lastOrderId?: string;
   leadStage?: string;
   phone?: string;
+  pageId?: string;
 }
 
 export function coerceMillis(value: any): number {
@@ -62,7 +63,8 @@ export function normalizeOutreachCustomer(raw: any): OutreachCustomer {
     lastOrderAtMs: coerceMillis(raw?.lastOrderAtMs),
     lastOrderId: String(raw?.lastOrderId || '').trim(),
     leadStage: String(raw?.leadStage || '').trim(),
-    phone: String(raw?.phone || '').trim()
+    phone: String(raw?.phone || '').trim(),
+    pageId: String(raw?.pageId || raw?.facebookPageId || '').trim()
   };
 }
 
