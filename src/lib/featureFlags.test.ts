@@ -39,6 +39,8 @@ function testPromptDirectives() {
   const block = buildFeaturePromptBlock({ negotiationEnabled: false, autoOrderEnabled: false });
   assert.match(block, /দরদাম নিষিদ্ধ/);
   assert.match(block, /should_create_order সবসময় false/);
+  const on = buildFeaturePromptBlock({ negotiationEnabled: true });
+  assert.match(on, /সার্ভার-হিসাব করা অফার ব্যান্ড/);
 }
 
 function testCount() {

@@ -203,18 +203,35 @@ export function planBroadcastRecipients(
   };
 }
 
+export const COMMENT_PUBLIC_REPLY_MAX = 400;
+export const COMMENT_INBOX_REPLY_MAX = 1900;
+
+export function facebookObjectIdsMatch(a?: string, b?: string): boolean {
+  const left = String(a || '').trim();
+  const right = String(b || '').trim();
+  if (!left || !right) return false;
+  if (left === right) return true;
+  const tail = (id: string) => {
+    const idx = id.lastIndexOf('_');
+    return idx >= 0 ? id.slice(idx + 1) : id;
+  };
+  return tail(left) === tail(right);
+}
+
 export function extractFeedCommentEvents(entry: any): FeedCommentEvent[] {
   const pageId = String(entry?.id || '').trim();
   const changes = Array.isArray(entry?.changes) ? entry.changes : [];
   const events: FeedCommentEvent[] = [];
 
   for (const change of changes) {
-    if (String(change?.field || '') !== 'feed') continue;
+    const field = String(change?.field || '').toLowerCase();
+    if (field !== 'feed' && field !== 'comments') continue;
     const value = change?.value || {};
     const item = String(value.item || '').toLowerCase();
     const verb = String(value.verb || '').toLowerCase();
     const commentId = String(value.comment_id || value.commentId || '').trim();
-    if (item !== 'comment' || verb !== 'add' || !commentId) continue;
+    const looksLikeComment = item === 'comment' || (!item && Boolean(commentId));
+    if (!looksLikeComment || verb !== 'add' || !commentId) continue;
 
     const postId = String(value.post_id || value.postId || '').trim();
     const parentId = String(value.parent_id || value.parentId || postId).trim();
@@ -228,18 +245,94 @@ export function extractFeedCommentEvents(entry: any): FeedCommentEvent[] {
       fromName: String(value.from?.name || '').trim(),
       message: String(value.message || '').trim(),
       verb,
-      item,
+      item: item || 'comment',
       createdTime: Number(value.created_time || value.createdTime) || undefined,
-      isTopLevel: !parentId || !postId || parentId === postId
+      isTopLevel: !parentId || !postId || facebookObjectIdsMatch(parentId, postId)
     });
   }
   return events;
 }
 
-export function shouldPrivateReplyToComment(event: FeedCommentEvent, keywords?: string[] | string | null): boolean {
-  if (!event.isTopLevel) return false;
-  if (!event.fromId || event.fromId === event.pageId) return false;
-  return commentMatchesKeywords(event.message, keywords);
+export function shouldReplyToComment(event: FeedCommentEvent): boolean {
+  if (!event?.commentId) return false;
+  if (event.fromId && event.pageId && event.fromId === event.pageId) return false;
+  return true;
+}
+
+export function shouldPrivateReplyToComment(event: FeedCommentEvent, _keywords?: string[] | string | null): boolean {
+  return shouldReplyToComment(event);
+}
+
+export function clipCommentReply(text: string, max: number): string {
+  return String(text || '').replace(/\s+/g, ' ').trim().slice(0, max);
+}
+
+export function buildCommentReplyPrompt(input: {
+  shopName?: string;
+  shopDescription?: string;
+  customerName?: string;
+  comment: string;
+  products?: unknown;
+  faqsText?: string;
+  merchantCustomBlock?: string;
+  replyStyleBlock?: string;
+}): string {
+  const shop = String(input.shopName || 'এই পেজ').trim() || 'এই পেজ';
+  const comment = String(input.comment || '').trim() || '(কাস্টমার স্টিকার বা খালি কমেন্ট করেছে)';
+  const name = String(input.customerName || '').trim();
+  return `তুমি "${shop}" পেজের সেলসকর্মী। কাস্টমার ফেসবুক পোস্টে কমেন্ট করেছে। সেই কমেন্টের সরাসরি উত্তর দাও — কিওয়ার্ড ম্যাচের অপেক্ষা নয়।
+
+JSON ছাড়া কিছু লিখবে না:
+{
+  "publicReply": "পোস্টে দেখা ছোট উত্তর, ১-২ বাক্য, কমেন্টের আসল জবাব",
+  "inboxMessage": "ইনবক্সে পাঠানো পূর্ণ উত্তর, ২-৫ বাক্য"
+}
+
+নিয়ম:
+- কাস্টমার যা জিজ্ঞেস/লিখেছে তার উত্তরই দিবে।
+- দাম/স্টক/অফার শুধু পণ্যতালিকা বা FAQ থেকে। না জানলে অনুমান করবে না।
+- নিজেকে এআই/বট বলবে না।
+- পাবলিক রিপ্লাই সংক্ষিপ্ত রাখবে (সর্বোচ্চ ${COMMENT_PUBLIC_REPLY_MAX} অক্ষর)।
+- ইনবক্স মেসেজে একই উত্তর একটু বিস্তারিত দিতে পারো (সর্বোচ্চ ${COMMENT_INBOX_REPLY_MAX} অক্ষর)।
+- খালি/স্টিকার কমেন্ট হলে নম্রভাবে জিজ্ঞেস করবে কোন পণ্য লাগবে।
+
+দোকানের তথ্য: ${String(input.shopDescription || '').trim() || 'নেই'}
+কাস্টমারের নাম: ${name || 'অজানা'}
+কমেন্ট: "${comment}"
+
+পণ্যতালিকা:
+${JSON.stringify(input.products || [], null, 2)}
+
+FAQ:
+${String(input.faqsText || '').trim() || 'নেই'}
+
+${input.replyStyleBlock || ''}
+
+${input.merchantCustomBlock || ''}`.trim();
+}
+
+export function parseCommentAiReplyJson(raw: string): { publicReply: string; inboxMessage: string } {
+  const text = String(raw || '').trim();
+  let publicReply = '';
+  let inboxMessage = '';
+  try {
+    if (text.includes('{')) {
+      const cleaned = text.substring(text.indexOf('{'), text.lastIndexOf('}') + 1);
+      const parsed = JSON.parse(cleaned);
+      publicReply = clipCommentReply(parsed?.publicReply || parsed?.reply || '', COMMENT_PUBLIC_REPLY_MAX);
+      inboxMessage = clipCommentReply(parsed?.inboxMessage || parsed?.message || parsed?.reply || '', COMMENT_INBOX_REPLY_MAX);
+    }
+  } catch {
+    // plain text fallback below
+  }
+  if (!publicReply && !inboxMessage && text && !text.startsWith('{')) {
+    const plain = clipCommentReply(text, COMMENT_INBOX_REPLY_MAX);
+    inboxMessage = plain;
+    publicReply = clipCommentReply(plain, COMMENT_PUBLIC_REPLY_MAX);
+  }
+  if (!publicReply && inboxMessage) publicReply = clipCommentReply(inboxMessage, COMMENT_PUBLIC_REPLY_MAX);
+  if (!inboxMessage && publicReply) inboxMessage = publicReply;
+  return { publicReply, inboxMessage };
 }
 
 export async function mapPool<T, R>(
