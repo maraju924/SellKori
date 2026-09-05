@@ -63,6 +63,13 @@ import {
   sanitizePublicOrder,
 } from './_lib/shopCheckout.js';
 import { sanitizePublicProduct } from './_lib/shopPublicProduct.js';
+import {
+  evaluateMessageClaim,
+  isEmptyWebhookBody,
+  isMetaPageWebhookPayload as isNormalizedPagePayload,
+  markExpressBodyParsed,
+  normalizeWebhookJsonBody,
+} from '../src/lib/messengerWebhook.js';
 
 export const maxDuration = 60;
 
@@ -313,31 +320,37 @@ const processedMessagesCache = new Map<string, ProcessedMessageState>();
 const MESSAGE_PROCESSING_STALE_MS = 15 * 1000;
 const MESSAGE_DEDUP_TTL_MS = 10 * 60 * 1000;
 
-function isDuplicateMessage(mid: string): boolean {
-  if (!mid) return false;
-  const now = Date.now();
-  if (processedMessagesCache.size > 2000) {
-    for (const [key, state] of processedMessagesCache.entries()) {
-      const timestamp = state.completedAt || state.startedAt;
-      const ttl = state.completedAt ? MESSAGE_DEDUP_TTL_MS : MESSAGE_PROCESSING_STALE_MS;
-      if (now - timestamp > ttl) {
-        processedMessagesCache.delete(key);
-      }
+function sweepProcessedMessages(now = Date.now()) {
+  if (processedMessagesCache.size <= 2000) return;
+  for (const [key, state] of processedMessagesCache.entries()) {
+    const timestamp = state.completedAt || state.startedAt;
+    const ttl = state.completedAt ? MESSAGE_DEDUP_TTL_MS : MESSAGE_PROCESSING_STALE_MS;
+    if (now - timestamp > ttl) {
+      processedMessagesCache.delete(key);
     }
   }
-  const existing = processedMessagesCache.get(mid);
-  if (
-    existing
-    && (
-      (existing.completedAt !== undefined && now - existing.completedAt <= MESSAGE_DEDUP_TTL_MS)
-      || (existing.completedAt === undefined && now - existing.startedAt <= MESSAGE_PROCESSING_STALE_MS)
-    )
-  ) {
-    console.log(`[Webhook Deduplication] Skipping duplicate message ID: ${mid}`);
-    return true;
+}
+
+function claimIncomingMessage(mid: string): 'fresh' | 'in_flight' | 'done' {
+  if (!mid) return 'fresh';
+  const now = Date.now();
+  sweepProcessedMessages(now);
+  const claim = evaluateMessageClaim(
+    processedMessagesCache.get(mid),
+    now,
+    MESSAGE_PROCESSING_STALE_MS,
+    MESSAGE_DEDUP_TTL_MS
+  );
+  if (claim !== 'fresh') {
+    console.log(`[Webhook Deduplication] Skipping ${claim} message ID: ${mid}`);
+    return claim;
   }
   processedMessagesCache.set(mid, { startedAt: now });
-  return false;
+  return 'fresh';
+}
+
+function isDuplicateMessage(mid: string): boolean {
+  return claimIncomingMessage(mid) !== 'fresh';
 }
 
 function markMessageProcessed(mid: string) {
@@ -2537,7 +2550,7 @@ function resolveRequestPath(input: { path?: string; originalUrl?: string; url?: 
 
 function extractWebhookBusinessId(pathname: string, params?: Record<string, unknown>): string | undefined {
   const reserved = new Set(['api', 'webhook', 'messenger', 'index', 'index.ts', 'index.js']);
-  const fromParams = firstQueryValue(params?.businessId || params?.['0']);
+  const fromParams = firstQueryValue(params?.businessId || params?.pathBizId || params?.['0']);
   if (fromParams && !reserved.has(fromParams)) return fromParams;
   const parts = String(pathname || '').split('/').filter(Boolean);
   const webhookIdx = parts.lastIndexOf('webhook');
@@ -2571,6 +2584,13 @@ const app = express();
 const PORT = 3000;
 
 app.use(cors());
+// If Vercel already parsed JSON onto req.body, tell Express not to clobber it.
+app.use((req, _res, next) => {
+  if (String(req.method || '').toUpperCase() === 'POST') {
+    markExpressBodyParsed(req);
+  }
+  next();
+});
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
@@ -2593,8 +2613,10 @@ app.use((req, _res, next) => {
 });
 
 function webhookBusinessIdFromReq(req: express.Request): string | undefined {
+  const query = (req.query || {}) as Record<string, unknown>;
   return extractWebhookBusinessId((req as any)._resolvedPath || req.path, {
-    businessId: req.params.businessId,
+    businessId: req.params.businessId || query.businessId || query.pathBizId,
+    pathBizId: query.pathBizId,
     '0': (req.params as any)['0']
   });
 }
@@ -3259,8 +3281,10 @@ app.get(webhookPaths, handleMessengerWebhookGet);
 async function handleMessengerWebhookPost(req: any, res: any) {
   if ((req as any)._messengerWebhookHandled) return;
   (req as any)._messengerWebhookHandled = true;
+  markExpressBodyParsed(req);
   const pathBizId = webhookBusinessIdFromReq(req);
-  const body = req.body;
+  const body = normalizeWebhookJsonBody(req.body);
+  req.body = body;
   let webhookHadFailure = false;
 
   // IMPORTANT: We used to ack Facebook immediately with res.send() and then
@@ -3275,10 +3299,15 @@ async function handleMessengerWebhookPost(req: any, res: any) {
   // retry instead of permanently dropping the customer's message.
   try {
       // Diagnostic log
-      await logActivity(pathBizId || 'system', 'WEBHOOK_PROCESSED', `Webhook hit. Entries: ${body.entry?.length || 0}`, 'info', 'system', body);
+      await logActivity(pathBizId || 'system', 'WEBHOOK_PROCESSED', `Webhook hit. Entries: ${(body as any)?.entry?.length || 0}`, 'info', 'system', body);
 
-      if (body.object !== 'page') return;
-      if (!body.entry || !Array.isArray(body.entry)) return;
+      if (!isNormalizedPagePayload(body)) {
+        if (isEmptyWebhookBody(body) || typeof body === 'string') {
+          webhookHadFailure = true;
+          console.error('[Webhook] POST body missing or unparsed — asking Meta to retry');
+        }
+        return;
+      }
 
       for (const entry of body.entry) {
         const pageId = String(entry.id).trim();
@@ -3313,11 +3342,20 @@ async function handleMessengerWebhookPost(req: any, res: any) {
             }
 
             // Deduplication Guard (Idempotency)
-            if (messageMid && isDuplicateMessage(messageMid)) {
-              console.log(`[Webhook] Duplicate message mid=${messageMid} ignored.`);
-              continue;
+            if (messageMid) {
+              const claim = claimIncomingMessage(messageMid);
+              if (claim === 'done') {
+                console.log(`[Webhook] Duplicate message mid=${messageMid} ignored.`);
+                continue;
+              }
+              if (claim === 'in_flight') {
+                // Same isolate froze mid-reply. 200 here permanently drops
+                // the customer message; 503 lets Meta retry after the stale window.
+                webhookHadFailure = true;
+                continue;
+              }
+              claimedMessageMid = messageMid;
             }
-            claimedMessageMid = messageMid;
 
             // Identify Store by Page ID (Multi-Strategy Bulletproof Matcher)
             const cleanPageId = String(pageId).trim();

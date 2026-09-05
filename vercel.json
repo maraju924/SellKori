@@ -49,7 +49,7 @@
     },
     {
       "source": "/api/webhook/:businessId",
-      "destination": "/api/webhook"
+      "destination": "/api/webhook?businessId=:businessId"
     },
     {
       "source": "/webhook",
@@ -57,10 +57,18 @@
     },
     {
       "source": "/webhook/:businessId",
+      "destination": "/api/webhook?businessId=:businessId"
+    },
+    {
+      "source": "/messenger/webhook",
       "destination": "/api/webhook"
     },
     {
-      "source": "/api/(.*)",
+      "source": "/messenger/webhook/:businessId",
+      "destination": "/api/webhook?businessId=:businessId"
+    },
+    {
+      "source": "/api/((?!webhook(?:/|$)).*)",
       "destination": "/api"
     },
     {
