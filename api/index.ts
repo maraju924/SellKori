@@ -32,21 +32,18 @@ import {
 } from '../src/lib/featureFlags.js';
 import { buildSalesFallbackReply } from '../src/lib/messengerFallback.js';
 import {
-  BROADCAST_CONCURRENCY,
   COMMENT_INBOX_REPLY_MAX,
   COMMENT_PUBLIC_REPLY_MAX,
   DEFAULT_COMMENT_PUBLIC_REPLY,
   buildCommentReplyPrompt,
   clipCommentReply,
   extractFeedCommentEvents,
-  mapPool,
-  normalizeOutreachCustomer,
   parseCommentAiReplyJson,
-  personalizeOutreachMessage,
-  planBroadcastRecipients,
-  shouldReplyToComment,
-  type BroadcastAudience
+  shouldReplyToComment
 } from '../src/lib/outreach.js';
+import broadcastHandler from './broadcast.js';
+import messengerTokenHandler from './messenger.js';
+import { PAGE_SUBSCRIBE_FIELDS } from './messengerTokenCore.js';
 import { parseFirebaseServiceAccount } from '../src/lib/aiPool.js';
 import {
   isReservedShopSlug,
@@ -572,16 +569,6 @@ async function sendMessengerPayload(pageAccessToken: string, payload: Record<str
   }
 }
 
-async function sendBroadcastText(pageAccessToken: string, recipientId: string, text: string) {
-  const message = String(text || '').trim().slice(0, 1900);
-  if (!message || !recipientId) return;
-  await sendMessengerPayload(pageAccessToken, {
-    recipient: { id: recipientId },
-    messaging_type: 'UPDATE',
-    message: { text: message }
-  });
-}
-
 async function sendCommentPrivateReply(pageAccessToken: string, commentId: string, text: string) {
   const message = String(text || '').trim().slice(0, 1900);
   if (!message || !commentId) return;
@@ -840,92 +827,6 @@ async function findBusinessByVerifyToken(token: string): Promise<{ id: string; d
   }
   return null;
 }
-
-async function subscribePageToMessenger(pageAccessToken: string) {
-  const cleanToken = String(pageAccessToken || '').trim();
-  const fields = PAGE_SUBSCRIBE_FIELDS.join(',');
-  const pageRes = await axios.get('https://graph.facebook.com/v21.0/me', {
-    params: { fields: 'id,name,category,link', access_token: cleanToken },
-    timeout: 15000
-  });
-
-  const pageId = String(pageRes.data?.id || '').trim();
-  let subscribed = false;
-  let subscribeError = '';
-  const attempts: Array<() => Promise<unknown>> = [
-    () => axios.post(
-      'https://graph.facebook.com/v21.0/me/subscribed_apps',
-      { subscribed_fields: fields },
-      { params: { access_token: cleanToken }, timeout: 15000 }
-    ),
-    () => axios.post(
-      `https://graph.facebook.com/v21.0/me/subscribed_apps?access_token=${encodeURIComponent(cleanToken)}&subscribed_fields=${encodeURIComponent(fields)}`,
-      {},
-      { timeout: 15000 }
-    )
-  ];
-  if (pageId) {
-    attempts.push(() => axios.post(
-      `https://graph.facebook.com/v21.0/${encodeURIComponent(pageId)}/subscribed_apps`,
-      { subscribed_fields: fields },
-      { params: { access_token: cleanToken }, timeout: 15000 }
-    ));
-  }
-
-  for (const attempt of attempts) {
-    try {
-      await attempt();
-      subscribed = true;
-      break;
-    } catch (err: any) {
-      subscribeError = err.response?.data?.error?.message || err.message || 'subscribe failed';
-    }
-  }
-
-  let subscriptions: any = null;
-  try {
-    const subRes = await axios.get('https://graph.facebook.com/v21.0/me/subscribed_apps', {
-      params: { access_token: cleanToken },
-      timeout: 10000
-    });
-    subscriptions = subRes.data;
-  } catch (_) {}
-
-  const autoSubscribeOk = subscribed;
-  // A page manually subscribed from the App Dashboard shows up here even when
-  // POST /subscribed_apps is blocked (no pages_manage_metadata permission).
-  if (!subscribed && Array.isArray(subscriptions?.data) && subscriptions.data.length > 0) {
-    subscribed = true;
-    subscribeError = '';
-  }
-
-  const hasFeed = autoSubscribeOk || pageSubscriptionsIncludeField(subscriptions, 'feed');
-
-  // Missing pages_manage_metadata is not a token problem: the bot can still
-  // receive (after a one-time manual subscription) and send messages.
-  const needsManualSubscribe = (!subscribed && /pages_manage_metadata|\(#200\)|\(#10\)|permission/i.test(subscribeError))
-    || (subscribed && !hasFeed);
-
-  return {
-    page: pageRes.data,
-    subscribed,
-    subscribeError: subscribed ? '' : subscribeError,
-    subscriptions,
-    needsManualSubscribe,
-    hasFeed
-  };
-}
-
-function pageSubscriptionsIncludeField(subscriptions: any, field: string): boolean {
-  const want = String(field || '').trim().toLowerCase();
-  const rows = Array.isArray(subscriptions?.data) ? subscriptions.data : [];
-  return rows.some((row: any) => {
-    const fields = row?.subscribed_fields || row?.subscribedFields || [];
-    return Array.isArray(fields) && fields.some((item: unknown) => String(item || '').trim().toLowerCase() === want);
-  });
-}
-
-const MANUAL_SUBSCRIBE_HINT = 'টোকেন বৈধ! তবে টোকেনে pages_manage_metadata পারমিশন না থাকায় অটো-সাবস্ক্রাইব করা যায়নি, অথবা feed সাবস্ক্রিপশন নেই। একবার ম্যানুয়ালি করে দিন: developers.facebook.com → আপনার অ্যাপ → Messenger → Messenger API Settings → Webhooks অংশে আপনার পেজের পাশে "Add subscriptions" চেপে messages, messaging_postbacks এবং feed টিক দিন। কমেন্টে রিপ্লাই ও ইনবক্স মেসেজের জন্য feed আবশ্যক।';
 
 // ---------------------------------------------------------------------------
 // Multi-page support: one merchant panel can run many Facebook pages.
@@ -2610,8 +2511,6 @@ async function saveChatMessage(bizId: string, senderId: string, role: 'user' | '
     }
   }
 }
-
-const PAGE_SUBSCRIBE_FIELDS = ['messages', 'messaging_postbacks', 'messaging_optins', 'messaging_referrals', 'feed'];
 
 function firstQueryValue(value: unknown): string {
   if (Array.isArray(value)) return String(value[0] ?? '').trim();
@@ -4720,58 +4619,11 @@ app.post('/api/capi/purchase', async (req, res) => {
   }
 });
 
-app.post('/api/messenger/test-token', async (req, res) => {
-  const { pageAccessToken } = req.body;
-  if (!pageAccessToken || typeof pageAccessToken !== 'string') {
-    return res.status(400).json({ success: false, error: 'Page Access Token প্রদান করুন।' });
-  }
-
-  try {
-    const result = await subscribePageToMessenger(pageAccessToken.trim());
-    return res.json({
-      success: true,
-      page: result.page,
-      subscribed: result.subscribed,
-      subscribeError: result.subscribeError || undefined,
-      subscriptions: result.subscriptions,
-      subscribeFields: PAGE_SUBSCRIBE_FIELDS,
-      needsManualSubscribe: result.needsManualSubscribe || undefined,
-      manualSubscribeHint: result.needsManualSubscribe ? MANUAL_SUBSCRIBE_HINT : undefined
-    });
-  } catch (err: any) {
-    const errorData = err.response?.data?.error;
-    const msg = errorData?.message || err.message || 'ফেসবুক টোকেন যাচাই ব্যর্থ হয়েছে';
-    return res.status(400).json({
-      success: false,
-      error: `ফেসবুক এরর: ${msg}`
-    });
-  }
+app.post('/api/messenger/test-token', (req, res) => {
+  void messengerTokenHandler(req, res);
 });
-
-app.post('/api/messenger/subscribe-page', async (req, res) => {
-  const { pageAccessToken } = req.body || {};
-  if (!pageAccessToken || typeof pageAccessToken !== 'string') {
-    return res.status(400).json({ success: false, error: 'Page Access Token প্রদান করুন।' });
-  }
-  try {
-    const result = await subscribePageToMessenger(pageAccessToken.trim());
-    return res.json({
-      success: true,
-      page: result.page,
-      subscribed: result.subscribed,
-      subscribeError: result.subscribeError || undefined,
-      subscriptions: result.subscriptions,
-      subscribeFields: PAGE_SUBSCRIBE_FIELDS,
-      needsManualSubscribe: result.needsManualSubscribe || undefined,
-      manualSubscribeHint: result.needsManualSubscribe ? MANUAL_SUBSCRIBE_HINT : undefined
-    });
-  } catch (err: any) {
-    const errorData = err.response?.data?.error;
-    return res.status(400).json({
-      success: false,
-      error: errorData?.message || err.message || 'পেজ সাবস্ক্রাইব ব্যর্থ'
-    });
-  }
+app.post('/api/messenger/subscribe-page', (req, res) => {
+  void messengerTokenHandler(req, res);
 });
 
 // Full-Pipeline Simulated Test Message (Simulates an incoming customer message to test the AI live)
@@ -4965,177 +4817,11 @@ app.get('/api/chat-history', async (req, res) => {
   }
 });
 
-function normalizeBroadcastAudience(raw: any): BroadcastAudience {
-  const value = String(raw || 'all').trim().toLowerCase();
-  if (value === 'hot_leads' || value === 'hot' || value === 'leads') return 'hot_leads';
-  if (value === 'buyers' || value === 'buyer') return 'buyers';
-  return 'all';
-}
-
-async function buildBroadcastPlan(businessId: string, audience: BroadcastAudience) {
-  const rows = await loadBusinessCustomers(businessId);
-  const customers = rows.map(normalizeOutreachCustomer);
-  return {
-    totalCustomers: customers.length,
-    ...planBroadcastRecipients(customers, audience)
-  };
-}
-
-app.post('/api/broadcast/preview', async (req, res) => {
-  const businessId = String(req.body?.businessId || '').trim();
-  const audience = normalizeBroadcastAudience(req.body?.targetAudience || req.body?.segment);
-  if (!businessId) return res.status(400).json({ success: false, error: 'businessId প্রয়োজন' });
-
-  try {
-    const loaded = await loadBusinessById(businessId);
-    if (!loaded) return res.status(404).json({ success: false, error: 'স্টোর পাওয়া যায়নি' });
-    const features = mergeFeatures(loaded.data?.features);
-    if (!isFeatureEnabled(features, 'broadcastingEnabled') || !isFeatureEnabled(features, 'messengerRepliesEnabled')) {
-      return res.status(403).json({ success: false, error: 'ব্রডকাস্টিং সুইচবোর্ডে বন্ধ আছে' });
-    }
-    const plan = await buildBroadcastPlan(businessId, audience);
-    return res.json({
-      success: true,
-      audience,
-      eligibleCount: plan.eligible.length,
-      skippedOutsideWindow: plan.skippedOutsideWindow,
-      skippedNoPsid: plan.skippedNoPsid,
-      truncated: plan.truncated,
-      totalCustomers: plan.totalCustomers
-    });
-  } catch (error: any) {
-    return res.status(500).json({ success: false, error: error.message });
-  }
+app.post('/api/broadcast/preview', (req, res) => {
+  void broadcastHandler(req, res);
 });
-
-// Real Messenger broadcast — 24h window only
-app.post('/api/broadcast', async (req, res) => {
-  const businessId = String(req.body?.businessId || '').trim();
-  const title = String(req.body?.title || '').trim().slice(0, 120);
-  const message = String(req.body?.message || '').trim().slice(0, 1900);
-  const audience = normalizeBroadcastAudience(req.body?.targetAudience || req.body?.segment);
-  const dryRun = req.body?.dryRun === true;
-  const ownerId = req.body?.ownerId;
-
-  if (!businessId || !message) {
-    return res.status(400).json({ success: false, error: 'ক্যাম্পেইন মেসেজ ও স্টোর আইডি দিন' });
-  }
-
-  if (!adminDb && !db) {
-    return res.status(500).json({ success: false, error: 'Firestore not initialized' });
-  }
-
-  try {
-    const loaded = await loadBusinessById(businessId);
-    if (!loaded) return res.status(404).json({ success: false, error: 'স্টোর পাওয়া যায়নি' });
-    const businessData = loaded.data;
-    const features = mergeFeatures(businessData?.features);
-    if (!isFeatureEnabled(features, 'broadcastingEnabled') || !isFeatureEnabled(features, 'messengerRepliesEnabled')) {
-      return res.status(403).json({ success: false, error: 'ব্রডকাস্টিং সুইচবোর্ডে বন্ধ আছে' });
-    }
-
-    const pageAccessToken = String(
-      pageTokenForBusiness(businessData) || req.body?.pageAccessToken || ''
-    ).trim();
-    if (!pageAccessToken && !dryRun) {
-      return res.status(400).json({ success: false, error: 'পেজ অ্যাক্সেস টোকেন নেই। মেসেঞ্জার সেটাপে টোকেন দিন।' });
-    }
-
-    const plan = await buildBroadcastPlan(businessId, audience);
-    if (dryRun) {
-      return res.json({
-        success: true,
-        dryRun: true,
-        audience,
-        eligibleCount: plan.eligible.length,
-        skippedOutsideWindow: plan.skippedOutsideWindow,
-        skippedNoPsid: plan.skippedNoPsid,
-        truncated: plan.truncated,
-        totalCustomers: plan.totalCustomers
-      });
-    }
-
-    const campaignId = `bc-${Date.now()}`;
-    const campaignBase = {
-      id: campaignId,
-      businessId,
-      title: title || 'মেসেঞ্জার অফার',
-      message,
-      targetAudience: audience,
-      status: 'sending',
-      eligibleCount: plan.eligible.length,
-      skippedCount: plan.skippedOutsideWindow + plan.skippedNoPsid,
-      sentCount: 0,
-      failedCount: 0,
-      truncated: plan.truncated,
-      createdAtMs: Date.now(),
-      createdAt: adminDb ? admin.firestore.FieldValue.serverTimestamp() : serverTimestamp()
-    };
-
-    try {
-      if (adminDb) await adminDb.collection('broadcasts').doc(campaignId).set(campaignBase);
-      else if (db) await setDoc(doc(db, 'broadcasts', campaignId), campaignBase);
-    } catch (campErr) {
-      console.warn('[broadcast] campaign persist notice:', campErr);
-    }
-
-    const results = await mapPool(plan.eligible, BROADCAST_CONCURRENCY, async (customer) => {
-      const psid = String(customer.messengerId || '');
-      const text = personalizeOutreachMessage(message, {
-        name: customer.name,
-        shop: businessData.name
-      });
-      try {
-        // Multi-page: message each customer through the page they chatted with
-        const perPageToken = pageTokenForBusiness(businessData, (customer as any).pageId) || pageAccessToken;
-        await sendBroadcastText(perPageToken, psid, text);
-        await saveChatMessage(businessId, psid, 'merchant', `[BROADCAST] ${text}`);
-        return { ok: true as const, psid };
-      } catch (err: any) {
-        const fbError = err.response?.data?.error;
-        return { ok: false as const, psid, error: fbError?.message || err.message || 'send failed' };
-      }
-    });
-
-    const sentCount = results.filter(r => r.ok).length;
-    const failedCount = results.filter(r => !r.ok).length;
-    const failedSample = results.filter(r => !r.ok).slice(0, 5).map(r => r.error);
-
-    const donePatch = {
-      status: 'completed',
-      sentCount,
-      failedCount,
-      finishedAtMs: Date.now()
-    };
-    try {
-      if (adminDb) await adminDb.collection('broadcasts').doc(campaignId).set(donePatch, { merge: true });
-      else if (db) await setDoc(doc(db, 'broadcasts', campaignId), donePatch, { merge: true });
-    } catch (_) {}
-
-    await logActivity(
-      businessId,
-      'BROADCAST_SENT',
-      `${sentCount} জনের ইনবক্সে ব্রডকাস্ট গেছে (${failedCount} ব্যর্থ, ${plan.skippedOutsideWindow} জন ২৪ ঘণ্টার বাইরে)।`,
-      sentCount > 0 ? 'success' : 'info',
-      ownerId || businessData.ownerId
-    );
-
-    return res.json({
-      success: true,
-      campaignId,
-      audience,
-      sentCount,
-      failedCount,
-      skippedOutsideWindow: plan.skippedOutsideWindow,
-      skippedNoPsid: plan.skippedNoPsid,
-      eligibleCount: plan.eligible.length,
-      truncated: plan.truncated,
-      failedSample
-    });
-  } catch (error: any) {
-    console.error('[broadcast]', error);
-    return res.status(500).json({ success: false, error: error.message });
-  }
+app.post('/api/broadcast', (req, res) => {
+  void broadcastHandler(req, res);
 });
 
 // Abandoned Cart Recovery Cron — skip on Vercel serverless (no persistent process)

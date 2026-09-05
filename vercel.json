@@ -32,6 +32,22 @@
       "destination": "/api/shop?op=slug"
     },
     {
+      "source": "/api/broadcast/preview",
+      "destination": "/api/broadcast?op=preview"
+    },
+    {
+      "source": "/api/broadcast",
+      "destination": "/api/broadcast"
+    },
+    {
+      "source": "/api/messenger/test-token",
+      "destination": "/api/messenger?op=test-token"
+    },
+    {
+      "source": "/api/messenger/subscribe-page",
+      "destination": "/api/messenger?op=subscribe-page"
+    },
+    {
       "source": "/api/webhook/:businessId",
       "destination": "/api/webhook"
     },
