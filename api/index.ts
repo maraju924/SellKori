@@ -42,6 +42,8 @@ import {
   shouldReplyToComment
 } from '../src/lib/outreach.js';
 import broadcastHandler from './broadcast.js';
+import messengerTokenHandler from './messenger.js';
+import { PAGE_SUBSCRIBE_FIELDS } from './messengerTokenCore.js';
 import { parseFirebaseServiceAccount } from '../src/lib/aiPool.js';
 import {
   isReservedShopSlug,
@@ -825,92 +827,6 @@ async function findBusinessByVerifyToken(token: string): Promise<{ id: string; d
   }
   return null;
 }
-
-async function subscribePageToMessenger(pageAccessToken: string) {
-  const cleanToken = String(pageAccessToken || '').trim();
-  const fields = PAGE_SUBSCRIBE_FIELDS.join(',');
-  const pageRes = await axios.get('https://graph.facebook.com/v21.0/me', {
-    params: { fields: 'id,name,category,link', access_token: cleanToken },
-    timeout: 15000
-  });
-
-  const pageId = String(pageRes.data?.id || '').trim();
-  let subscribed = false;
-  let subscribeError = '';
-  const attempts: Array<() => Promise<unknown>> = [
-    () => axios.post(
-      'https://graph.facebook.com/v21.0/me/subscribed_apps',
-      { subscribed_fields: fields },
-      { params: { access_token: cleanToken }, timeout: 15000 }
-    ),
-    () => axios.post(
-      `https://graph.facebook.com/v21.0/me/subscribed_apps?access_token=${encodeURIComponent(cleanToken)}&subscribed_fields=${encodeURIComponent(fields)}`,
-      {},
-      { timeout: 15000 }
-    )
-  ];
-  if (pageId) {
-    attempts.push(() => axios.post(
-      `https://graph.facebook.com/v21.0/${encodeURIComponent(pageId)}/subscribed_apps`,
-      { subscribed_fields: fields },
-      { params: { access_token: cleanToken }, timeout: 15000 }
-    ));
-  }
-
-  for (const attempt of attempts) {
-    try {
-      await attempt();
-      subscribed = true;
-      break;
-    } catch (err: any) {
-      subscribeError = err.response?.data?.error?.message || err.message || 'subscribe failed';
-    }
-  }
-
-  let subscriptions: any = null;
-  try {
-    const subRes = await axios.get('https://graph.facebook.com/v21.0/me/subscribed_apps', {
-      params: { access_token: cleanToken },
-      timeout: 10000
-    });
-    subscriptions = subRes.data;
-  } catch (_) {}
-
-  const autoSubscribeOk = subscribed;
-  // A page manually subscribed from the App Dashboard shows up here even when
-  // POST /subscribed_apps is blocked (no pages_manage_metadata permission).
-  if (!subscribed && Array.isArray(subscriptions?.data) && subscriptions.data.length > 0) {
-    subscribed = true;
-    subscribeError = '';
-  }
-
-  const hasFeed = autoSubscribeOk || pageSubscriptionsIncludeField(subscriptions, 'feed');
-
-  // Missing pages_manage_metadata is not a token problem: the bot can still
-  // receive (after a one-time manual subscription) and send messages.
-  const needsManualSubscribe = (!subscribed && /pages_manage_metadata|\(#200\)|\(#10\)|permission/i.test(subscribeError))
-    || (subscribed && !hasFeed);
-
-  return {
-    page: pageRes.data,
-    subscribed,
-    subscribeError: subscribed ? '' : subscribeError,
-    subscriptions,
-    needsManualSubscribe,
-    hasFeed
-  };
-}
-
-function pageSubscriptionsIncludeField(subscriptions: any, field: string): boolean {
-  const want = String(field || '').trim().toLowerCase();
-  const rows = Array.isArray(subscriptions?.data) ? subscriptions.data : [];
-  return rows.some((row: any) => {
-    const fields = row?.subscribed_fields || row?.subscribedFields || [];
-    return Array.isArray(fields) && fields.some((item: unknown) => String(item || '').trim().toLowerCase() === want);
-  });
-}
-
-const MANUAL_SUBSCRIBE_HINT = 'টোকেন বৈধ! তবে টোকেনে pages_manage_metadata পারমিশন না থাকায় অটো-সাবস্ক্রাইব করা যায়নি, অথবা feed সাবস্ক্রিপশন নেই। একবার ম্যানুয়ালি করে দিন: developers.facebook.com → আপনার অ্যাপ → Messenger → Messenger API Settings → Webhooks অংশে আপনার পেজের পাশে "Add subscriptions" চেপে messages, messaging_postbacks এবং feed টিক দিন। কমেন্টে রিপ্লাই ও ইনবক্স মেসেজের জন্য feed আবশ্যক।';
 
 // ---------------------------------------------------------------------------
 // Multi-page support: one merchant panel can run many Facebook pages.
@@ -2595,8 +2511,6 @@ async function saveChatMessage(bizId: string, senderId: string, role: 'user' | '
     }
   }
 }
-
-const PAGE_SUBSCRIBE_FIELDS = ['messages', 'messaging_postbacks', 'messaging_optins', 'messaging_referrals', 'feed'];
 
 function firstQueryValue(value: unknown): string {
   if (Array.isArray(value)) return String(value[0] ?? '').trim();
@@ -4705,58 +4619,11 @@ app.post('/api/capi/purchase', async (req, res) => {
   }
 });
 
-app.post('/api/messenger/test-token', async (req, res) => {
-  const { pageAccessToken } = req.body;
-  if (!pageAccessToken || typeof pageAccessToken !== 'string') {
-    return res.status(400).json({ success: false, error: 'Page Access Token প্রদান করুন।' });
-  }
-
-  try {
-    const result = await subscribePageToMessenger(pageAccessToken.trim());
-    return res.json({
-      success: true,
-      page: result.page,
-      subscribed: result.subscribed,
-      subscribeError: result.subscribeError || undefined,
-      subscriptions: result.subscriptions,
-      subscribeFields: PAGE_SUBSCRIBE_FIELDS,
-      needsManualSubscribe: result.needsManualSubscribe || undefined,
-      manualSubscribeHint: result.needsManualSubscribe ? MANUAL_SUBSCRIBE_HINT : undefined
-    });
-  } catch (err: any) {
-    const errorData = err.response?.data?.error;
-    const msg = errorData?.message || err.message || 'ফেসবুক টোকেন যাচাই ব্যর্থ হয়েছে';
-    return res.status(400).json({
-      success: false,
-      error: `ফেসবুক এরর: ${msg}`
-    });
-  }
+app.post('/api/messenger/test-token', (req, res) => {
+  void messengerTokenHandler(req, res);
 });
-
-app.post('/api/messenger/subscribe-page', async (req, res) => {
-  const { pageAccessToken } = req.body || {};
-  if (!pageAccessToken || typeof pageAccessToken !== 'string') {
-    return res.status(400).json({ success: false, error: 'Page Access Token প্রদান করুন।' });
-  }
-  try {
-    const result = await subscribePageToMessenger(pageAccessToken.trim());
-    return res.json({
-      success: true,
-      page: result.page,
-      subscribed: result.subscribed,
-      subscribeError: result.subscribeError || undefined,
-      subscriptions: result.subscriptions,
-      subscribeFields: PAGE_SUBSCRIBE_FIELDS,
-      needsManualSubscribe: result.needsManualSubscribe || undefined,
-      manualSubscribeHint: result.needsManualSubscribe ? MANUAL_SUBSCRIBE_HINT : undefined
-    });
-  } catch (err: any) {
-    const errorData = err.response?.data?.error;
-    return res.status(400).json({
-      success: false,
-      error: errorData?.message || err.message || 'পেজ সাবস্ক্রাইব ব্যর্থ'
-    });
-  }
+app.post('/api/messenger/subscribe-page', (req, res) => {
+  void messengerTokenHandler(req, res);
 });
 
 // Full-Pipeline Simulated Test Message (Simulates an incoming customer message to test the AI live)
